@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "owner": null,
+  "role": null,
+  "timezone": null,
+  "workingHours": null,
+  "longTermDirection": null,
+  "currentSeason": null,
+  "guardrails": [],
+  "localTracking": { "approved": false, "approvalRef": null },
+  "sources": [],
+  "schedule": { "enabled": false, "automationId": null, "approvalRef": null, "cadence": null },
+  "permissions": { "sourceWrites": false, "externalNotifications": false, "dashboardUploads": false },
+  "recovery": { "automaticRateLimitProbe": false },
+  "setupConfirmedAt": null
+}

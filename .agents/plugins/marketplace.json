@@ -1,0 +1,10 @@
+{
+  "name": "chief-of-staff-team-pilot",
+  "interface": { "displayName": "Chief of Staff Starter" },
+  "plugins": [{
+    "name": "chief-of-staff-starter",
+    "source": { "source": "local", "path": "./plugins/chief-of-staff-starter" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+    "category": "Productivity"
+  }]
+}

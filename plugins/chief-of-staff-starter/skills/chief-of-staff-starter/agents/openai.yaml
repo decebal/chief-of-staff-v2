@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chief of Staff Starter"
+  short_description: "Connect goals, weekly execution, and daily priorities"
+  default_prompt: "Use $chief-of-staff-starter to help me set up my own Chief of Staff."

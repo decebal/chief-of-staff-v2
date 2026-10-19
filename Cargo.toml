@@ -1,0 +1,30 @@
+[package]
+name = "cos"
+version = "0.1.0"
+edition = "2024"
+description = "Chief of staff: a Rust driver over headless Claude Code with a strategic and a tactical brain"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/decebal/chief-of-staff-v2"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "cos"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+jiff = "0.2"
+libc = "0.2"
+rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-std", "io-util", "process", "signal", "time"] }

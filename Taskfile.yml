@@ -1,0 +1,147 @@
+version: "3"
+
+vars:
+  AGENTS: [chief-of-staff, tactician, strategist]
+  LAUNCHD: ~/Library/LaunchAgents
+  BIN: "{{.HOME}}/.cargo/bin/cos"
+  # Apps started from the Dock hand MCP servers a minimal PATH; cos needs
+  # claude, gh and cn on it.
+  TOOL_PATH: "{{.HOME}}/.cargo/bin:{{.HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  DESKTOP_CONFIG: "{{.HOME}}/Library/Application Support/Claude/claude_desktop_config.json"
+
+tasks:
+  setup:
+    desc: First run — seed context/ and an empty .chief-of-staff/ workspace (never overwrites), then install
+    cmds:
+      - mkdir -p context/decisions
+      - cp -Rn templates/context/ context/ || true
+      - task: install
+      - test -d .chief-of-staff || {{.BIN}} --home {{.ROOT_DIR}} state init
+      - echo "Next - set up goals and approved sources with the starter skill (START-HERE.md), then run 'cos brief'."
+
+  build:
+    desc: Release build of cos
+    cmds:
+      - timeout 300 cargo build --release
+
+  test:
+    desc: fmt, clippy, tests
+    cmds:
+      - timeout 300 cargo fmt --check
+      - timeout 300 cargo clippy --all-targets -- -D warnings
+      - timeout 300 cargo test
+
+  install:
+    desc: cos → ~/.cargo/bin; agents → ~/.claude/agents (for interactive Claude Code)
+    deps: [build]
+    cmds:
+      # Copy-then-rename: overwriting the file in place (while Claude Desktop or
+      # Codex run `cos mcp`) leaves macOS a stale code-signature for it, and
+      # every later exec is SIGKILLed.
+      - cp target/release/cos {{.BIN}}.new
+      - mv -f {{.BIN}}.new {{.BIN}}
+      - mkdir -p ~/.claude/agents
+      - for: { var: AGENTS }
+        cmd: sed "s|@COS_HOME@|{{.ROOT_DIR}}|g" .claude/agents/{{.ITEM}}.md > ~/.claude/agents/{{.ITEM}}.md
+
+  install-mcp:
+    desc: Register `cos mcp` with Claude Desktop and Codex (backs up the Desktop config)
+    deps: [install]
+    cmds:
+      - task: install-mcp-desktop
+      - task: install-mcp-codex
+
+  install-mcp-desktop:
+    status:
+      - test ! -d "$(dirname "{{.DESKTOP_CONFIG}}")"
+    cmds:
+      - test -f "{{.DESKTOP_CONFIG}}" || echo '{}' > "{{.DESKTOP_CONFIG}}"
+      - cp "{{.DESKTOP_CONFIG}}" "{{.DESKTOP_CONFIG}}.bak"
+      - >-
+        jq --arg bin "{{.BIN}}" --arg path "{{.TOOL_PATH}}"
+        '.mcpServers.cos = {command: $bin, args: ["mcp"], env: {PATH: $path}}'
+        "{{.DESKTOP_CONFIG}}.bak" > "{{.DESKTOP_CONFIG}}"
+      - echo "Claude Desktop - restart it to load cos."
+
+  install-mcp-codex:
+    status:
+      - "! command -v codex"
+    cmds:
+      - codex mcp remove cos >/dev/null 2>&1 || true
+      - codex mcp add cos --env PATH="{{.TOOL_PATH}}" -- {{.BIN}} mcp
+      - >-
+        echo "Codex - the paid tools (brief, review, ask) can outlast Codex's 60s tool timeout;
+        add tool_timeout_sec = 320 under [mcp_servers.cos] in ~/.codex/config.toml."
+
+  kit:
+    desc: Package the starter kit (allowlisted files only, per-file SHA256) to a new ZIP outside the repo
+    preconditions:
+      - sh: test -n "{{.OUT}}"
+        msg: "task kit OUT=/absolute/path/chief-of-staff-starter.zip"
+    cmds:
+      - timeout 120 python3 -B scripts/release.py --output "{{.OUT}}"
+
+  dash:
+    desc: Live dashboard on http://127.0.0.1:8790; an open tab reloads after every run
+    cmds:
+      - "{{.BIN}} dash"
+
+  demo:
+    desc: Synthetic COS_HOME (fictional person, repos, people) at /tmp/cos-demo; touches no account
+    cmds:
+      - rm -rf /tmp/cos-demo
+      - cargo run --quiet --example demo -- /tmp/cos-demo
+
+  screenshots:
+    desc: Re-take docs/assets/*.png from the demo dashboard (macOS, Google Chrome), in UTC
+    env:
+      TZ: UTC
+    vars:
+      CHROME: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+      SHOT: '"{{.CHROME}}" --headless=new --disable-gpu --hide-scrollbars --log-level=3 --virtual-time-budget=4000 --force-device-scale-factor=2 --blink-settings=preferredColorScheme=1'
+    cmds:
+      # One after the other: `deps` would run two cargo builds at once.
+      - task: build
+      - task: demo
+      - mkdir -p docs/assets
+      - defer: pkill -f "cos --home /tmp/cos-demo --no-open dash --port 8792" || true
+      - (target/release/cos --home /tmp/cos-demo --no-open dash --port 8792 &) ; sleep 1
+      - '{{.SHOT}} --window-size=1280,1500 --screenshot=docs/assets/today.png http://127.0.0.1:8792/'
+      - '{{.SHOT}} --window-size=1280,1500 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/today-dark.png http://127.0.0.1:8792/'
+      # Tab views start at the tabs: capture tall, then crop (offset in device pixels).
+      - '{{.SHOT}} --window-size=1280,2700 --screenshot=/tmp/cos-shot.png "http://127.0.0.1:8792/#plan"'
+      - sips --cropOffset 1640 0 -c 2700 2560 /tmp/cos-shot.png --out docs/assets/plan.png
+      - '{{.SHOT}} --window-size=1280,2700 --screenshot=/tmp/cos-shot.png "http://127.0.0.1:8792/#right"'
+      - sips --cropOffset 1640 0 -c 2700 2560 /tmp/cos-shot.png --out docs/assets/quarter.png
+      - '{{.SHOT}} --window-size=1280,2700 --screenshot=/tmp/cos-shot.png "http://127.0.0.1:8792/#history"'
+      - sips --cropOffset 1640 0 -c 3000 2560 /tmp/cos-shot.png --out docs/assets/history.png
+
+  tunnel:
+    desc: Read-only MCP behind a Cloudflare quick tunnel for claude.ai; prints the connector URL
+    preconditions:
+      - sh: command -v cloudflared
+        msg: "cloudflared is missing - brew install cloudflared"
+    cmds:
+      - "{{.BIN}} tunnel"
+
+  rotate-token:
+    desc: Invalidate the connector URL; the next tunnel run mints a new token
+    cmds:
+      - rm -f out/.mcp-token
+
+  schedule:
+    desc: Load the launchd jobs (weekday 08:30 brief, Friday 16:00 review)
+    cmds:
+      - mkdir -p out/logs
+      - for: [brief, review]
+        cmd: >-
+          sed -e "s|@HOME@|$HOME|g" -e "s|@COS_HOME@|{{.ROOT_DIR}}|g" launchd/cos.{{.ITEM}}.plist
+          > {{.LAUNCHD}}/cos.{{.ITEM}}.plist
+      - for: [brief, review]
+        cmd: launchctl bootstrap gui/$(id -u) {{.LAUNCHD}}/cos.{{.ITEM}}.plist
+
+  unschedule:
+    desc: Unload the launchd jobs
+    cmds:
+      - for: [brief, review]
+        cmd: launchctl bootout gui/$(id -u)/cos.{{.ITEM}} || true

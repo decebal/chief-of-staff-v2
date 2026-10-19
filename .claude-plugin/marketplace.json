@@ -1,0 +1,11 @@
+{
+  "name": "chief-of-staff-team-pilot",
+  "owner": { "name": "Chief of Staff Starter maintainers" },
+  "plugins": [
+    {
+      "name": "chief-of-staff-starter",
+      "source": "./plugins/chief-of-staff-starter",
+      "description": "Connect goals, weekly execution, and daily priorities"
+    }
+  ]
+}

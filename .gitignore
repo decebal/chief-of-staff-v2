@@ -1,0 +1,15 @@
+/target
+/out
+# Personal: goals, profile, decisions. Seeded from templates/context by `task setup`.
+/context
+# The starter kit's private runtime: profile, state, journal. Never committed.
+.chief-of-staff/
+.private/
+.env
+.env.*
+*.log
+*.zip
+__pycache__/
+*.pyc
+.DS_Store
+.venv/

@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "files": [
+    "START-HERE.md",
+    "AGENTS.md",
+    ".gitignore",
+    ".agents/plugins/marketplace.json",
+    ".claude-plugin/marketplace.json",
+    "plugins/chief-of-staff-starter/plugin.json",
+    "plugins/chief-of-staff-starter/.claude-plugin/plugin.json",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/SKILL.md",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/agents/openai.yaml",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/references/setup.md",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/references/review.md",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/references/strategy.md",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/references/delegation.md",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/references/scheduling.md",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/references/state-and-recovery.md",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/assets/profile.example.json",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/assets/demo-state.json",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/scripts/state.py",
+    "plugins/chief-of-staff-starter/skills/chief-of-staff-starter/scripts/test_state.py",
+    "guides/OPTIONAL-DASHBOARD.md",
+    "guides/PILOT-CHECKLIST.md",
+    "docs/plans/2026-10-16-chief-of-staff-starter-design.md",
+    "scripts/release.py",
+    "release-files.json",
+    "VALIDATION.md"
+  ]
+}

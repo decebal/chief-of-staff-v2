@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slack post: your own chief of staff</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #fff; --ink: #1d1c1d; --muted: #616061;
+    --line: #e2e1df; --accent: #1264a3; --code-bg: #f3f2f0; --ok: #007a5a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --card: #1f1f23; --ink: #e8e8ea; --muted: #a3a3aa;
+      --line: #34343a; --accent: #4fa3e0; --code-bg: #2a2a30; --ok: #3cc29a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Lato, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  .lede { color: var(--muted); margin: 0 0 28px; }
+  .msg {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    margin-bottom: 28px; overflow: hidden;
+  }
+  .msg header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+    font-size: 13px; color: var(--muted);
+  }
+  .msg header strong { color: var(--ink); font-size: 14px; }
+  .actions { display: flex; gap: 8px; }
+  button {
+    font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.done { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .body { padding: 14px 18px 18px; }
+  .body p { margin: 0 0 10px; }
+  .body ul, .body ol { margin: 0 0 12px; padding-left: 22px; }
+  .body li { margin-bottom: 6px; }
+  code {
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--code-bg); padding: 1px 5px; border-radius: 4px;
+  }
+  pre.raw {
+    display: none; margin: 0; padding: 14px 18px; white-space: pre-wrap;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--code-bg); border-top: 1px solid var(--line);
+  }
+  .msg.show-raw pre.raw { display: block; }
+  footer { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Your own chief of staff: Slack copy</h1>
+  <p class="lede">
+    Two messages: the post, and a thread reply with setup advice. "Copy for Slack"
+    copies formatted text, which Slack keeps on paste. "Show mrkdwn" reveals a
+    plain-text version for places that do not take formatting.
+  </p>
+
+  <section class="msg" id="post">
+    <header>
+      <strong>1 · Channel post</strong>
+      <div class="actions">
+        <button data-toggle>Show mrkdwn</button>
+        <button class="primary" data-copy>Copy for Slack</button>
+      </div>
+    </header>
+    <div class="body" data-rich>
+      <p><b>I set up a chief of staff for myself: two AI agents and a small CLI. Every morning it tells me who is waiting on me.</b></p>
+      <p>What it does:</p>
+      <ul>
+        <li><b>Tactical brain</b>, weekday mornings: reads my calendar, inbox, Jira, task tracker and GitHub, and returns at most five things to do today, each with its source. Reviews that someone else is blocked on rank first.</li>
+        <li><b>Strategic brain</b>, Fridays: checks the week's work against my written goals for the quarter. It says which goals moved, which work served none of them, and which decisions only I can take.</li>
+        <li><b>Chief of staff</b>: I ask a question ("release review or the crypto fix today?"). It sends it to one or both brains and merges their answers into one recommendation.</li>
+      </ul>
+      <p>Why I think everyone would want one:</p>
+      <ul>
+        <li>The first thing I see is who is blocked on me, not whatever arrived last.</li>
+        <li>It lists what it could <i>not</i> read. When my calendar connection dropped, the brief said "calendar not read" instead of showing me an empty day.</li>
+        <li>Once a week it compares what I did with what I said mattered. That gap is hard to see from inside the week.</li>
+        <li>It is read-only. It sends nothing and edits nothing; it recommends and I act.</li>
+        <li>It is cheap: about $0.30 for a daily brief, about $1.50 for a question that needs both brains.</li>
+      </ul>
+      <p>Setup advice in the thread.</p>
+    </div>
+    <pre class="raw" data-plain>*I set up a chief of staff for myself: two AI agents and a small CLI. Every morning it tells me who is waiting on me.*
+
+What it does:
+• *Tactical brain*, weekday mornings: reads my calendar, inbox, Jira, task tracker and GitHub, and returns at most five things to do today, each with its source. Reviews that someone else is blocked on rank first.
+• *Strategic brain*, Fridays: checks the week's work against my written goals for the quarter. It says which goals moved, which work served none of them, and which decisions only I can take.
+• *Chief of staff*: I ask a question ("release review or the crypto fix today?"). It sends it to one or both brains and merges their answers into one recommendation.
+
+Why I think everyone would want one:
+• The first thing I see is who is blocked on me, not whatever arrived last.
+• It lists what it could _not_ read. When my calendar connection dropped, the brief said "calendar not read" instead of showing me an empty day.
+• Once a week it compares what I did with what I said mattered. That gap is hard to see from inside the week.
+• It is read-only. It sends nothing and edits nothing; it recommends and I act.
+• It is cheap: about $0.30 for a daily brief, about $1.50 for a question that needs both brains.
+
+Setup advice in the thread.</pre>
+  </section>
+
+  <section class="msg" id="thread">
+    <header>
+      <strong>2 · Thread reply: how to set up your own</strong>
+      <div class="actions">
+        <button data-toggle>Show mrkdwn</button>
+        <button class="primary" data-copy>Copy for Slack</button>
+      </div>
+    </header>
+    <div class="body" data-rich>
+      <p><b>If you want your own, in this order:</b></p>
+      <ol>
+        <li><b>Write your goals down first.</b> Three bets for the quarter, a paragraph each: the outcome, where the work lives, what is out of scope. Without this the strategic half can only guess.</li>
+        <li><b>Split the horizons.</b> One prompt for today, one for the quarter. A single "help me prioritise" prompt mixes them and does neither well.</li>
+        <li><b>Connect only what you actually read.</b> Calendar, mail, your tracker. Every extra connector adds context the model has to load on each run.</li>
+        <li><b>Keep it read-only.</b> Let it suggest the reply or the ticket change; you send it.</li>
+        <li><b>Require a source on every item, and a "not read" list.</b> A failed connection should show up as a gap, never as an empty inbox.</li>
+        <li><b>Rank by who is blocked on you</b>, then by what today's meetings need.</li>
+        <li><b>Ask for confidence, not hours.</b> "Understood / will shift / unknown" is more honest than a time estimate.</li>
+      </ol>
+      <p><b>Three ways to run it:</b></p>
+      <ul>
+        <li><b>No code:</b> a Claude Project with your goals doc as project knowledge, your connectors switched on, and two saved prompts (daily brief, weekly review).</li>
+        <li><b>Claude Code:</b> three agent files in <code>~/.claude/agents/</code> (a router, a tactician, a strategist). Happy to share mine.</li>
+        <li><b>Scheduled:</b> mine is a small Rust CLI that runs both on a timer. Ask and I'll walk you through it.</li>
+      </ul>
+    </div>
+    <pre class="raw" data-plain>*If you want your own, in this order:*
+1. *Write your goals down first.* Three bets for the quarter, a paragraph each: the outcome, where the work lives, what is out of scope. Without this the strategic half can only guess.
+2. *Split the horizons.* One prompt for today, one for the quarter. A single "help me prioritise" prompt mixes them and does neither well.
+3. *Connect only what you actually read.* Calendar, mail, your tracker. Every extra connector adds context the model has to load on each run.
+4. *Keep it read-only.* Let it suggest the reply or the ticket change; you send it.
+5. *Require a source on every item, and a "not read" list.* A failed connection should show up as a gap, never as an empty inbox.
+6. *Rank by who is blocked on you*, then by what today's meetings need.
+7. *Ask for confidence, not hours.* "Understood / will shift / unknown" is more honest than a time estimate.
+
+*Three ways to run it:*
+• *No code:* a Claude Project with your goals doc as project knowledge, your connectors switched on, and two saved prompts (daily brief, weekly review).
+• *Claude Code:* three agent files in `~/.claude/agents/` (a router, a tactician, a strategist). Happy to share mine.
+• *Scheduled:* mine is a small Rust CLI that runs both on a timer. Ask and I'll walk you through it.</pre>
+  </section>
+
+  <footer>Costs measured on 2026-10-15 from live runs; see <code>docs/design.md</code>.</footer>
+</main>
+
+<script>
+  function flash(btn, text) {
+    const old = btn.textContent;
+    btn.textContent = text;
+    btn.classList.add("done");
+    setTimeout(() => { btn.textContent = old; btn.classList.remove("done"); }, 1600);
+  }
+
+  // Fallback for browsers without ClipboardItem: select the rendered node and
+  // copy, which still puts formatted HTML on the clipboard.
+  function copySelection(node) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const ok = document.execCommand("copy");
+    sel.removeAllRanges();
+    return ok;
+  }
+
+  document.querySelectorAll(".msg").forEach((msg) => {
+    const rich = msg.querySelector("[data-rich]");
+    const plain = msg.querySelector("[data-plain]");
+    const copyBtn = msg.querySelector("[data-copy]");
+    const toggleBtn = msg.querySelector("[data-toggle]");
+
+    copyBtn.addEventListener("click", async () => {
+      const raw = msg.classList.contains("show-raw");
+      try {
+        if (raw) {
+          await navigator.clipboard.writeText(plain.textContent);
+        } else if (window.ClipboardItem && navigator.clipboard?.write) {
+          await navigator.clipboard.write([new ClipboardItem({
+            "text/html": new Blob([rich.innerHTML], { type: "text/html" }),
+            "text/plain": new Blob([plain.textContent], { type: "text/plain" }),
+          })]);
+        } else if (!copySelection(rich)) {
+          throw new Error("copy refused");
+        }
+        flash(copyBtn, "Copied");
+      } catch {
+        flash(copyBtn, copySelection(raw ? plain : rich) ? "Copied" : "Select and copy manually");
+      }
+    });
+
+    toggleBtn.addEventListener("click", () => {
+      const raw = msg.classList.toggle("show-raw");
+      toggleBtn.textContent = raw ? "Hide mrkdwn" : "Show mrkdwn";
+      copyBtn.textContent = raw ? "Copy mrkdwn" : "Copy for Slack";
+    });
+  });
+</script>
+</body>
+</html>

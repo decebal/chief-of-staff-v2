@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chief of staff</title>
+<style>
+  :root {
+    --bg: #ffffff; --ink: #1f1f1f; --muted: #6b6b6b; --line: #e6e4df;
+    --chip: #f3f1ec; --accent: #c15f3c; --rock: #2f7d4f; --sand: #b7862b; --water: #3b6fb6;
+  }
+  :root[data-theme="dark"] {
+    --bg: #262624; --ink: #ecebe7; --muted: #a29f97; --line: #3b3a37;
+    --chip: #30302d; --accent: #e08a68; --rock: #5cb784; --sand: #d9ad5a; --water: #77a3e0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .wrap { padding: 16px 18px 18px; }
+  .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tabs { display: flex; gap: 4px; margin-right: auto; }
+  button { font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--ink); }
+  button[aria-pressed="true"] { background: var(--chip); font-weight: 600; }
+  button.run { border-color: var(--accent); color: var(--accent); }
+  button.run.armed { background: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  h2 { font-size: 16px; margin: 0 0 4px; }
+  .day { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .headline { margin: 0 0 14px; }
+  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+    margin: 16px 0 6px; }
+  ul { margin: 0; padding: 0; list-style: none; }
+  li { padding: 7px 0; border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  .time { font-variant-numeric: tabular-nums; font-weight: 600; margin-right: 6px; }
+  .tier { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px;
+    border-radius: 99px; margin-right: 6px; color: #fff; }
+  .tier.rock { background: var(--rock); } .tier.sand { background: var(--sand); }
+  .tier.water { background: var(--water); }
+  .gaps li { color: var(--muted); }
+  .status { color: var(--muted); font-size: 12.5px; min-height: 18px; }
+  .empty { color: var(--muted); padding: 24px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="tabs">
+      <button data-tab="brief" aria-pressed="true">Today</button>
+      <button data-tab="review" aria-pressed="false">Week</button>
+    </div>
+    <button id="reload">Reload saved</button>
+    <button id="run" class="run">Run new</button>
+  </div>
+  <div class="status" id="status"></div>
+  <div id="view"><p class="empty">Waiting for the host…</p></div>
+</div>
+
+<script>
+(() => {
+  const view = document.getElementById("view");
+  const status = document.getElementById("status");
+  const runBtn = document.getElementById("run");
+  const state = { tab: "brief", data: { brief: null, review: null }, armed: null };
+
+  // --- JSON-RPC over postMessage (MCP Apps, protocol 2026-01-26) ---
+  let nextId = 1;
+  const pending = new Map();
+  const send = (msg) => window.parent.postMessage({ jsonrpc: "2.0", ...msg }, "*");
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    send({ id, method, params });
+  });
+  const notify = (method, params) => send({ method, params });
+
+  window.addEventListener("message", (ev) => {
+    const m = ev.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id != null && pending.has(m.id) && !m.method) {
+      const p = pending.get(m.id);
+      pending.delete(m.id);
+      m.error ? p.reject(new Error(m.error.message || "request failed")) : p.resolve(m.result);
+      return;
+    }
+    switch (m.method) {
+      case "ui/notifications/tool-result": accept(m.params); break;
+      case "ui/notifications/host-context-changed": applyContext(m.params); break;
+      case "ui/resource-teardown": send({ id: m.id, result: {} }); break;
+      default: if (m.id != null) send({ id: m.id, error: { code: -32601, message: "unsupported" } });
+    }
+  });
+
+  function applyContext(ctx) {
+    if (ctx && ctx.theme) document.documentElement.dataset.theme = ctx.theme;
+  }
+
+  // A tool result carries { kind: "brief"|"review", day, report }.
+  function accept(result) {
+    const sc = result && result.structuredContent;
+    if (result && result.isError) {
+      const text = (result.content || []).map((c) => c.text).join(" ");
+      status.textContent = text || "The tool returned an error.";
+      return;
+    }
+    if (!sc || !sc.kind) { status.textContent = "No saved output yet. Run one."; render(); return; }
+    state.data[sc.kind] = sc;
+    state.tab = sc.kind;
+    status.textContent = sc.cost_usd != null ? `Fresh run, $${sc.cost_usd.toFixed(2)}.` : "";
+    render();
+  }
+
+  async function call(name) {
+    status.textContent = name.startsWith("latest") ? "Loading…" : "Running — this calls Claude and can take a few minutes…";
+    try { accept(await request("tools/call", { name, arguments: {} })); }
+    catch (e) { status.textContent = `${name} failed: ${e.message}`; }
+  }
+
+  // --- rendering ---
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const section = (title, items, line, cls = "") => items && items.length
+    ? `<h3>${title}</h3><ul class="${cls}">${items.map((x) => `<li>${line(x)}</li>`).join("")}</ul>` : "";
+
+  const KIND = { done: "DONE", unblocked: "UNBLOCKED", risk: "RISK", time_changed: "TIME CHANGED" };
+  const changed = (x) => `<b>${esc(KIND[x.kind] || x.kind)}</b> ${esc(x.what)}<div class="sub">${esc(x.source)}</div>`;
+
+  function renderBrief(d) {
+    const b = d.report;
+    const verb = (a) => a.verb === "delegate" && a.owner ? `DELEGATE: ${a.owner}` : String(a.verb || "").toUpperCase();
+    const due = (a) => !a.deadline || a.deadline_basis === "none" ? "" : ` · ${a.deadline_basis === "confirmed" ? "due" : "proposed"} ${a.deadline}`;
+    const notRead = (b.coverage || []).filter((c) => c.review !== "complete" || c.health !== "healthy")
+      .map((c) => `${c.source}: ${c.health}, ${c.review}${c.note ? " — " + c.note : ""}`).concat(b.gaps || []);
+    return `<h2>Today</h2><div class="day">${esc(d.day)}</div><p class="headline">${esc(b.headline)}</p>`
+      + section("Needs you", b.needs_you, (x) => `<b>${esc(verb(x))}</b> ${esc(x.recommendation)}<div class="sub">${esc(x.why)}${esc(due(x))} · ${esc(x.source)}</div>`)
+      + section("What changed", b.what_changed, changed)
+      + section("Calendar", b.calendar, (x) => `<span class="time">${esc([x.date, x.start ? `${x.start}–${x.end}` : ""].filter(Boolean).join(" "))}</span>${esc(x.what)}<div class="sub">prep: ${esc(x.prep)}</div>`)
+      + section("Backlog", b.backlog, (x) => `${esc(x.item)}${x.owner ? ` (${esc(x.owner)})` : ""}<div class="sub">next review: ${esc(x.next_review)}</div>`)
+      + section("Not read in full", notRead, esc, "gaps");
+  }
+
+  function renderReview(d) {
+    const r = d.report;
+    return `<h2>Week</h2><div class="day">${esc(d.day)}</div><p class="headline">${esc(r.summary)}</p>`
+      + section("Goals", r.goals, (x) => `<span class="tier ${esc(x.confidence)}">${esc(x.confidence)}</span><b>${esc(x.goal)}</b><div class="sub">KPI: ${esc(x.kpi)} · ${esc(x.evidence)} → ${esc(String(x.recommendation).replace("_", " "))}: ${esc(x.next)}</div>`)
+      + section("Proposed this week", r.proposed, (x) => `${esc(x.title)}<div class="sub">owner ${esc(x.owner || "unassigned")} (${esc(x.owner_basis)}) · ${x.due_date ? `${esc(x.due_date)} (${esc(x.due_basis)})` : "no date"} · done when ${esc(x.done_when)}</div>`)
+      + section("Decisions", r.decisions, (x) => `${esc(x.decision)}<div class="sub">${esc((x.options || []).join(" / "))} → <b>${esc(x.recommendation)}</b></div>`)
+      + section("Stop doing", r.stop_doing, esc)
+      + section("What changed", r.what_changed, changed)
+      + section("Not read", r.gaps, esc, "gaps");
+  }
+
+  function render() {
+    document.querySelectorAll("[data-tab]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.tab === state.tab)));
+    runBtn.textContent = state.armed ? "Confirm: spends money" : (state.tab === "brief" ? "Run new brief" : "Run new review");
+    runBtn.classList.toggle("armed", !!state.armed);
+    const d = state.data[state.tab];
+    view.innerHTML = d ? (state.tab === "brief" ? renderBrief(d) : renderReview(d))
+      : `<p class="empty">Nothing loaded for this tab. Reload saved.</p>`;
+  }
+
+  document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => {
+    state.tab = b.dataset.tab; state.armed = null; render();
+    if (!state.data[state.tab]) call(state.tab === "brief" ? "latest_brief" : "latest_review");
+  }));
+  document.getElementById("reload").addEventListener("click", () => call(state.tab === "brief" ? "latest_brief" : "latest_review"));
+  // Two clicks to spend: a fresh run costs real money and minutes.
+  runBtn.addEventListener("click", () => {
+    if (!state.armed) { state.armed = state.tab; render(); setTimeout(() => { state.armed = null; render(); }, 4000); return; }
+    const tool = state.armed === "brief" ? "brief" : "review";
+    state.armed = null; render(); call(tool);
+  });
+
+  new ResizeObserver(() => notify("ui/notifications/size-changed", {
+    width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight,
+  })).observe(document.body);
+
+  request("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    clientInfo: { name: "cos-dashboard", version: "0.1.0" },
+    appCapabilities: {},
+  }).then((res) => {
+    applyContext(res && res.hostContext);
+    notify("ui/notifications/initialized", {});
+  }).catch((e) => { status.textContent = `Host handshake failed: ${e.message}`; });
+})();
+</script>
+</body>
+</html>

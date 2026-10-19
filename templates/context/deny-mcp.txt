@@ -1,0 +1,11 @@
+# MCP servers the brains never need, one tool prefix per line.
+# A denied server's tool definitions stay out of the context every run pays
+# to cache: denying seven unused connectors took a one-word run from
+# 125,695 to 42,465 cache-write tokens (docs/design.md, Cost).
+#
+# List the connectors you have that are not Calendar, Gmail, Atlassian or
+# Notion. `claude mcp list` and `/mcp` show them. For example:
+#
+# mcp__claude_ai_Google_Sheets
+# mcp__claude_ai_Google_Slides
+# mcp__claude_ai_Looker

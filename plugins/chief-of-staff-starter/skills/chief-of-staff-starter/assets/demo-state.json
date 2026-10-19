@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "goals": [{"id":"G-1","title":"Win five pilot customers","owner":"Alex","finishLine":"Five signed pilot agreements by month end","targetDate":"2030-04-30","status":"active"}],
+  "kpis": [{"id":"K-1","goalId":"G-1","name":"Signed pilots","unit":"agreements","baseline":0,"target":5,"current":null,"evidenceAt":null,"source":null,"reportingWindow":"2030-04"}],
+  "deliverables": [{"id":"D-1","goalId":"G-1","title":"Give the workshop deck to the reviewer","owner":"Alex","ownerBasis":"confirmed","dueDate":"2030-04-10","dueBasis":"confirmed","week":"2030-04-08","blocker":"Reviewer needs a full day before the workshop","dependencies":[],"doneWhen":"Reviewer receives the correct draft and confirms review availability","status":"open","source":"https://example.com/fictional/deck-request","evidenceAt":"2030-04-09T09:00:00Z","reviewedAt":null,"meetingAt":null,"completionEvidence":null}],
+  "commitments": [{"id":"C-1","title":"Wait for pilot feedback","owner":"Morgan","status":"waiting","source":"https://example.com/fictional/feedback","evidenceAt":"2030-04-09T09:00:00Z","nextReview":"Check at the agreed Friday checkpoint","dueDate":null,"meetingAt":"2030-04-08T15:00:00Z","reviewedAt":null,"completionEvidence":null}],
+  "sources": [{"id":"email","health":"healthy","review":"partial","checkedAt":"2030-04-09T09:00:00Z","evidenceAt":"2030-04-09T09:00:00Z","lastCompleteThrough":null,"windowStart":"2030-04-08T00:00:00Z","windowEnd":"2030-04-09T09:00:00Z","note":"FICTIONAL: initial page checked; remaining candidates not reconciled"}],
+  "runs": [],
+  "incidents": [],
+  "journal": []
+}

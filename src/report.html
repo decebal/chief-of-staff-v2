@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chief of staff</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface-1: #fcfcfb; --card: #ffffff;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+    --series-1: #2a78d6;
+    --p0: #1c5cab; --p1: #2a78d6; --p2: #5598e7; --p3: #86b6ef;
+    --accent: #2a78d6; --win: #006300; --win-wash: #eef7ee; --soon-wash: #eef4fc;
+    --now: #e34948;
+    --h1: #86b6ef; --h2: #5598e7; --h3: #256abf; --h4: #104281;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface-1: #1a1a19; --card: #1a1a19;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+      --p0: #cde2fb; --p1: #86b6ef; --p2: #3987e5; --p3: #256abf;
+      --accent: #3987e5; --win: #0ca30c; --win-wash: #142414; --soon-wash: #131c29;
+      --now: #e66767;
+      --h1: #184f95; --h2: #256abf; --h3: #5598e7; --h4: #9ec5f4;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19; --card: #1a1a19;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --series-1: #3987e5;
+    --p0: #cde2fb; --p1: #86b6ef; --p2: #3987e5; --p3: #256abf;
+    --accent: #3987e5; --win: #0ca30c; --win-wash: #142414; --soon-wash: #131c29;
+    --now: #e66767;
+    --h1: #184f95; --h2: #256abf; --h3: #5598e7; --h4: #9ec5f4;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .viz-root { background: var(--page); color: var(--text-primary); min-height: 100vh;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 24px 64px; }
+  header.top { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  header.top h1 { font-size: 22px; margin: 0; }
+  header.top .meta { color: var(--muted); font-size: 13px; }
+  header.top .spacer { flex: 1; }
+  button { font: inherit; font-size: 13px; color: var(--text-primary); background: var(--card);
+    border: 1px solid var(--ring); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--axis); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.done { border-color: var(--win); color: var(--win); }
+  .card { background: var(--card); border: 1px solid var(--ring); border-radius: 12px; padding: 18px 20px; }
+  h2 { font-size: 15px; margin: 0 0 4px; }
+  h3 { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+  .sub { color: var(--text-secondary); font-size: 13px; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; gap: 16px; }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); }
+  .g3 { grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); }
+  .g4 { grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); }
+  section { margin-top: 16px; }
+  /* A grid track sizes to its widest child by default; a chart or a long URL
+     would push the page wider than a phone. */
+  .grid > *, .celebrate > * { min-width: 0; }
+  .sub, .ids, .wins a, .headline, .item, td.ids { overflow-wrap: anywhere; }
+  @media (max-width: 520px) {
+    main { padding: 16px 16px 48px; }
+    .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card { padding: 14px; }
+    .tile .v { font-size: 24px; }
+  }
+
+  /* celebrations */
+  .celebrate { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .celebrate { grid-template-columns: minmax(0, 1fr); } }
+  .wins li, .soon li { list-style: none; padding: 8px 0; border-top: 1px solid var(--grid); }
+  .wins li:first-child, .soon li:first-child { border-top: 0; }
+  .wins, .soon { margin: 0; padding: 0; }
+  .wins .mark { color: var(--win); font-weight: 700; margin-right: 6px; }
+  .wins .mark.bad { color: var(--now); }
+  .wins-card { background: linear-gradient(0deg, var(--card), var(--card)), var(--win-wash); background: var(--win-wash); }
+  .soon-card { background: var(--soon-wash); }
+  .date { font-variant-numeric: tabular-nums; font-weight: 600; margin-right: 8px; }
+  .countdown { color: var(--muted); font-size: 12px; }
+
+  /* tabs */
+  .tabs { display: flex; gap: 0; margin: 24px 0 0; border-bottom: 1px solid var(--grid); overflow-x: auto; }
+  .tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none;
+    padding: 10px 18px; font-size: 14px; color: var(--text-secondary); flex: none; min-height: 44px; }
+  .tab:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tab[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--accent); font-weight: 600; }
+  .tab small { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+  [role="tabpanel"][hidden] { display: none; }
+
+  /* tiles */
+  .tile .v { font-size: 30px; font-weight: 650; line-height: 1.1; }
+  .tile .l { color: var(--text-secondary); font-size: 13px; }
+  .headline { font-size: 16px; margin: 0; }
+
+  /* lists */
+  ol.actions { margin: 0; padding: 0; list-style: none; counter-reset: a; }
+  ol.actions > li { counter-increment: a; padding: 14px 0; border-top: 1px solid var(--grid); }
+  ol.actions > li:first-child { border-top: 0; }
+  ol.actions > li::before { content: counter(a); float: left; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; text-align: center; line-height: 26px; margin-right: 12px; }
+  .action-body { overflow: hidden; }
+  .item { font-weight: 600; }
+  .prompt { margin-top: 8px; }
+  .prompt pre { white-space: pre-wrap; margin: 8px 0 0; padding: 10px 12px; background: var(--surface-1);
+    border: 1px solid var(--ring); border-radius: 8px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .prompt summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  ul.plain { margin: 0; padding-left: 18px; }
+  ul.plain li { margin: 4px 0; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--axis); border-radius: 99px; padding: 1px 9px; margin-right: 8px; }
+  .gaps li { color: var(--text-secondary); }
+  .empty { color: var(--muted); padding: 12px 0; }
+  .verb { font-size: 11px; font-weight: 700; letter-spacing: .04em; border-radius: 4px; padding: 1px 6px;
+    margin-right: 8px; background: var(--soon-wash); color: var(--accent); }
+  .ids { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .proposed { font-style: italic; color: var(--text-secondary); }
+  .kpi { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px dashed var(--grid); font-size: 13px; }
+  .kpi b { font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; border-radius: 3px; background: var(--grid); margin-top: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--series-1); }
+  table.cov { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.cov td, table.cov th { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  .ok { color: var(--win); } .bad { color: var(--now); }
+  .scroll { overflow-x: auto; }
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* charts */
+  .chart svg { display: block; max-width: 100%; overflow: visible; }
+  .chart .mark { cursor: default; }
+  .chart .mark:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .axis-label { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .value-label { fill: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); margin: 6px 0 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  details.table { margin-top: 8px; font-size: 12.5px; }
+  details.table summary { cursor: pointer; color: var(--muted); }
+  details.table table { border-collapse: collapse; margin-top: 6px; width: 100%; }
+  details.table td, details.table th { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  .diagram svg { display: block; width: 100%; height: auto; max-height: 420px; }
+  .diagram .fallback { color: var(--muted); font-size: 12.5px; }
+  .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+  .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--win); }
+  .heat rect.cell { rx: 2; }
+  ul.archive { columns: 4 150px; margin: 0; padding: 0; list-style: none; font-variant-numeric: tabular-nums; }
+  ul.archive a { color: var(--accent); text-decoration: none; }
+  ul.archive li { padding: 2px 0; }
+  #tip { position: fixed; pointer-events: none; background: var(--text-primary); color: var(--page);
+    font-size: 12px; padding: 6px 9px; border-radius: 6px; max-width: 320px; opacity: 0; transition: opacity .08s; z-index: 10; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+<main>
+  <header class="top">
+    <h1 id="title">Chief of staff</h1>
+    <span class="meta" id="meta"></span>
+    <span class="spacer"></span>
+    <button id="theme" type="button">Theme: auto</button>
+  </header>
+
+  <div class="celebrate">
+    <div class="card wins-card">
+      <h3>What changed</h3>
+      <ul class="wins" id="wins"></ul>
+    </div>
+    <div class="card">
+      <h3>Shipped, last 7 days</h3>
+      <div class="chart" id="chart-merged"></div>
+    </div>
+    <div class="card soon-card">
+      <h3>Coming up</h3>
+      <ul class="soon" id="soon"></ul>
+    </div>
+  </div>
+
+  <section class="card" id="roadmap-card" hidden>
+    <h3>Roadmap</h3>
+    <div class="diagram" id="diagram-timeline"></div>
+  </section>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-left" aria-controls="left" aria-selected="true">Today<small>priorities · tactician</small></button>
+    <button class="tab" role="tab" id="tab-plan" aria-controls="plan" aria-selected="false">Plan<small>goals · KPIs · this week</small></button>
+    <button class="tab" role="tab" id="tab-right" aria-controls="right" aria-selected="false">Steering<small>weekly review · strategist</small></button>
+    <button class="tab" role="tab" id="tab-history" aria-controls="history" aria-selected="false">History<small>builds up every run</small></button>
+  </div>
+
+  <div role="tabpanel" id="left" aria-labelledby="tab-left"></div>
+  <div role="tabpanel" id="plan" aria-labelledby="tab-plan" hidden></div>
+  <div role="tabpanel" id="right" aria-labelledby="tab-right" hidden></div>
+  <div role="tabpanel" id="history" aria-labelledby="tab-history" hidden></div>
+</main>
+<div id="tip" role="tooltip"></div>
+</div>
+
+<script>/*__MARKDY__*/</script>
+<script>
+const DATA = "__COS_DATA__";
+
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const brief = DATA.brief && DATA.brief.report;
+  const review = DATA.review && DATA.review.report;
+  const facts = DATA.facts;
+
+  // ---- header & theme
+  $("title").textContent = DATA.name ? `${DATA.name.split(" ")[0]}'s chief of staff` : "Chief of staff";
+  $("meta").textContent = `Generated ${DATA.generated_at}` +
+    (DATA.brief ? ` · brief ${DATA.brief.day}` : "") + (DATA.review ? ` · review ${DATA.review.day}` : "");
+  const themes = ["auto", "light", "dark"];
+  const stored = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+  let theme = stored("cos-theme") || "auto";
+  const applyTheme = () => {
+    if (theme === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.dataset.theme = theme;
+    $("theme").textContent = `Theme: ${theme}`;
+  };
+  $("theme").onclick = () => {
+    theme = themes[(themes.indexOf(theme) + 1) % 3];
+    try { localStorage.setItem("cos-theme", theme); } catch { /* storage off */ }
+    applyTheme();
+  };
+  applyTheme();
+
+  // ---- tabs
+  const tabs = [$("tab-left"), $("tab-plan"), $("tab-right"), $("tab-history")];
+  const select = (t) => {
+    for (const x of tabs) {
+      const on = x === t;
+      x.setAttribute("aria-selected", String(on));
+      $(x.getAttribute("aria-controls")).hidden = !on;
+      if (on) {
+        history.replaceState(null, "", "#" + x.getAttribute("aria-controls"));
+        try { localStorage.setItem("cos-tab", x.getAttribute("aria-controls")); } catch { /* storage off */ }
+      }
+    }
+    redraw();
+  };
+  tabs.forEach((t) => t.onclick = () => select(t));
+
+  // ---- copy
+  async function copy(text, btn) {
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    const old = btn.textContent; btn.textContent = "Copied ✓"; btn.classList.add("done");
+    setTimeout(() => { btn.textContent = old; btn.classList.remove("done"); }, 1500);
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-copy]");
+    if (b) copy(PROMPTS[b.dataset.copy], b);
+  });
+  // Links in the data are shown as text unless they are plain http(s) URLs.
+  const link = (s) => /^https?:\/\/[^\s"'<>]+$/.test(String(s || "").trim())
+    ? `<a href="${esc(s.trim())}" rel="noreferrer noopener" target="_blank">${esc(s.trim())}</a>` : esc(s);
+  const PROMPTS = {};
+  let promptSeq = 0;
+  const promptBlock = (text, label = "Agent prompt") => {
+    if (!text) return "";
+    const id = `p${promptSeq++}`;
+    PROMPTS[id] = text;
+    return `<div class="prompt"><div class="row"><button type="button" data-copy="${id}">Copy prompt</button>
+      <details><summary>${esc(label)}</summary><pre>${esc(text)}</pre></details></div></div>`;
+  };
+
+  // ---- tooltip (hover and keyboard focus show the same thing)
+  const tip = $("tip");
+  const showTip = (el, x, y) => { tip.textContent = el.dataset.tip; tip.style.opacity = 1;
+    tip.style.left = Math.min(x + 12, innerWidth - 330) + "px"; tip.style.top = (y + 12) + "px"; };
+  document.addEventListener("mousemove", (e) => {
+    const m = e.target.closest("[data-tip]");
+    if (m) showTip(m, e.clientX, e.clientY); else tip.style.opacity = 0;
+  });
+  document.addEventListener("focusin", (e) => {
+    const m = e.target.closest("[data-tip]");
+    if (!m) return; const r = m.getBoundingClientRect(); showTip(m, r.right, r.top);
+  });
+  document.addEventListener("focusout", () => { tip.style.opacity = 0; });
+
+  // ---- chart primitives (SVG, thin marks, 2px gaps, recessive grid)
+  // Drawn 1:1 at the container's pixel width, so text never scales with the
+  // card. A hidden tab measures 0 wide; its charts redraw when shown.
+  const widthOf = (el) => Math.max(200, el.clientWidth || 520);
+  const svgOpen = (W, H) => `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">`;
+  const clip = (s) => s.length > 26 ? s.slice(0, 25) + "…" : s;
+  const charts = [];
+  const chart = (el, draw) => { charts.push([el, draw]); draw(); };
+  const redraw = () => charts.forEach(([el, draw]) => { if (el.offsetParent) draw(); });
+  let resizeTimer;
+  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 120); });
+  const tableView = (head, rows) => `<details class="table"><summary>Table view</summary><table>
+    <tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr>
+    ${rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table></details>`;
+  // Round steps (1, 2, 5 × 10ⁿ), at most 5 intervals, so ticks read 0 10 20 30.
+  const stepFor = (v) => { for (let p = 1; ; p *= 10) for (const m of [1, 2, 5]) if (v / (m * p) <= 5) return m * p; };
+  const niceMax = (v) => { const s = stepFor(Math.max(1, v)); return Math.ceil(Math.max(1, v) / s) * s; };
+  const ticks = (max) => { const s = stepFor(max); return Array.from({ length: Math.round(max / s) + 1 }, (_, i) => i * s); };
+  // A bar whose data-end is rounded 4px and whose base sits square on the baseline.
+  const barPath = (x, y, w, h, horizontal) => {
+    const r = Math.min(4, (horizontal ? h : w) / 2, horizontal ? w : h);
+    if (h <= 0 || w <= 0) return "";
+    return horizontal
+      ? `M${x},${y} h${w - r} q${r},0 ${r},${r} v${h - 2 * r} q0,${r} ${-r},${r} h${-(w - r)} z`
+      : `M${x},${y + h} v${-(h - r)} q0,${-r} ${r},${-r} h${w - 2 * r} q${r},0 ${r},${r} v${h - r} z`;
+  };
+
+  function columns(el, items, { color = "var(--series-1)", unit = "" } = {}) {
+    const W = widthOf(el), H = 140, L = 26, B = 22, T = 8;
+    const max = niceMax(Math.max(1, ...items.map((d) => d.v)));
+    const bw = (W - L) / items.length;
+    let s = svgOpen(W, H + B);
+    for (const t of ticks(max)) {
+      const y = T + H - (H - T) * t / max;
+      s += `<line x1="${L}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--grid)" stroke-width="1"/>`;
+      s += `<text class="axis-label" x="${L - 6}" y="${y + 4}" text-anchor="end">${t}</text>`;
+    }
+    items.forEach((d, i) => {
+      const w = Math.max(2, Math.min(36, bw - 4)), h = (H - T) * d.v / max, x = L + i * bw + (bw - w) / 2;
+      s += `<path class="mark" tabindex="0" d="${barPath(x, T + H - h, w, h, false)}" fill="${color}"
+        data-tip="${esc(d.label)}: ${d.v}${unit}${d.note ? " · " + esc(d.note) : ""}"/>`;
+      s += `<rect class="mark" x="${L + i * bw}" y="${T}" width="${bw}" height="${H - T}" fill="transparent"
+        data-tip="${esc(d.label)}: ${d.v}${unit}${d.note ? " · " + esc(d.note) : ""}"/>`;
+      s += `<text class="axis-label" x="${x + w / 2}" y="${H + 16}" text-anchor="middle">${esc(d.short || d.label)}</text>`;
+    });
+    s += `<line x1="${L}" x2="${W}" y1="${T + H}" y2="${T + H}" stroke="var(--axis)"/></svg>`;
+    el.innerHTML = s + tableView(["", "count"], items.map((d) => [d.label, d.v]));
+  }
+
+  function hbars(el, items, { color = "var(--series-1)" } = {}) {
+    if (!items.length) { el.innerHTML = `<p class="empty">Nothing to chart.</p>`; return; }
+    const W = widthOf(el), rowH = 24, L = 170, R = 28;
+    const H = items.length * rowH;
+    const max = niceMax(Math.max(1, ...items.map((d) => d.v)));
+    let s = svgOpen(W, H + 4);
+    items.forEach((d, i) => {
+      const y = i * rowH + 3, w = (W - L - R) * d.v / max;
+      s += `<text class="axis-label" x="${L - 8}" y="${y + 13}" text-anchor="end">${esc(clip(d.label))}</text>`;
+      s += `<path class="mark" tabindex="0" d="${barPath(L, y, Math.max(w, 2), rowH - 8, true)}" fill="${color}" data-tip="${esc(d.label)}: ${d.v}"/>`;
+      s += `<text class="value-label" x="${L + w + 6}" y="${y + 13}">${d.v}</text>`;
+    });
+    s += `<line x1="${L}" x2="${L}" y1="0" y2="${H}" stroke="var(--axis)"/></svg>`;
+    el.innerHTML = s + tableView(["", "count"], items.map((d) => [d.label, d.v]));
+  }
+
+  // Stacked horizontal bars; `keys` are ordered (an ordinal ramp, not identity).
+  function stacked(el, rows, keys, colors) {
+    if (!rows.length) { el.innerHTML = `<p class="empty">Nothing to chart.</p>`; return; }
+    const W = widthOf(el), rowH = 24, L = 170, R = 30;
+    const H = rows.length * rowH;
+    const max = niceMax(Math.max(1, ...rows.map((r) => keys.reduce((a, k) => a + (r[k] || 0), 0))));
+    let s = svgOpen(W, H + 4);
+    rows.forEach((r, i) => {
+      const y = i * rowH + 3; let x = L; const total = keys.reduce((a, k) => a + (r[k] || 0), 0);
+      s += `<text class="axis-label" x="${L - 8}" y="${y + 13}" text-anchor="end" data-tip="${esc(r.label)}">${esc(clip(r.label))}</text>`;
+      keys.forEach((k, ki) => {
+        const v = r[k] || 0; if (!v) return;
+        const w = (W - L - R) * v / max;
+        const last = !keys.slice(ki + 1).some((kk) => r[kk]);
+        const d = last ? barPath(x, y, Math.max(w - 2, 2), rowH - 8, true) : `M${x},${y} h${Math.max(w - 2, 1)} v${rowH - 8} h${-Math.max(w - 2, 1)} z`;
+        s += `<path class="mark" tabindex="0" d="${d}" fill="${colors[ki]}" data-tip="${esc(r.label)} · ${k}: ${v}"/>`;
+        x += w;
+      });
+      s += `<text class="value-label" x="${x + 4}" y="${y + 13}">${total}</text>`;
+    });
+    s += `<line x1="${L}" x2="${L}" y1="0" y2="${H}" stroke="var(--axis)"/></svg>`;
+    const legend = `<div class="legend">${keys.map((k, i) => `<span><i style="background:${colors[i]}"></i>${k}</span>`).join("")}</div>`;
+    el.innerHTML = legend + s + tableView(["repo", ...keys, "total"], rows.map((r) => [r.label, ...keys.map((k) => r[k] || 0), keys.reduce((a, k) => a + (r[k] || 0), 0)]));
+  }
+
+  // Today on a 07:00–20:00 track: meetings as blocks, now as a line.
+  function dayline(el, slots, now) {
+    const toMin = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+    const timed = slots.map((s) => ({ ...s, a: toMin(s.start), b: toMin(s.end) })).filter((s) => s.a != null && s.b != null && s.b > s.a);
+    const S = 7 * 60, E = 20 * 60, W = widthOf(el), L = 4, H = 46, T = 6;
+    const x = (m) => L + (W - 2 * L) * (Math.min(Math.max(m, S), E) - S) / (E - S);
+    let s = svgOpen(W, H + 22);
+    for (let h = 7; h <= 20; h++) {
+      const xx = x(h * 60);
+      s += `<line x1="${xx}" x2="${xx}" y1="${T}" y2="${T + H}" stroke="var(--grid)"/>`;
+      if (h % 2 === 1) s += `<text class="axis-label" x="${xx}" y="${T + H + 15}" text-anchor="middle">${String(h).padStart(2, "0")}:00</text>`;
+    }
+    const nowM = toMin(now);
+    timed.forEach((m) => {
+      const past = nowM != null && m.b <= nowM;
+      const w = Math.max(x(m.b) - x(m.a) - 2, 2);
+      s += `<rect class="mark" tabindex="0" x="${x(m.a) + 1}" y="${T + 8}" width="${w}" height="${H - 16}" rx="4"
+        fill="var(--series-1)" fill-opacity="${past ? 0.3 : 1}" data-tip="${esc(m.start)}–${esc(m.end)} ${esc(m.what)}${past ? " (done)" : ""}"/>`;
+    });
+    if (nowM != null && nowM >= S && nowM <= E) {
+      s += `<line x1="${x(nowM)}" x2="${x(nowM)}" y1="${T}" y2="${T + H}" stroke="var(--now)" stroke-width="2"/>`;
+      s += `<text class="axis-label" x="${x(nowM) + 4}" y="${T + 6}">now</text>`;
+    }
+    s += `</svg>`;
+    const busy = timed.reduce((a, m) => a + (m.b - m.a), 0);
+    const left = timed.filter((m) => nowM == null || m.b > nowM).length;
+    el.innerHTML = `<p class="sub">${timed.length} meetings · ${Math.round(busy / 6) / 10} h booked · ${left} still ahead</p>` + s +
+      tableView(["start", "end", "meeting"], timed.map((m) => [m.start, m.end, m.what]));
+  }
+
+  // ---- derived numbers (from facts, never from the model)
+  const daysAgo = (iso) => (Date.now() - Date.parse(iso)) / 864e5;
+  // Local calendar date; toISOString() is UTC and shifts evening days back one.
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const merged = (facts && facts.merged) || [];
+  const reviewQ = (facts && facts.review_requested) || [];
+  const tasks = (facts && facts.tasks) || [];
+
+  // ---- what changed: verified deltas from the brief and the review
+  const KIND = { done: ["✓", "DONE"], unblocked: ["↗", "UNBLOCKED"], risk: ["!", "RISK"], time_changed: ["↻", "TIME CHANGED"] };
+  const changes = [...((brief && brief.what_changed) || []), ...((review && review.what_changed) || [])];
+  $("wins").innerHTML = changes.length
+    ? changes.map((c) => { const [m, l] = KIND[c.kind] || ["•", c.kind];
+        return `<li><span class="mark${c.kind === "risk" ? " bad" : ""}">${m}</span><b>${esc(l)}</b> ${esc(c.what)}<div class="muted" style="font-size:12px">${link(c.source)}</div></li>`; }).join("")
+    : (merged.length ? `<li class="muted" style="font-size:12px">Merged this week, all repos. A brief names the changes that matter.</li>` : "") +
+      merged.slice(0, 5).map((p) => `<li><span class="mark">✓</span><b>${esc(p.repo)}#${p.number}</b> ${esc(p.title)}</li>`).join("") || `<li class="empty">Nothing verified yet. Run <code>cos brief</code>.</li>`;
+
+  const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return d; });
+  const key = ymd;
+  const byDay = Object.fromEntries(days.map((d) => [key(d), []]));
+  merged.forEach((p) => { const k = (p.closed || p.updated || "").slice(0, 10); if (byDay[k]) byDay[k].push(p); });
+  chart($("chart-merged"), () => columns($("chart-merged"), days.map((d) => {
+    const ps = byDay[key(d)];
+    return { label: d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" }), short: d.toLocaleDateString(undefined, { weekday: "short" }),
+      v: ps.length, note: ps.slice(0, 3).map((p) => `${p.repo.split("/")[1]}#${p.number}`).join(", ") };
+  }), { unit: " merged" }));
+
+  const soon = [...((brief && brief.upcoming) || []), ...((review && review.upcoming) || [])]
+    .filter((m, i, a) => a.findIndex((n) => n.date === m.date && n.what === m.what) === i)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  $("soon").innerHTML = soon.length
+    ? soon.map((m) => { const d = Math.round((Date.parse(m.date) - Date.parse(DATA.today)) / 864e5);
+        return `<li><span class="date">${esc(m.date)}</span>${esc(m.what)}<div class="countdown">${d === 0 ? "today" : d > 0 ? `in ${d} day${d > 1 ? "s" : ""}` : `${-d} days ago`} · ${esc(m.source)}</div></li>`; }).join("")
+    : `<li class="empty">No dated milestones yet. Add dates to context/goals.md.</li>`;
+
+  // ---- left brain: tactician
+  const list = (items, fn, cls = "plain") => items && items.length ? `<ul class="${cls}">${items.map((x) => `<li>${fn(x)}</li>`).join("")}</ul>` : `<p class="empty">None.</p>`;
+  const tile = (v, l) => `<div class="card tile"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`;
+
+  if (!brief) {
+    $("left").innerHTML = `<section class="card"><p class="empty">No brief saved yet.</p>${promptBlock("cos brief", "Command")}</section>`;
+  } else {
+    const nowMin = (() => { const [h, m] = DATA.now.split(":"); return +h * 60 + +m; })();
+    const onDay = (s) => !s.date || s.date === DATA.brief.day;
+    const todays = (brief.calendar || []).filter(onDay);
+    const ahead = (brief.calendar || []).filter((s) => { if (!onDay(s)) return s.date > DATA.brief.day; const m = /^(\d{1,2}):(\d{2})/.exec(s.end || ""); return !m || (+m[1]) * 60 + (+m[2]) > nowMin; });
+    const actions = brief.needs_you || [];
+    const allPrompts = actions.filter((a) => a.agent_prompt).map((a, i) => `## ${i + 1}. ${a.recommendation}\n\n${a.agent_prompt}`).join("\n\n");
+    if (allPrompts) PROMPTS.all = allPrompts;
+
+    const age = [["≤ 2 days", 0, 2], ["3–7 days", 2, 7], ["8–30 days", 7, 30], ["> 30 days", 30, 1e9]]
+      .map(([label, a, b]) => { const ps = reviewQ.filter((p) => { const d = daysAgo(p.updated); return d > a - (a === 0 ? 1 : 0) && d <= b; });
+        return { label, v: ps.length, note: ps.slice(0, 3).map((p) => `${p.repo.split("/")[1]}#${p.number}`).join(", ") }; });
+
+    const prios = ["p0", "p1", "p2", "p3"];
+    const byRepo = {};
+    tasks.forEach((t) => { const r = (byRepo[t.repo] ||= { label: t.repo }); r[t.priority] = (r[t.priority] || 0) + 1; });
+    const repoRows = Object.values(byRepo).sort((a, b) => prios.reduce((s, k) => s + (b[k] || 0), 0) - prios.reduce((s, k) => s + (a[k] || 0), 0));
+
+    const timing = (a) => !a.deadline || a.deadline_basis === "none" ? "" : a.deadline_basis === "confirmed" ? `due ${a.deadline}` : `proposed ${a.deadline}`;
+    const verb = (a) => a.verb === "delegate" && a.owner ? `DELEGATE: ${a.owner}` : String(a.verb || "").toUpperCase();
+    const coverage = brief.coverage || [];
+    $("left").innerHTML = `
+      <section class="grid g4">
+        ${tile(actions.length, "need you today")}
+        ${tile(reviewQ.length, "PRs waiting on your review")}
+        ${tile(ahead.length, "meetings still ahead")}
+        ${tile(coverage.filter((c) => c.review !== "complete" || c.health !== "healthy").length, "sources not fully read")}
+      </section>
+      <section class="card"><p class="headline">${esc(brief.headline)}</p></section>
+      <section class="card">
+        <div class="row" style="justify-content:space-between;margin:0 0 6px"><h3 style="margin:0">Needs you · copy a handoff into Claude Code or Codex</h3>
+          ${allPrompts ? `<button class="primary" type="button" data-copy="all">Copy all handoffs</button>` : ""}</div>
+        ${actions.length ? `<ol class="actions">${actions.map((a) => `<li><div class="action-body">
+          <div><span class="verb">${esc(verb(a))}</span><span class="item">${esc(a.recommendation)}</span></div>
+          <div class="sub">${esc(a.why)}</div>
+          ${a.next_step ? `<div class="sub"><b>Next:</b> ${esc(a.next_step)}</div>` : ""}
+          <div class="ids">${[timing(a), a.goal_id, a.deliverable_id].filter(Boolean).map(esc).join(" · ")}${timing(a) || a.goal_id || a.deliverable_id ? " · " : ""}${link(a.source)}</div>
+          ${promptBlock(a.agent_prompt, "Handoff")}</div></li>`).join("")}</ol>` : `<p class="empty">Nothing needs you.</p>`}
+      </section>
+      <section class="card"><h3>Today</h3><div class="chart" id="chart-day"></div></section>
+      <section class="grid g2">
+        <div class="card"><h3>Calendar prep</h3>${list(ahead, (s) => `<span class="date">${onDay(s) ? "" : esc(s.date) + " "}${esc(s.start)}${s.end ? "–" + esc(s.end) : ""}</span><b>${esc(s.what)}</b><div class="sub">${esc(s.prep)}</div>`)}</div>
+        <div class="card"><h3>Backlog · kept with an owner and a trigger</h3>${list(brief.backlog, (f) => `<b>${esc(f.item)}</b>${f.owner ? ` <span class="muted">(${esc(f.owner)})</span>` : ""}<div class="sub">next review: ${esc(f.next_review)}</div>${f.source ? `<div class="ids">${link(f.source)}</div>` : ""}`)}</div>
+      </section>
+      <section class="grid g2">
+        <div class="card"><h3>Review queue by age</h3><div class="chart" id="chart-age"></div></div>
+        <div class="card"><h3>Ready tasks by repo and priority</h3><div class="chart" id="chart-tasks"></div></div>
+      </section>
+      <section class="card"><h3>Coverage · what was actually read</h3>
+        ${coverage.length ? `<div class="scroll"><table class="cov"><tr><th>source</th><th>connection</th><th>review</th><th>window</th><th>note</th></tr>
+          ${coverage.map((c) => `<tr><td>${esc(c.source)}</td><td class="${c.health === "healthy" ? "ok" : "bad"}">${esc(c.health)}</td><td>${esc(c.review)}</td>
+            <td class="ids">${esc(c.window_start)}${c.window_end ? " → " + esc(c.window_end) : ""}</td><td>${esc(c.note)}</td></tr>`).join("")}</table></div>`
+          : `<p class="empty">No coverage reported.</p>`}
+        ${brief.gaps && brief.gaps.length ? `<h3 style="margin-top:14px">Not read</h3>${list(brief.gaps, esc, "plain gaps")}` : ""}
+      </section>`;
+    chart($("chart-day"), () => dayline($("chart-day"), todays,DATA.today === DATA.brief.day ? DATA.now : null));
+    chart($("chart-age"), () => columns($("chart-age"), age, { unit: " PRs" }));
+    chart($("chart-tasks"), () => stacked($("chart-tasks"), repoRows, prios, prios.map((p) => `var(--${p})`)));
+  }
+
+  // ---- right brain: strategist
+  const glyph = { rock: "●", sand: "◐", water: "○" };
+  if (!review) {
+    $("right").innerHTML = `<section class="card"><p class="empty">No weekly review saved yet. It runs Fridays at 16:00, or now:</p>${promptBlock("cos review", "Command")}</section>
+      <section class="card"><h3>Goals flywheel</h3><div class="diagram" id="diagram-flywheel"></div></section>`;
+  } else {
+    const goals = review.goals || [];
+    const count = (c) => goals.filter((g) => g.confidence === c).length;
+    const steer = { maintain: "maintain", sequence: "sequence differently", reduce_scope: "reduce scope", test: "test", delegate: "delegate", stop: "stop" };
+    const orgs = {};
+    merged.forEach((p) => { const o = p.repo.split("/")[0]; orgs[o] = (orgs[o] || 0) + 1; });
+    $("right").innerHTML = `
+      <section class="grid g4">
+        ${tile(`${glyph.rock} ${count("rock")}`, "rock · bet it")}
+        ${tile(`${glyph.sand} ${count("sand")}`, "sand · shape first")}
+        ${tile(`${glyph.water} ${count("water")}`, "water · spike first")}
+        ${tile((review.decisions || []).length, "decisions only you can take")}
+      </section>
+      <section class="card"><p class="headline">${esc(review.summary)}</p></section>
+      <section class="card"><h3>Goals flywheel</h3><div class="diagram" id="diagram-flywheel"></div></section>
+      <section class="card"><h3>Goals</h3>
+        <ol class="actions">${goals.map((g) => `<li><div class="action-body">
+          <div><span class="chip">${glyph[g.confidence] || ""} ${esc(g.confidence)}</span><span class="item">${esc(g.goal)}</span> <span class="ids">${esc(g.goal_id)}</span></div>
+          <div class="sub"><b>KPI:</b> ${esc(g.kpi)}</div>
+          <div class="sub">${esc(g.evidence)}</div>
+          ${g.weakened ? `<div class="sub"><b>Weakened:</b> ${esc(g.weakened)}</div>` : ""}
+          ${g.bottleneck ? `<div class="sub"><b>Bottleneck:</b> ${esc(g.bottleneck)}</div>` : ""}
+          <div class="sub"><b>${esc(steer[g.recommendation] || g.recommendation)}:</b> ${esc(g.next)}</div>
+          ${g.would_change ? `<div class="sub muted">Would change if: ${esc(g.would_change)}</div>` : ""}
+          ${promptBlock(g.agent_prompt, "Handoff")}</div></li>`).join("")}</ol>
+      </section>
+      <section class="card"><h3>Proposed this week · proposals, not commitments</h3>
+        ${list(review.proposed, (p) => `<b>${esc(p.title)}</b> <span class="ids">${esc(p.goal_id)}</span>
+          <div class="sub">owner ${esc(p.owner || "unassigned")} <span class="proposed">(${esc(p.owner_basis)})</span> · ${p.due_date ? `${esc(p.due_date)} <span class="proposed">(${esc(p.due_basis)})</span>` : "no date"}</div>
+          <div class="sub">Done when: ${esc(p.done_when)}</div>${p.blocker ? `<div class="sub">Blocker: ${esc(p.blocker)}</div>` : ""}`)}
+        ${(review.proposed || []).length ? promptBlock("cos state propose", "Command: write them as a candidate to review and commit") : ""}
+      </section>
+      <section class="grid g2">
+        <div class="card"><h3>Where merged work went, last 7 days</h3><div class="chart" id="chart-orgs"></div></div>
+        <div class="card"><h3>Decisions</h3>${list(review.decisions, (d) => `<b>${esc(d.decision)}</b><div class="sub">${(d.options || []).map(esc).join(" · ")}</div><div class="sub"><b>Recommend:</b> ${esc(d.recommendation)}</div>`)}</div>
+      </section>
+      <section class="card"><h3>Stop doing</h3>${list(review.stop_doing, esc)}</section>
+      ${review.gaps && review.gaps.length ? `<section class="card"><h3>Not read</h3>${list(review.gaps, esc, "plain gaps")}</section>` : ""}`;
+    chart($("chart-orgs"), () => hbars($("chart-orgs"), Object.entries(orgs).sort((a, b) => b[1] - a[1]).map(([label, v]) => ({ label, v }))));
+  }
+
+  // ---- plan: the workspace state (.chief-of-staff/state.json)
+  {
+    const W = DATA.workspace;
+    const TERM = ["complete", "cancelled"];
+    if (!W) {
+      $("plan").innerHTML = `<section class="card"><p class="empty">No workspace yet. Goals, KPIs and this week's deliverables live in
+        <code>.chief-of-staff/</code>, created once and filled in with you, one question at a time.</p>
+        ${promptBlock("cos state init", "Command: create the workspace")}
+        ${promptBlock("Read plugins/chief-of-staff-starter/skills/chief-of-staff-starter/SKILL.md completely and use Setup mode for this project.", "Setup prompt for Claude Code or Codex")}</section>`;
+    } else if (W.error) {
+      $("plan").innerHTML = `<section class="card"><p class="empty">The workspace state did not validate, so none of it is shown: ${esc(W.error)}</p></section>`;
+    } else {
+      const goalsById = Object.fromEntries((W.goals || []).map((g) => [g.id, g]));
+      const kpiLine = (k) => {
+        const known = k.current != null;
+        const pct = known && k.target ? Math.max(0, Math.min(100, ((k.current - (k.baseline || 0)) / ((k.target - (k.baseline || 0)) || 1)) * 100)) : null;
+        return `<div class="kpi"><span>${esc(k.name)} <span class="muted">· ${esc(k.reportingWindow || "no window")}${k.evidenceAt ? " · " + esc(String(k.evidenceAt).slice(0, 10)) : ""}</span>
+          ${pct != null ? `<div class="bar" role="img" aria-label="${Math.round(pct)}% of target"><i style="width:${pct}%"></i></div>` : ""}</span>
+          <b>${known ? esc(k.current) : "unknown"} / ${esc(k.target ?? "?")} ${esc(k.unit)}</b></div>`;
+      };
+      const openGoals = (W.goals || []).filter((g) => !TERM.includes(g.status));
+      const items = (W.deliverables || []);
+      const open = items.filter((d) => !TERM.includes(d.status));
+      const done = items.filter((d) => TERM.includes(d.status));
+      const due = (d) => d.dueDate ? `${esc(d.dueDate)} <span class="proposed">(${esc(d.dueBasis)})</span>` : "no date";
+      const handoff = (d) => W.handoffs && W.handoffs[d.id] ? promptBlock(W.handoffs[d.id], "Delegate this: handoff (draft-only, starts nothing)") : "";
+      const commitments = (W.commitments || []).filter((c) => !TERM.includes(c.status));
+      const incidents = (W.incidents || []).filter((i) => !i.resolvedAt);
+      $("plan").innerHTML = `
+        <section class="grid g4">
+          ${tile(openGoals.length, "goals in play")}
+          ${tile(open.filter((d) => d.status !== "proposed").length, "deliverables this week")}
+          ${tile(open.filter((d) => d.status === "blocked" || d.blocker).length, "blocked or with a blocker")}
+          ${tile(commitments.length, "open commitments")}
+        </section>
+        <section class="card"><h3>Goals · finish lines and KPIs</h3>
+          ${openGoals.length ? openGoals.map((g) => `<div style="padding:10px 0;border-top:1px solid var(--grid)">
+            <div><span class="ids">${esc(g.id)}</span> <span class="item">${esc(g.title)}</span> <span class="chip">${esc(g.status)}</span></div>
+            <div class="sub">Finish line: ${esc(g.finishLine)}${g.targetDate ? ` · by ${esc(g.targetDate)}` : ""}${g.owner ? ` · ${esc(g.owner)}` : ""}</div>
+            ${(W.kpis || []).filter((k) => k.goalId === g.id).map(kpiLine).join("") || `<div class="kpi"><span class="muted">No KPI yet: progress is unknown, not zero.</span></div>`}
+          </div>`).join("") : `<p class="empty">No confirmed goals.</p>`}
+        </section>
+        <section class="card"><h3>This week · deliverables</h3>
+          ${open.length ? `<ol class="actions">${open.map((d) => `<li><div class="action-body">
+            <div><span class="ids">${esc(d.id)}</span> <span class="item${d.status === "proposed" ? " proposed" : ""}">${esc(d.title)}</span> <span class="chip">${esc(d.status)}</span></div>
+            <div class="sub">${esc((goalsById[d.goalId] || {}).title || d.goalId)} · owner ${esc(d.owner || "unassigned")} <span class="proposed">(${esc(d.ownerBasis)})</span> · ${due(d)}</div>
+            <div class="sub">Done when: ${esc(d.doneWhen)}</div>
+            ${d.blocker ? `<div class="sub">Blocker: ${esc(d.blocker)}</div>` : ""}
+            ${(d.dependencies || []).length ? `<div class="sub">Depends on: ${(d.dependencies || []).map(esc).join(", ")}</div>` : ""}
+            ${d.meetingAt ? `<div class="sub muted">Meeting ${esc(d.meetingAt)} (the event, not a deadline)</div>` : ""}
+            ${d.reviewedAt ? `<div class="sub muted">Reviewed ${esc(d.reviewedAt)}; still ${esc(d.status)}</div>` : ""}
+            ${d.source ? `<div class="ids">${link(d.source)}</div>` : ""}
+            ${handoff(d)}</div></li>`).join("")}</ol>` : `<p class="empty">Nothing planned for this week.</p>`}
+          ${done.length ? `<details class="table"><summary>${done.length} completed, kept in history</summary><ul class="plain">${done.map((d) => `<li>${esc(d.id)} ${esc(d.title)} · <span class="muted">${esc(d.status)} · ${link((d.completionEvidence || {}).reference)}</span></li>`).join("")}</ul></details>` : ""}
+        </section>
+        <section class="grid g2">
+          <div class="card"><h3>Commitments · waiting and follow-ups</h3>${list(commitments, (c) => `<b>${esc(c.title)}</b> <span class="chip">${esc(c.status)}</span>
+            <div class="sub">${esc(c.owner || "")}${c.dueDate ? ` · due ${esc(c.dueDate)}` : ""} · next review: ${esc(c.nextReview)}</div>
+            ${c.meetingAt ? `<div class="sub muted">Meeting ${esc(c.meetingAt)}</div>` : ""}${c.source ? `<div class="ids">${link(c.source)}</div>` : ""}`)}</div>
+          <div class="card"><h3>Sources · connection vs coverage</h3>
+            ${(W.sources || []).length ? `<div class="scroll"><table class="cov"><tr><th>source</th><th>connection</th><th>review</th><th>complete through</th></tr>
+              ${(W.sources || []).map((s) => `<tr><td>${esc(s.id)}<div class="muted" style="font-size:12px">${esc(s.note || "")}</div></td>
+                <td class="${s.health === "healthy" ? "ok" : "bad"}">${esc(s.health)}</td><td>${esc(s.review)}${s.checkedAt ? `<div class="ids">checked ${esc(String(s.checkedAt).slice(0, 16))}</div>` : ""}</td>
+                <td class="ids">${esc(s.lastCompleteThrough || "never")}</td></tr>`).join("")}</table></div>` : `<p class="empty">No sources recorded.</p>`}
+            ${incidents.length ? `<h3 style="margin-top:14px">Open incidents · stopped until resolved</h3>${list(incidents, (i) => `<b>${esc(i.sourceId)}</b> ${esc(i.kind)} <span class="ids">since ${esc(i.observedAt)}</span>`)}` : ""}
+            <p class="sub" style="margin-top:10px">Local tracking ${W.tracking ? "approved: <code>cos brief</code> records each run here" : "not approved: runs are not recorded"} · state revision ${esc(W.revision)}</p>
+          </div>
+        </section>`;
+    }
+  }
+
+  // ---- diagrams (Markdy, static SVG; re-rendered when the theme flips)
+  const dark = () => document.documentElement.dataset.theme === "dark" ||
+    (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  const diagrams = [];
+  async function drawDiagram(el, code, fallback) {
+    if (!el || !code) return;
+    try {
+      if (!window.Markdy) throw new Error("diagram engine missing");
+      const out = await Markdy.exportDiagramAsVectorSvg(code.replaceAll("__THEME__", dark() ? "midnight" : "paper"));
+      const svg = typeof out === "string" ? out : "";
+      if (!svg.includes("<svg")) throw new Error("no svg produced");
+      el.innerHTML = svg;
+      const s = el.querySelector("svg");
+      if (s && !s.getAttribute("viewBox") && s.getAttribute("width")) {
+        s.setAttribute("viewBox", `0 0 ${parseFloat(s.getAttribute("width"))} ${parseFloat(s.getAttribute("height"))}`);
+      }
+      s && s.removeAttribute("width");
+      s && s.removeAttribute("height");
+    } catch (e) {
+      el.innerHTML = `<p class="fallback">Diagram unavailable (${esc(e.message)}). ${fallback || ""}</p>`;
+    }
+  }
+  const diagram = (el, code, fallback) => { if (!el || !code) return; diagrams.push([el, code, fallback]); drawDiagram(el, code, fallback); };
+  const redrawDiagrams = () => diagrams.forEach(([el, code, fb]) => drawDiagram(el, code, fb));
+  $("theme").addEventListener("click", redrawDiagrams);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redrawDiagrams);
+
+  const D = DATA.diagrams || {};
+  if (D.timeline) { $("roadmap-card").hidden = false; diagram($("diagram-timeline"), D.timeline, "The dates are listed under Coming up."); }
+  if ($("diagram-flywheel")) diagram($("diagram-flywheel"), D.flywheel);
+
+  // ---- history: the archive that builds up over time
+  const H = DATA.history || { days: [], merged: [] };
+  const sum = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
+
+  function line(el, pts, { unit = "" } = {}) {
+    const W = widthOf(el), H2 = 110, L = 30, R = 34, T = 10, B = 20;
+    if (!pts.length) { el.innerHTML = `<p class="empty">Builds up from the first run.</p>`; return; }
+    const max = niceMax(Math.max(1, ...pts.map((p) => p.v)));
+    const x = (i) => pts.length === 1 ? L + (W - L - R) / 2 : L + (W - L - R) * i / (pts.length - 1);
+    const y = (v) => T + (H2 - T) * (1 - v / max);
+    let s = svgOpen(W, H2 + B);
+    for (const t of ticks(max)) {
+      s += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="var(--grid)"/>`;
+      s += `<text class="axis-label" x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${t}</text>`;
+    }
+    if (pts.length > 1) s += `<polyline fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" points="${pts.map((p, i) => `${x(i)},${y(p.v)}`).join(" ")}"/>`;
+    pts.forEach((p, i) => {
+      s += `<circle cx="${x(i)}" cy="${y(p.v)}" r="4" fill="var(--series-1)" stroke="var(--card)" stroke-width="2"/>`;
+      s += `<rect class="mark" tabindex="0" x="${x(i) - 12}" y="${T}" width="24" height="${H2 - T}" fill="transparent" data-tip="${esc(p.label)}: ${p.v}${unit}"/>`;
+    });
+    const last = pts[pts.length - 1];
+    s += `<text class="value-label" x="${x(pts.length - 1) + 8}" y="${y(last.v) + 4}">${last.v}</text>`;
+    s += `<text class="axis-label" x="${x(0)}" y="${H2 + 16}" text-anchor="${pts.length === 1 ? "middle" : "start"}">${esc(pts[0].label.slice(5))}</text>`;
+    if (pts.length > 1) s += `<text class="axis-label" x="${x(pts.length - 1)}" y="${H2 + 16}" text-anchor="end">${esc(last.label.slice(5))}</text>`;
+    el.innerHTML = s + "</svg>" + tableView(["day", "value"], pts.map((p) => [p.label, p.v]));
+  }
+
+  // GitHub-style year: one cell per day, merged PRs, one-hue sequential ramp.
+  function heatmap(el, counts) {
+    const cell = 11, gap = 2, step = cell + gap, L = 28, T = 16;
+    const end = new Date(DATA.today + "T00:00:00");
+    const start = new Date(end); start.setDate(start.getDate() - 364);
+    while (start.getDay() !== 1) start.setDate(start.getDate() - 1);
+    const days = []; for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) days.push(new Date(d));
+    const weeks = Math.ceil(days.length / 7);
+    const W = L + weeks * step, H3 = T + 7 * step;
+    const bin = (n) => n === 0 ? 0 : n === 1 ? 1 : n <= 3 ? 2 : n <= 6 ? 3 : 4;
+    // A month not yet archived is unknown, not zero: outline only.
+    const known = new Set((DATA.backfilled || []).map((m) => m.slice(0, 7)));
+    const recent = new Date(end); recent.setDate(recent.getDate() - 7);
+    const isKnown = (d) => known.has(ymd(d).slice(0, 7)) || d >= recent;
+    let unknown = 0;
+    const fills = ["var(--grid)", "var(--h1)", "var(--h2)", "var(--h3)", "var(--h4)"];
+    let s = `<svg width="${W}" height="${H3}" viewBox="0 0 ${W} ${H3}" role="img" class="heat">`;
+    ["Mon", "Wed", "Fri"].forEach((d, i) => { s += `<text class="axis-label" x="0" y="${T + (i * 2) * step + 9}">${d}</text>`; });
+    let lastMonth = -1, total = 0;
+    days.forEach((d, i) => {
+      const w = Math.floor(i / 7), r = i % 7, key = ymd(d), n = counts[key] || 0;
+      total += n;
+      if (d.getMonth() !== lastMonth && r === 0) { lastMonth = d.getMonth(); s += `<text class="axis-label" x="${L + w * step}" y="${T - 5}">${d.toLocaleDateString(undefined, { month: "short" })}</text>`; }
+      const k = isKnown(d);
+      if (!k) unknown++;
+      s += k
+        ? `<rect class="mark cell" tabindex="-1" x="${L + w * step}" y="${T + r * step}" width="${cell}" height="${cell}" rx="2" fill="${fills[bin(n)]}" data-tip="${key}: ${n} merged"/>`
+        : `<rect class="mark cell" tabindex="-1" x="${L + w * step + 0.5}" y="${T + r * step + 0.5}" width="${cell - 1}" height="${cell - 1}" rx="2" fill="none" stroke="var(--grid)" data-tip="${key}: not archived yet"/>`;
+    });
+    s += "</svg>";
+    const legend = `<div class="legend"><span>${total} merged in the archived months</span>${unknown ? `<span><i style="background:none;border:1px solid var(--axis)"></i>not archived yet, filling in over the next runs</span>` : ""}<span style="margin-left:auto">Less</span>${fills.map((f) => `<i style="background:${f};margin:0"></i>`).join("")}<span>More</span></div>`;
+    const months = {}; Object.entries(counts).forEach(([k, v]) => { months[k.slice(0, 7)] = (months[k.slice(0, 7)] || 0) + v; });
+    el.innerHTML = legend + `<div style="overflow-x:auto">${s}</div>` + tableView(["month", "merged"], Object.entries(months).sort().reverse());
+  }
+
+  {
+    const counts = {};
+    H.merged.forEach((m) => { counts[m.day] = (counts[m.day] || 0) + 1; });
+    const days = H.days;
+    const pts = (f) => days.map((d) => ({ label: d.date, v: f(d) })).filter((p) => p.v != null);
+    const arch = (DATA.archive || []).map((d) => `<li><a href="reports/${esc(d)}.html">${esc(d)}</a></li>`).join("");
+    $("history").innerHTML = `
+      <section class="card"><h3>Shipped, last 12 months</h3><div class="chart" id="chart-heat"></div></section>
+      <section class="grid g2">
+        <div class="card"><h3>Review queue (PRs waiting on you)</h3><div class="chart" id="trend-queue"></div></div>
+        <div class="card"><h3>Ready tasks across repos</h3><div class="chart" id="trend-ready"></div></div>
+        <div class="card"><h3>Actions per brief</h3><div class="chart" id="trend-must"></div></div>
+        <div class="card"><h3>Meeting time per day (minutes)</h3><div class="chart" id="trend-meet"></div></div>
+      </section>
+      <section class="card"><h3>How it works</h3><div class="diagram" id="diagram-arch"></div></section>
+      <section class="card"><h3>Archive · ${(DATA.archive || []).length} daily reports</h3>${arch ? `<ul class="archive">${arch}</ul>` : `<p class="empty">The first report lands here.</p>`}</section>`;
+    chart($("chart-heat"), () => heatmap($("chart-heat"), counts));
+    chart($("trend-queue"), () => line($("trend-queue"), pts((d) => d.review_queue), { unit: " PRs" }));
+    chart($("trend-ready"), () => line($("trend-ready"), pts((d) => sum(d.ready)), { unit: " tasks" }));
+    chart($("trend-must"), () => line($("trend-must"), pts((d) => d.must_do)));
+    chart($("trend-meet"), () => line($("trend-meet"), pts((d) => d.meeting_minutes), { unit: " min" }));
+    diagram($("diagram-arch"), D.architecture);
+  }
+
+  // ---- live: under `cos dash`, reload when a run writes new data
+  if (DATA.live) {
+    $("meta").insertAdjacentHTML("afterend", `<span class="live"><i></i>Live</span>`);
+    let seen = null;
+    setInterval(async () => {
+      try {
+        const v = await (await fetch("/version", { cache: "no-store" })).text();
+        if (seen && v !== seen) location.reload();
+        seen = v;
+      } catch { /* dash stopped; keep the last view */ }
+    }, 3000);
+  }
+
+  const want = location.hash ? location.hash.slice(1) : stored("cos-tab");
+  const start = tabs.find((t) => t.getAttribute("aria-controls") === want);
+  if (start) {
+    if (start !== tabs[0]) select(start);
+    scrollTo(0, 0);
+  }
+})();
+</script>
+</body>
+</html>
