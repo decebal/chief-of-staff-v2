@@ -23,8 +23,8 @@ const RECENT_RUNS: usize = 3;
 
 /// The workspace, then every context file. Decisions come newest first, so a
 /// truncated block drops the oldest.
-pub fn block(home: &Path) -> String {
-    let mut s = workspace(home);
+pub fn block(home: &Path, ws: &Path) -> String {
+    let mut s = workspace(ws);
     s.push_str(
         "\nContext files, inlined by cos (you have no file tools here; this is all of context/):\n",
     );

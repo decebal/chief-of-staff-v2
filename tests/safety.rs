@@ -88,7 +88,7 @@ fn context_is_inlined_newest_decision_first_and_capped() {
     std::fs::write(ctx.join("decisions/2026-09-01-new.md"), "new call").unwrap();
     std::fs::write(ctx.join("decisions/README.md"), "how to write one").unwrap();
 
-    let block = cos::context::block(&home);
+    let block = cos::context::block(&home, &home);
     assert!(block.contains("### context/goals.md\n\nShip the parser."));
     assert!(block.contains("### context/profile.md\n\n(missing"));
     assert!(!block.contains("how to write one"));
@@ -100,7 +100,7 @@ fn context_is_inlined_newest_decision_first_and_capped() {
 
     let huge = "y".repeat(cos::context::LIMIT);
     std::fs::write(ctx.join("decisions/2026-10-01-huge.md"), huge).unwrap();
-    let block = cos::context::block(&home);
+    let block = cos::context::block(&home, &home);
     assert!(block.len() <= cos::context::LIMIT + 512);
     assert!(block.contains("Not inlined") && block.contains("2026-10-01-huge.md"));
 }

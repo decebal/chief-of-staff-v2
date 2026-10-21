@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     history(&home, today, &facts, &mut rng)?;
     workspace(&home, today)?;
 
-    let report = cos::report::build(&home)?;
+    let report = cos::report::build(&home, &home)?;
     for back in 1..=12 {
         let d = today.checked_sub(Span::new().days(back))?;
         std::fs::copy(&report, home.join(format!("out/reports/{d}.html")))?;

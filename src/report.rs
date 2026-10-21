@@ -21,8 +21,8 @@ const DATA_SLOT: &str = "\"__COS_DATA__\"";
 const MARKDY_SLOT: &str = "/*__MARKDY__*/";
 
 /// Writes `out/reports/<day>.html` and `out/report.html` (always the latest).
-pub fn build(home: &Path) -> Result<PathBuf> {
-    let html = render(&data(home, false)?)?;
+pub fn build(home: &Path, ws: &Path) -> Result<PathBuf> {
+    let html = render(&data(home, ws, false)?)?;
     let day = jiff::Zoned::now().date().to_string();
     let dir = home.join("out/reports");
     std::fs::create_dir_all(&dir)?;
@@ -33,7 +33,7 @@ pub fn build(home: &Path) -> Result<PathBuf> {
 }
 
 /// Everything the page shows. `live` makes the page poll `cos dash` for changes.
-pub fn data(home: &Path, live: bool) -> Result<Value> {
+pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
     let now = jiff::Zoned::now();
     let brief = store::latest::<Brief>(home, Kind::Briefs)?;
     let review = store::latest::<Review>(home, Kind::Reviews)?;
@@ -58,7 +58,7 @@ pub fn data(home: &Path, live: bool) -> Result<Value> {
         "today": today,
         "now": now.strftime("%H:%M").to_string(),
         "live": live,
-        "name": profile_name(home),
+        "name": profile_name(home, ws),
         "brief": brief.map(|s| json!({ "day": s.day, "report": s.value })),
         "review": review.map(|s| json!({ "day": s.day, "report": s.value })),
         "facts": store::latest::<Facts>(home, Kind::Facts)?.map(|s| s.value),
@@ -66,19 +66,19 @@ pub fn data(home: &Path, live: bool) -> Result<Value> {
         "backfilled": history::backfilled(home),
         "archive": archive(home),
         "diagrams": diagrams,
-        "workspace": workspace(home),
+        "workspace": workspace(ws),
     }))
 }
 
 /// The plan view: the state's records and a ready handoff per open
 /// deliverable. `null` without a workspace; an `error` when it fails to load.
-fn workspace(home: &Path) -> Value {
-    let st = match crate::state::read(home) {
+fn workspace(ws: &Path) -> Value {
+    let st = match crate::state::read(ws) {
         Ok(Some(st)) => st,
         Ok(None) => return Value::Null,
         Err(e) => return json!({ "error": format!("{e:#}") }),
     };
-    let profile = crate::state::profile(home);
+    let profile = crate::state::profile(ws);
     let handoffs: serde_json::Map<String, Value> = crate::state::open(&st, "deliverables")
         .filter_map(|d| {
             let id = d["id"].as_str()?;
@@ -242,8 +242,8 @@ pub fn architecture() -> String {
 
 /// The workspace profile's `owner`, else the `**Name**:` line of
 /// `context/profile.md`, if either is filled in.
-fn profile_name(home: &Path) -> Option<String> {
-    if let Some(owner) = crate::state::profile(home)
+fn profile_name(home: &Path, ws: &Path) -> Option<String> {
+    if let Some(owner) = crate::state::profile(ws)
         .and_then(|p| p["owner"].as_str().map(str::to_owned))
         .filter(|o| !o.trim().is_empty())
     {

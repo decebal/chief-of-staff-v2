@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chief of Staff</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Chief of Staff</h1>
+    <nav>
+      <button class="tab active" data-view="today">Today</button>
+      <button class="tab" data-view="agents">Agents <span id="agent-count"></span></button>
+    </nav>
+    <div id="where">
+      <span class="label">workspace</span>
+      <button id="ws-path" class="link" title="Change workspace"></button>
+      <span id="slots" class="muted"></span>
+    </div>
+  </header>
+
+  <dialog id="ws-dialog">
+    <form method="dialog" id="ws-form">
+      <label>Workspace directory (holds <code>.chief-of-staff/</code>)
+        <input id="ws-input" type="text" spellcheck="false" required>
+      </label>
+      <p id="ws-error" class="error" hidden></p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="ws-save" value="save" class="primary">Use it</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <main>
+    <section id="view-today" class="view active">
+      <iframe id="report" title="Today's report" sandbox="allow-scripts allow-popups"></iframe>
+    </section>
+
+    <section id="view-agents" class="view">
+      <aside id="spawn">
+        <h2>New agents</h2>
+        <form id="spawn-form">
+          <label>Harness
+            <select id="harness">
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
+          </label>
+          <label>Repo
+            <select id="repo"><option value="">(scratch directory, no repo)</option></select>
+          </label>
+          <label class="check"><input id="worktree" type="checkbox" checked> own detached worktree, seeded</label>
+          <label>Title <input id="title" type="text" placeholder="first line of the prompt"></label>
+          <label>Prompt <textarea id="prompt" rows="9" required></textarea></label>
+          <div class="row">
+            <label>Copies <input id="count" type="number" min="1" max="32" value="1"></label>
+            <label>Deadline (s) <input id="deadline" type="number" min="60" max="7200" value="1800"></label>
+            <label>Budget ($) <input id="budget" type="number" min="0.5" step="0.5" value="5"></label>
+          </div>
+          <label>Model <input id="model" type="text" placeholder="harness default"></label>
+          <button type="submit" class="primary">Spawn</button>
+          <p id="spawn-msg" class="muted"></p>
+        </form>
+
+        <h2>From the latest run</h2>
+        <div class="row">
+          <button data-from="brief" class="from">Brief actions</button>
+          <button data-from="review" class="from">Review goals</button>
+        </div>
+        <ol id="tasks"></ol>
+      </aside>
+
+      <div id="agents-pane">
+        <table id="agents">
+          <thead>
+            <tr><th>id</th><th>harness</th><th>status</th><th>title</th><th>tools</th><th>cost</th><th>latest</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p id="no-agents" class="muted">No agents yet. Spawn one on the left; each runs in its own worktree under a supervisor that outlives this window.</p>
+
+        <div id="detail" hidden>
+          <div class="detail-head">
+            <h2 id="d-title"></h2>
+            <div>
+              <button id="d-stop">Stop</button>
+              <button id="d-clean">Clean</button>
+              <button id="d-close" class="link">close</button>
+            </div>
+          </div>
+          <dl id="d-meta"></dl>
+          <p id="d-error" class="error" hidden></p>
+          <details id="d-seed" hidden><summary>seed log</summary><pre id="d-seed-log"></pre></details>
+          <pre id="d-log"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -22,7 +22,10 @@ const ASK_DEADLINE: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 pub struct Config {
+    /// The clone: `context/`, `out/`, agent files.
     pub home: PathBuf,
+    /// Holds `.chief-of-staff/` (profile and state); the kit's `--workspace`.
+    pub workspace: PathBuf,
     pub projects: PathBuf,
     /// Overrides each run's default spending cap, in USD.
     pub budget: Option<f64>,
@@ -228,26 +231,30 @@ fn facts_block(facts: &Facts) -> String {
 }
 
 /// Everything a brain reads that is not a connector: `context/`, then facts.
-fn grounding(home: &std::path::Path, facts: &Facts) -> String {
-    format!("{}\n\n{}", crate::context::block(home), facts_block(facts))
+fn grounding(home: &Path, workspace: &Path, facts: &Facts) -> String {
+    format!(
+        "{}\n\n{}",
+        crate::context::block(home, workspace),
+        facts_block(facts)
+    )
 }
 
 impl Config {
     /// Collects local facts once and keeps them, so the report charts the same
     /// numbers the brain was shown.
     pub fn gather(&self) -> Result<Facts> {
-        let d = dates_in(&self.home);
+        let d = dates_in(&self.workspace);
         let facts = gather::collect(
             &self.projects,
             &d.week_ago,
-            context::local_reads(&self.home),
+            context::local_reads(&self.workspace),
         );
         store::save_json(&self.home, Kind::Facts, &d.day, &facts)?;
         Ok(facts)
     }
 
     pub fn brief_run(&self, facts: &Facts) -> Run<'static> {
-        let d = dates_in(&self.home);
+        let d = dates_in(&self.workspace);
         let prompt = format!(
             "Today is {}, now {}. Write today's brief: at most {MAX_ACTIONS} actions that need \
              the user and at most {MAX_CHANGES} verified changes. Meetings that have already \
@@ -255,7 +262,7 @@ impl Config {
             d.day,
             d.now,
             d.calendar_rule(),
-            grounding(&self.home, facts)
+            grounding(&self.home, &self.workspace, facts)
         );
         Run {
             json_schema: Some(reports::brief_schema()),
@@ -264,13 +271,13 @@ impl Config {
     }
 
     pub fn review_run(&self, facts: &Facts) -> Run<'static> {
-        let d = dates_in(&self.home);
+        let d = dates_in(&self.workspace);
         let prompt = format!(
             "Today is {}. Run the weekly steering review: each confirmed goal in the workspace \
              (or context/goals.md when there is no workspace), worked back into this week's \
              proposed deliverables.\n\n{}",
             d.day,
-            grounding(&self.home, facts)
+            grounding(&self.home, &self.workspace, facts)
         );
         Run {
             json_schema: Some(reports::review_schema()),
@@ -279,7 +286,7 @@ impl Config {
     }
 
     pub fn brief(&self) -> Result<Done<Brief>> {
-        let d = dates_in(&self.home);
+        let d = dates_in(&self.workspace);
         let day = d.day.clone();
         let invoked = crate::state::now();
         let facts = self.gather()?;
@@ -287,19 +294,19 @@ impl Config {
             self.structured(&self.brief_run(&facts))?;
         hold_to_limits(&mut brief);
         hold_to_window(&mut brief, &d);
-        cover_every_source(&mut brief, &self.home, &facts, &called);
+        cover_every_source(&mut brief, &self.workspace, &facts, &called);
         let markdown = brief.to_markdown(&day);
         let saved = store::save(&self.home, Kind::Briefs, &day, &brief, &markdown)?;
         crate::history::record(&self.home, &day, &facts, Some(&brief))?;
         let tracked = report_tracking(track::record_run(
-            &self.home,
+            &self.workspace,
             "brief",
             &brief.coverage,
             brief.gaps.len(),
             &invoked,
             &crate::state::now(),
         ));
-        crate::report::build(&self.home)?;
+        crate::report::build(&self.home, &self.workspace)?;
         Ok(Done {
             value: brief,
             markdown,
@@ -310,7 +317,7 @@ impl Config {
     }
 
     pub fn review(&self) -> Result<Done<Review>> {
-        let day = dates_in(&self.home).day;
+        let day = dates_in(&self.workspace).day;
         let invoked = crate::state::now();
         let facts = self.gather()?;
         let (mut review, cost, _): (Review, f64, _) = self.structured(&self.review_run(&facts))?;
@@ -319,14 +326,14 @@ impl Config {
         let saved = store::save(&self.home, Kind::Reviews, &day, &review, &markdown)?;
         crate::history::record(&self.home, &day, &facts, None)?;
         let tracked = report_tracking(track::record_run(
-            &self.home,
+            &self.workspace,
             "review",
             &[],
             review.gaps.len(),
             &invoked,
             &crate::state::now(),
         ));
-        crate::report::build(&self.home)?;
+        crate::report::build(&self.home, &self.workspace)?;
         Ok(Done {
             value: review,
             markdown,
@@ -354,7 +361,7 @@ impl Config {
         let started = Instant::now();
         let left = || ASK_DEADLINE.saturating_sub(started.elapsed());
         let audit = claude::audit_path(&self.home);
-        let d = dates_in(&self.home);
+        let d = dates_in(&self.workspace);
 
         let (route, mut cost, _): (Route, f64, _) = self.structured(&Self::route_run(question))?;
         let prompt = format!(
@@ -363,10 +370,11 @@ impl Config {
             route.framing,
             grounding(
                 &self.home,
+                &self.workspace,
                 &gather::collect(
                     &self.projects,
                     &d.week_ago,
-                    context::local_reads(&self.home)
+                    context::local_reads(&self.workspace)
                 )
             )
         );
@@ -456,7 +464,7 @@ impl Config {
             prompt,
             json_schema: None,
             max_budget_usd: budget,
-            tools: Toolset::Brain(crate::context::tools(&self.home)),
+            tools: Toolset::Brain(crate::context::tools(&self.workspace)),
             deadline: Duration::from_secs(300),
             denied: crate::context::denied_servers(&self.home),
         }

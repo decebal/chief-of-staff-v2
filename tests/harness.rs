@@ -17,6 +17,7 @@ fn spec(harness: Harness, prompt: &str) -> Spec {
         deadline_secs: 60,
         budget_usd: 2.5,
         created: String::new(),
+        slots: None,
     }
 }
 

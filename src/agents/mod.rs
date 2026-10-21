@@ -22,6 +22,8 @@ use crate::reports::{Brief, Review};
 use crate::store::{self, Kind};
 
 pub mod harness;
+pub mod seed;
+pub mod slots;
 mod supervise;
 pub mod view;
 
@@ -80,6 +82,9 @@ pub struct Spec {
     pub deadline_secs: u64,
     pub budget_usd: f64,
     pub created: String,
+    /// Agents allowed to run at once while this one waits; fixed at spawn.
+    #[serde(default)]
+    pub slots: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -87,6 +92,10 @@ pub struct Spec {
 pub enum Status {
     #[default]
     Starting,
+    /// Waiting for a run slot (`slots::run_slots`).
+    Queued,
+    /// Its worktree is being seeded.
+    Seeding,
     Running,
     Done,
     Failed,
@@ -98,7 +107,10 @@ pub enum Status {
 
 impl Status {
     pub fn terminal(self) -> bool {
-        !matches!(self, Self::Starting | Self::Running)
+        !matches!(
+            self,
+            Self::Starting | Self::Queued | Self::Seeding | Self::Running
+        )
     }
 }
 
@@ -106,6 +118,8 @@ impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Starting => "starting",
+            Self::Queued => "queued",
+            Self::Seeding => "seeding",
             Self::Running => "running",
             Self::Done => "done",
             Self::Failed => "failed",
@@ -138,6 +152,12 @@ pub struct State {
     /// The final message.
     pub summary: String,
     pub error: Option<String>,
+    /// What seeding did to the worktree, in order.
+    #[serde(default)]
+    pub seeded: Vec<String>,
+    /// Build tools shimmed onto the harness's PATH to share the build slot.
+    #[serde(default)]
+    pub shimmed: Vec<String>,
 }
 
 pub struct Request {
@@ -153,6 +173,8 @@ pub struct Request {
     pub prompt: String,
     pub deadline: Duration,
     pub budget_usd: f64,
+    /// Run slots; `None` takes `slots::run_slots()`.
+    pub slots: Option<usize>,
 }
 
 /// One agent prompt from a saved run, numbered as the report numbers it.
@@ -168,7 +190,7 @@ pub fn root(home: &Path) -> PathBuf {
     home.join("out/agents")
 }
 
-fn dir(home: &Path, id: &str) -> PathBuf {
+pub fn dir(home: &Path, id: &str) -> PathBuf {
     root(home).join(id)
 }
 
@@ -301,6 +323,7 @@ pub fn spawn(home: &Path, req: Request, cos: &Path) -> Result<Spec> {
         deadline_secs: req.deadline.min(CEILING).as_secs(),
         budget_usd: req.budget_usd,
         created: jiff::Timestamp::now().to_string(),
+        slots: Some(req.slots.unwrap_or_else(slots::run_slots)),
     };
     write_json(&d.join("spec.json"), &spec)?;
     write_state(&home, &id, &State::default())?;

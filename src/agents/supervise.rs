@@ -5,14 +5,16 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use super::{CEILING, State, Status, dir, harness, read, started_at, write_state};
+use super::{
+    CEILING, Spec, State, Status, dir, harness, read, seed, slots, started_at, write_state,
+};
 use crate::proc;
 
 /// How often the owner checks for a stop request while the harness is quiet.
@@ -42,10 +44,31 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
         .append(true)
         .open(d.join("events.jsonl"))?;
     let stderr = std::fs::File::create(d.join("harness.stderr.log"))?;
+    let stopped = || STOP.load(Ordering::SeqCst) || stop_file.exists();
 
     state.supervisor = Some(std::process::id() as i32);
+    state.status = Status::Queued;
+    write_state(home, id, &state)?;
+    let slots = spec.slots.unwrap_or_else(slots::run_slots);
+    let _slot = loop {
+        if let Some(held) = slots::try_run_slot(home, slots)? {
+            break held;
+        }
+        if stopped() {
+            let _ = std::fs::remove_file(&stop_file);
+            return finish(home, id, &mut state, Status::Killed, None);
+        }
+        std::thread::sleep(TICK);
+    };
+
     state.started = Some(jiff::Timestamp::now().to_string());
-    let mut cmd = harness::command(&spec);
+    let mut cmd = match prepare(home, id, &spec, &mut state) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            finish(home, id, &mut state, Status::Failed, Some(format!("{e:#}")))?;
+            return Err(e);
+        }
+    };
     cmd.stdout(Stdio::piped()).stderr(stderr);
     let mut child = match proc::spawn_grouped(&mut cmd) {
         Ok(c) => c,
@@ -62,7 +85,6 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
 
     let rx = proc::lines(child.stdout.take().context("harness stdout not piped")?);
     let until = Instant::now() + Duration::from_secs(spec.deadline_secs).min(CEILING);
-    let stopped = || STOP.load(Ordering::SeqCst) || stop_file.exists();
     let mut failed = None;
     let mut flushed = Instant::now();
 
@@ -95,6 +117,29 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
     proc::kill_group(pgid);
     let _ = std::fs::remove_file(&stop_file);
     finish(home, id, &mut state, status, failed)
+}
+
+/// Seeds a worktree agent's tree, then builds the harness command with the
+/// build-tool shims first on its PATH.
+fn prepare(home: &Path, id: &str, spec: &Spec, state: &mut State) -> Result<Command> {
+    let d = dir(home, id);
+    if let (true, Some(repo)) = (spec.worktree, spec.repo.as_deref()) {
+        state.status = Status::Seeding;
+        write_state(home, id, state)?;
+        state.seeded =
+            seed::run(repo, &spec.workdir, &d.join("seed.log")).context("seed the worktree")?;
+    }
+    let mut cmd = harness::command(spec);
+    let path = std::env::var("PATH").unwrap_or_default();
+    let bin = d.join("bin");
+    let cos = std::env::current_exe().context("locate the cos binary")?;
+    state.shimmed = slots::write_shims(&bin, &cos, &slots::build_lock()?, &path)?;
+    if !state.shimmed.is_empty() {
+        let joined =
+            std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path)))?;
+        cmd.env("PATH", joined);
+    }
+    Ok(cmd)
 }
 
 /// The harness closed its stdout: wait for it to exit, still honouring the

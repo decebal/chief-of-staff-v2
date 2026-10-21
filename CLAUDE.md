@@ -25,7 +25,8 @@ manifests at its version (`tests/kit.rs`).
 
 ## What the brains read
 
-- `.chief-of-staff/` — `profile.json` (approved sources, timezone,
+- `<workspace>/.chief-of-staff/` (`--workspace` / `COS_WORKSPACE`, default
+  the home) — `profile.json` (approved sources, timezone,
   tracking approval) and `state.json` (goals, KPIs, deliverables,
   commitments, sources, runs, incidents, journal). Written only through
   `state::commit` or the kit's `state.py`. Gitignored.
@@ -46,7 +47,8 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 | `src/track.rs` | what `cos` commits: run receipts and source coverage (tracking approved only); review proposals as a candidate |
 | `src/handoff.rs` | the kit's nine-part handoff, from a tracked deliverable |
 | `src/proc.rs` | bounded child processes: one deadline, kill the group, reap |
-| `src/agents/` | `cos agents`: spawn, supervise, monitor and stop Claude Code / Codex agents in worktrees |
+| `src/agents/` | `cos agents`: spawn, supervise, monitor and stop Claude Code / Codex agents in worktrees; `slots.rs` run slots and the build lock, `seed.rs` worktree seeding |
+| `apps/desktop/` | Tauri 2 app over the `cos` lib: the report on `cosreport://` in a sandboxed iframe, the agent launcher; `tests/ipc.rs` drives its commands on the mock runtime |
 | `src/gather.rs` | `cn` / `gh` facts collected without the model |
 | `src/pipeline.rs` | brief, review, ask — shared by CLI and MCP |
 | `src/reports.rs` | typed outputs + their JSON Schemas |
@@ -64,6 +66,7 @@ home. Never capture a real `COS_HOME`: briefs quote mail, calendar and tickets.
 
 ```bash
 task test               # fmt, clippy -D warnings, tests (the kit's Python tests run inside)
+task desktop            # build cos, run the desktop app; `task desktop-check` lints it
 task kit OUT=/abs.zip   # package the starter kit from release-files.json
 task setup              # first run: seed context/, build, install
 task install-mcp        # register with Claude Desktop + Codex

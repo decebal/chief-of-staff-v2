@@ -81,6 +81,19 @@ tasks:
     cmds:
       - timeout 120 python3 -B scripts/release.py --output "{{.OUT}}"
 
+  desktop:
+    desc: The desktop app (report + agent launcher); builds cos first so it can supervise agents
+    cmds:
+      # One after the other: the desktop build would otherwise race this one.
+      - timeout 300 cargo build --bin cos
+      - timeout 300 cargo run -p cos-desktop
+
+  desktop-check:
+    desc: fmt, clippy and build of the desktop crate
+    cmds:
+      - timeout 300 cargo fmt -p cos-desktop --check
+      - timeout 300 cargo clippy -p cos-desktop -- -D warnings
+
   dash:
     desc: Live dashboard on http://127.0.0.1:8790; an open tab reloads after every run
     cmds:
