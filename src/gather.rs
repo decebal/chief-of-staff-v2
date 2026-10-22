@@ -147,6 +147,13 @@ pub fn merged_between(from: &str, to: &str, gaps: &mut Vec<String>) -> Vec<Pr> {
 /// `merged_since` is a `YYYY-MM-DD` lower bound for merged PRs. Runs nothing
 /// that `reads` does not allow.
 pub fn collect(projects: &Path, merged_since: &str, reads: Reads) -> Facts {
+    collect_for(projects, merged_since, reads, &[])
+}
+
+/// As `collect`, with merged PRs limited to `owners` (GitHub orgs or users)
+/// when any are given. Search caps a query at 100 results, and other orgs'
+/// PRs would otherwise crowd the work ones out of a busy week.
+pub fn collect_for(projects: &Path, merged_since: &str, reads: Reads, owners: &[String]) -> Facts {
     let mut f = Facts {
         collected_at: jiff::Zoned::now().to_string(),
         merged_since: merged_since.to_owned(),
@@ -172,11 +179,10 @@ pub fn collect(projects: &Path, merged_since: &str, reads: Reads) -> Facts {
         "PRs awaiting my review",
         &mut f.gaps,
     );
-    f.merged = gh(
-        &["--author=@me", "--merged", &merged_at],
-        "merged PRs",
-        &mut f.gaps,
-    );
+    let owner_args: Vec<String> = owners.iter().map(|o| format!("--owner={o}")).collect();
+    let mut merged_args = vec!["--author=@me", "--merged", merged_at.as_str()];
+    merged_args.extend(owner_args.iter().map(String::as_str));
+    f.merged = gh(&merged_args, "merged PRs", &mut f.gaps);
     f
 }
 

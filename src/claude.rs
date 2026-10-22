@@ -99,6 +99,8 @@ pub struct Outcome {
     pub num_turns: u32,
     #[serde(default)]
     pub permission_denials: Vec<Value>,
+    #[serde(default)]
+    pub api_error_status: Option<Box<Value>>,
     /// Every tool the run called, from the stream rather than the model's word.
     #[serde(skip)]
     pub called: Vec<String>,
@@ -197,9 +199,36 @@ pub fn execute(home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
     outcome.called = called;
     log.outcome(&outcome)?;
     if outcome.is_error {
-        bail!("{}: {}", outcome.subtype, outcome.errors.join("; "));
+        bail!("{}", error_reason(&outcome));
     }
     Ok(outcome)
+}
+
+/// Why a run failed, in the user's terms. An auth failure arrives as
+/// `subtype: "success"` with no `errors` and the reason only in `result`.
+pub fn error_reason(o: &Outcome) -> String {
+    let mut parts: Vec<String> = o.errors.clone();
+    if let Some(r) = o.result.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        parts.push(r.to_owned());
+    }
+    if let Some(s) = o.api_error_status.as_ref().filter(|s| !s.is_null()) {
+        parts.push(format!("API status {s}"));
+    }
+    let reason = if parts.is_empty() {
+        "no reason given".to_owned()
+    } else {
+        parts.join("; ")
+    };
+    let lower = reason.to_lowercase();
+    let hint = if ["login", "api key", "authenticat", "401", "oauth"]
+        .iter()
+        .any(|k| lower.contains(k))
+    {
+        " — Claude Code is not logged in: run `claude` and `/login`, then retry"
+    } else {
+        ""
+    };
+    format!("claude run failed ({}): {reason}{hint}", o.subtype)
 }
 
 struct AuditLog {

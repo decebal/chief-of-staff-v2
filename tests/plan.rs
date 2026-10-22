@@ -56,6 +56,20 @@ fn email_source() -> Value {
 }
 
 #[test]
+fn work_orgs_come_only_from_an_approved_code_source() {
+    let p = profile(
+        false,
+        json!([
+            { "id": "code", "service": "GitHub", "readsApproved": true, "orgs": ["northwind", " "] },
+            { "id": "old", "service": "GitHub", "readsApproved": false, "orgs": ["sidecorp"] },
+            { "id": "email", "service": "Gmail", "readsApproved": true, "orgs": ["mailcorp"] }
+        ]),
+    );
+    assert_eq!(state::code_orgs(&p), ["northwind"]);
+    assert!(state::code_orgs(&profile(false, email_source())).is_empty());
+}
+
+#[test]
 fn without_a_workspace_every_read_only_connector_stays() {
     let h = home("legacy");
     assert_eq!(context::tools(&h.0), READ_ONLY.to_vec());

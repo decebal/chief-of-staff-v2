@@ -244,10 +244,11 @@ impl Config {
     /// numbers the brain was shown.
     pub fn gather(&self) -> Result<Facts> {
         let d = dates_in(&self.workspace);
-        let facts = gather::collect(
+        let facts = gather::collect_for(
             &self.projects,
             &d.week_ago,
             context::local_reads(&self.workspace),
+            &context::work_orgs(&self.workspace),
         );
         store::save_json(&self.home, Kind::Facts, &d.day, &facts)?;
         Ok(facts)
@@ -371,10 +372,11 @@ impl Config {
             grounding(
                 &self.home,
                 &self.workspace,
-                &gather::collect(
+                &gather::collect_for(
                     &self.projects,
                     &d.week_ago,
-                    context::local_reads(&self.workspace)
+                    context::local_reads(&self.workspace),
+                    &context::work_orgs(&self.workspace),
                 )
             )
         );

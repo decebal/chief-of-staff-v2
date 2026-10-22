@@ -199,6 +199,13 @@ pub fn local_kind(service: &str) -> Option<Local> {
     }
 }
 
+/// GitHub orgs the profile counts as work; empty without a workspace.
+pub fn work_orgs(home: &Path) -> Vec<String> {
+    state::profile(home)
+        .map(|p| state::code_orgs(&p))
+        .unwrap_or_default()
+}
+
 /// Which local facts `cos` may collect. With a workspace profile, only those
 /// of an approved `code` / `tasks` source; without one, both, as before the
 /// workspace existed.
