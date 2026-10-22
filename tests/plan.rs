@@ -110,7 +110,7 @@ fn the_workspace_is_inlined_with_open_work_only() {
     d["deliverables"].as_array_mut().unwrap().push(done);
     state::commit(&h.0, &d, 0, "Fixture").unwrap();
 
-    let block = context::block(&h.0);
+    let block = context::block(&h.0, &h.0);
     assert!(block.contains("### .chief-of-staff/state.json (open work)"));
     assert!(block.contains("Give the workshop deck to the reviewer"));
     assert!(

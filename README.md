@@ -76,7 +76,7 @@ task schedule               # weekdays 08:30 brief, Fridays 16:00 review
 | **Reads** | only the sources your profile approves: Calendar, Gmail, Jira/Confluence and Notion through your claude.ai connectors; open, review-requested and merged PRs (`gh`); ready tasks (`cn`) |
 | **Writes** | `out/`: briefs, reviews, facts, the history ledger, dated HTML reports. `.chief-of-staff/state.json`: a run receipt and source coverage, only if you approved local tracking, through the same validated, journaled commit as the kit's helper. Nothing is sent, merged, commented or edited — tools outside an explicit allowlist are denied, and the brains get no file tools (the workspace and `context/` are inlined) |
 | **Handoffs** | each action and each goal ships a self-contained prompt for Claude Code or Codex that stops before anything outward-facing; `cos handoff D-1` builds the kit's nine-part handoff for a tracked deliverable |
-| **Agents** | `cos agents spawn --from brief --item 2` or `--deliverable D-1` runs it: Claude Code or Codex in its own worktree, sandboxed with no network, under a supervisor with a deadline and a spend cap; `cos agents watch` / `tail -f` / `kill` |
+| **Agents** | `cos agents spawn --from brief --item 2` or `--deliverable D-1` runs it: Claude Code or Codex in its own worktree, sandboxed with no network, under a supervisor with a deadline and a spend cap; `cos agents watch` / `tail -f` / `kill`. Past `COS_AGENT_SLOTS` (default: cores / 4) agents wait `queued`; each worktree is seeded first (`.cos/seed`, else a clonefile of `target/` and `node_modules/`, else a lockfile install), and agents' `cargo` runs take one machine-wide build lock |
 | **Charts** | numbers from the facts `cos` collects, never from the model; hand-built SVG with a validated palette, light and dark |
 | **Diagrams** | roadmap, goals flywheel and architecture via [Markdy](https://markdy.com) 1.5.7, vendored inline, generated from data |
 | **Archives** | one row per day plus every merged PR, seeded with the last year; `cos dash` serves it live |
@@ -88,6 +88,7 @@ task schedule               # weekdays 08:30 brief, Fridays 16:00 review
 |---|---|
 | **Terminal** | `cos brief` · `cos review` · `cos ask "release review or bug fix today?"` · `cos state …` · `cos handoff D-1` · `cos report` · `cos agents …` |
 | **Browser, live** | `cos dash` → `127.0.0.1:8790`, reloads after every run or state change; `/agents` for running agents; localhost only |
+| **Desktop** | `task desktop`: the report plus an agent launcher (any number, any repo, Claude Code or Codex) with live status, logs, stop and clean, in one Tauri window ([apps/desktop](apps/desktop/README.md)) |
 | **Claude Desktop · Codex** | `task install-mcp` registers `cos mcp`: `latest_brief` / `latest_review` / `plan` / `handoff` / `agents` (free), `brief` / `review` / `ask` / `spin_off` (paid), `stop_agent` |
 | **claude.ai** | `cos tunnel`: a Cloudflare quick tunnel to a read-only server that can't start paid runs or read the workspace |
 | **Claude Code · Codex skill** | the starter skill, from `.claude-plugin/` or `.agents/plugins/` in this repo; the three agents are installed into `~/.claude/agents/` |
@@ -115,6 +116,7 @@ cos --home /tmp/cos-demo dash
 |---|---|
 | [Usage](docs/usage.md) | customising, Codex timeouts, the remote connector |
 | [Design](docs/design.md) | how it works, and the measurements behind each decision |
+| [Desktop plan](docs/plans/2026-10-21-desktop-app.md) | the workspace split, the agent governor and seeding, and the Tauri app |
 
 ## License
 

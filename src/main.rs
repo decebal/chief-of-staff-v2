@@ -16,6 +16,10 @@ struct Cli {
     /// Repo holding CLAUDE.md, .claude/agents and context/.
     #[arg(long, env = "COS_HOME", default_value_os_t = default_home())]
     home: PathBuf,
+    /// Directory holding `.chief-of-staff/` (profile and state), as the kit's
+    /// `state.py --workspace`. Default: `--home`.
+    #[arg(long, env = "COS_WORKSPACE")]
+    workspace: Option<PathBuf>,
     /// Directory scanned for chronis repos.
     #[arg(long, env = "COS_PROJECTS", default_value_os_t = home_dir().join("Projects"))]
     projects: PathBuf,
@@ -30,6 +34,12 @@ struct Cli {
     no_open: bool,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+impl Cli {
+    fn ws(&self) -> PathBuf {
+        self.workspace.clone().unwrap_or_else(|| self.home.clone())
+    }
 }
 
 #[derive(Subcommand)]
@@ -71,7 +81,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AgentCmd,
     },
-    /// The private workspace state in `<home>/.chief-of-staff/`: the same
+    /// The private workspace state in `<workspace>/.chief-of-staff/`: the same
     /// files and rules as the starter kit's `state.py`.
     State {
         #[command(subcommand)]
@@ -165,12 +175,23 @@ enum AgentCmd {
     },
     #[command(hide = true)]
     Supervise { id: String },
+    /// The build-tool shim: wait for the machine-wide build lock, then exec.
+    #[command(hide = true)]
+    BuildSlot {
+        #[arg(long)]
+        lock: PathBuf,
+        program: PathBuf,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let ws = cli.ws();
     let cfg = Config {
         home: cli.home.clone(),
+        workspace: ws.clone(),
         projects: cli.projects.clone(),
         budget: cli.budget,
     };
@@ -193,9 +214,9 @@ fn main() -> Result<()> {
             }
             show_report(&cli)
         }
-        Cmd::State { cmd } => state_cmd(&cli.home, cmd),
+        Cmd::State { cmd } => state_cmd(&cli.home, &ws, cmd),
         Cmd::Handoff { id } => {
-            let (st, profile) = workspace(&cli.home)?;
+            let (st, profile) = workspace(&ws)?;
             print!(
                 "{}",
                 cos::handoff::deliverable(&st, profile.as_ref(), id, cos::handoff::Receiver::Chat)?
@@ -204,7 +225,7 @@ fn main() -> Result<()> {
         }
         Cmd::Report => {
             fold_latest_run(&cli.home)?;
-            cos::report::build(&cli.home)?;
+            cos::report::build(&cli.home, &ws)?;
             show_report(&cli)
         }
         Cmd::Dash { port } => {
@@ -215,7 +236,7 @@ fn main() -> Result<()> {
                     let _ = cos::report::open(std::path::Path::new(&url));
                 });
             }
-            runtime()?.block_on(cos::dash::serve(cli.home.clone(), *port))
+            runtime()?.block_on(cos::dash::serve(cli.home.clone(), ws, *port))
         }
         Cmd::Ask { question } => {
             let done = cfg.ask(&question.join(" "))?;
@@ -250,7 +271,7 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
             let picked: Vec<agents::Task> = match (from, prompt) {
                 _ if deliverable.is_some() => {
                     let id = deliverable.as_deref().unwrap_or_default();
-                    let (st, profile) = workspace(home)?;
+                    let (st, profile) = workspace(&cli.ws())?;
                     let prompt = cos::handoff::deliverable(
                         &st,
                         profile.as_ref(),
@@ -314,6 +335,7 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
                         prompt: t.prompt,
                         deadline: Duration::from_secs(*deadline),
                         budget_usd: cli.budget.unwrap_or(5.0),
+                        slots: None,
                     },
                     &cos,
                 )?;
@@ -387,15 +409,20 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
             Ok(())
         }
         AgentCmd::Supervise { id } => agents::supervise(home, id),
+        AgentCmd::BuildSlot {
+            lock,
+            program,
+            args,
+        } => agents::slots::exec_holding_build_slot(lock, program, args),
     }
 }
 
 /// `cos state …`. Prints JSON like the kit's `state.py`, and stops with
 /// `Stopped: <reason>` and exit 1 on any refusal.
-fn state_cmd(home: &std::path::Path, cmd: &StateCmd) -> Result<()> {
+fn state_cmd(home: &std::path::Path, ws: &std::path::Path, cmd: &StateCmd) -> Result<()> {
     use cos::state;
     let run = || -> Result<serde_json::Value> {
-        let ws = std::path::absolute(home)?;
+        let ws = std::path::absolute(ws)?;
         match cmd {
             StateCmd::Init => state::initialize(&ws),
             StateCmd::Read => {
@@ -415,7 +442,7 @@ fn state_cmd(home: &std::path::Path, cmd: &StateCmd) -> Result<()> {
                     cos::store::latest::<cos::reports::Review>(home, cos::store::Kind::Reviews)?
                         .context("no saved review; run `cos review`")?;
                 let c = cos::track::proposal_candidate(
-                    home,
+                    &ws,
                     &r.value.proposed,
                     &format!("cos review {}", r.day),
                 )?;

@@ -7,6 +7,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/decebal/chief-of-staff-v2"
 publish = false
 
+[workspace]
+members = [".", "apps/desktop"]
+
 [lib]
 path = "src/lib.rs"
 

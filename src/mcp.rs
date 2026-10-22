@@ -181,7 +181,7 @@ impl Cos {
     /// local only.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn plan(&self) -> CallToolResult {
-        match crate::state::read(&self.cfg.home) {
+        match crate::state::read(&self.cfg.workspace) {
             Ok(Some(st)) => {
                 let open =
                     |c: &str| -> Vec<Value> { crate::state::open(&st, c).cloned().collect() };
@@ -207,12 +207,12 @@ impl Cos {
     /// only; starts and sends nothing. Free; local only.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn handoff(&self, Parameters(args): Parameters<DeliverableId>) -> CallToolResult {
-        let st = match crate::state::read(&self.cfg.home) {
+        let st = match crate::state::read(&self.cfg.workspace) {
             Ok(Some(st)) => st,
             Ok(None) => return failed("no .chief-of-staff workspace"),
             Err(e) => return failed(e),
         };
-        let profile = crate::state::profile(&self.cfg.home);
+        let profile = crate::state::profile(&self.cfg.workspace);
         match crate::handoff::deliverable(
             &st,
             profile.as_ref(),
@@ -271,6 +271,7 @@ impl Cos {
                     prompt: task.prompt,
                     deadline: std::time::Duration::from_secs(1800),
                     budget_usd: budget,
+                    slots: None,
                 },
                 &cos,
             )

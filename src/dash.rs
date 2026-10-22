@@ -14,28 +14,22 @@ use hyper::{Request, Response, StatusCode, body::Incoming};
 
 use crate::report;
 
-/// Directories whose writes mean "a run happened".
-const WATCHED: &[&str] = &[
-    "out/briefs",
-    "out/reviews",
-    "out/facts",
-    "out/history",
-    crate::state::DIR,
-];
+/// Directories under the home whose writes mean "a run happened".
+const WATCHED: &[&str] = &["out/briefs", "out/reviews", "out/facts", "out/history"];
 
-pub async fn serve(home: PathBuf, port: u16) -> Result<()> {
+pub async fn serve(home: PathBuf, ws: PathBuf, port: u16) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let allowed: Arc<[String]> = [format!("127.0.0.1:{port}"), format!("localhost:{port}")].into();
-    let home: Arc<Path> = home.into();
+    let paths: Arc<(PathBuf, PathBuf)> = Arc::new((home, ws));
     eprintln!("cos: dashboard on http://{addr}  (Ctrl-C to stop)");
     loop {
         let (stream, _) = listener.accept().await?;
-        let (home, allowed) = (home.clone(), allowed.clone());
+        let (paths, allowed) = (paths.clone(), allowed.clone());
         tokio::spawn(async move {
             let svc = hyper::service::service_fn(move |req| {
-                let (home, allowed) = (home.clone(), allowed.clone());
-                async move { Ok::<_, Infallible>(route(&home, &allowed, req)) }
+                let (paths, allowed) = (paths.clone(), allowed.clone());
+                async move { Ok::<_, Infallible>(route(&paths.0, &paths.1, &allowed, req)) }
             });
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
@@ -44,7 +38,12 @@ pub async fn serve(home: PathBuf, port: u16) -> Result<()> {
     }
 }
 
-fn route(home: &Path, allowed: &[String], req: Request<Incoming>) -> Response<Full<Bytes>> {
+fn route(
+    home: &Path,
+    ws: &Path,
+    allowed: &[String],
+    req: Request<Incoming>,
+) -> Response<Full<Bytes>> {
     // Only localhost Host headers: a DNS-rebound name pointing at 127.0.0.1
     // must not read the brief.
     let host = req
@@ -57,11 +56,11 @@ fn route(home: &Path, allowed: &[String], req: Request<Incoming>) -> Response<Fu
     }
     let path = req.uri().path();
     match path {
-        "/" => match report::data(home, true).and_then(|d| report::render(&d)) {
+        "/" => match report::data(home, ws, true).and_then(|d| report::render(&d)) {
             Ok(html) => respond(StatusCode::OK, "text/html; charset=utf-8", html.into()),
             Err(e) => text(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
         },
-        "/version" => text(StatusCode::OK, &version(home)),
+        "/version" => text(StatusCode::OK, &version(home, ws)),
         "/agents" => match crate::agents::list(home) {
             Ok(list) => respond(
                 StatusCode::OK,
@@ -95,15 +94,22 @@ pub fn archived(home: &Path, path: &str) -> Option<PathBuf> {
     ok.then(|| home.join("out/reports").join(format!("{day}.html")))
 }
 
-/// Newest modification time and file count across the watched directories.
-fn version(home: &Path) -> String {
+/// Newest modification time and file count across the watched directories
+/// and the workspace's `.chief-of-staff/`.
+pub fn version(home: &Path, ws: &Path) -> String {
+    let dirs = WATCHED
+        .iter()
+        .map(|d| home.join(d))
+        .chain([ws.join(crate::state::DIR)]);
+    stamp(dirs)
+}
+
+/// Newest modification time and entry count across `dirs`; missing ones count
+/// as empty.
+pub fn stamp(dirs: impl IntoIterator<Item = PathBuf>) -> String {
     let (mut newest, mut count) = (0u128, 0usize);
-    for dir in WATCHED {
-        for entry in std::fs::read_dir(home.join(dir))
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
+    for dir in dirs {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             count += 1;
             if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
                 newest = newest.max(

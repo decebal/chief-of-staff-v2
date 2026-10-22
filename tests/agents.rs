@@ -58,6 +58,7 @@ fn request(harness: Harness, program: &str, repo: Option<PathBuf>, prompt: &str)
         prompt: prompt.into(),
         deadline: Duration::from_secs(30),
         budget_usd: 1.0,
+        slots: None,
     }
 }
 
