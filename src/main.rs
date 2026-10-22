@@ -52,6 +52,9 @@ enum Cmd {
     Ask { question: Vec<String> },
     /// Rebuild the HTML report from saved runs and open it. Free; calls nothing.
     Report,
+    /// Check that unattended runs can log in: which credential they use, and a
+    /// one-word Claude call to prove it (about $0.01).
+    Auth,
     /// Serve the dashboard live on localhost; an open tab reloads after every run.
     Dash {
         #[arg(long, default_value_t = 8790)]
@@ -187,7 +190,26 @@ enum AgentCmd {
 }
 
 fn main() -> Result<()> {
+    let auth = cos::auth::load();
     let cli = Cli::parse();
+    let result = run(&cli, auth);
+    // launchd runs with stderr redirected to a file; a failure there must
+    // still reach the user the morning it happens.
+    if let Err(e) = &result {
+        use std::io::IsTerminal;
+        if !std::io::stderr().is_terminal() && matches!(cli.cmd, Cmd::Brief | Cmd::Review) {
+            let what = if matches!(cli.cmd, Cmd::Brief) {
+                "brief"
+            } else {
+                "review"
+            };
+            cos::auth::notify(&format!("cos {what} failed"), &format!("{e:#}"));
+        }
+    }
+    result
+}
+
+fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
     let ws = cli.ws();
     let cfg = Config {
         home: cli.home.clone(),
@@ -203,7 +225,7 @@ fn main() -> Result<()> {
             let done = cfg.brief()?;
             finish(&done.markdown, done.cost_usd, done.saved.as_deref())?;
             tracked(done.tracked.as_ref());
-            show_report(&cli)
+            show_report(cli)
         }
         Cmd::Review => {
             let done = cfg.review()?;
@@ -212,8 +234,9 @@ fn main() -> Result<()> {
             if !done.value.proposed.is_empty() {
                 eprintln!("proposals: `cos state propose` writes them as a candidate to review");
             }
-            show_report(&cli)
+            show_report(cli)
         }
+        Cmd::Auth => auth_check(&cli.home, auth),
         Cmd::State { cmd } => state_cmd(&cli.home, &ws, cmd),
         Cmd::Handoff { id } => {
             let (st, profile) = workspace(&ws)?;
@@ -226,7 +249,7 @@ fn main() -> Result<()> {
         Cmd::Report => {
             fold_latest_run(&cli.home)?;
             cos::report::build(&cli.home, &ws)?;
-            show_report(&cli)
+            show_report(cli)
         }
         Cmd::Dash { port } => {
             if !cli.no_open {
@@ -249,7 +272,7 @@ fn main() -> Result<()> {
             public_host,
         } => runtime()?.block_on(mcp::http(cfg, addr, token, public_host.clone())),
         Cmd::Tunnel { port } => runtime()?.block_on(cos::tunnel::run(cfg, *port)),
-        Cmd::Agents { cmd } => agents_cmd(&cli, cmd),
+        Cmd::Agents { cmd } => agents_cmd(cli, cmd),
     }
 }
 
@@ -497,6 +520,44 @@ fn fold_latest_run(home: &std::path::Path) -> Result<()> {
         &facts.value,
         brief.as_ref().map(|b| &b.value),
     )?;
+    Ok(())
+}
+
+/// Proves the credential an unattended run would use: a one-word call with
+/// the same project settings a brief uses.
+fn auth_check(home: &std::path::Path, source: cos::auth::Source) -> Result<()> {
+    println!("credential: {}", source.describe());
+    let mut cmd = std::process::Command::new("claude");
+    cmd.current_dir(home).args([
+        "-p",
+        "Reply with ok",
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "project",
+        "--no-session-persistence",
+        "--model",
+        "haiku",
+        "--max-budget-usd",
+        "0.1",
+    ]);
+    let out = cos::proc::run(&mut cmd, std::time::Duration::from_secs(60))?;
+    let outcome: cos::claude::Outcome = serde_json::from_str(out.stdout.trim())
+        .with_context(|| format!("claude gave no result: {}", out.stderr.trim()))?;
+    if outcome.is_error {
+        anyhow::bail!("{}", cos::claude::error_reason(&outcome));
+    }
+    println!("login works (cost ${:.3})", outcome.total_cost_usd);
+    if source == cos::auth::Source::Interactive {
+        println!(
+            "warning: scheduled runs fail when this login expires. Fix: `claude setup-token`, then\n  \
+             security add-generic-password -s {} -a \"$USER\" -w",
+            cos::auth::KEYCHAIN_SERVICE
+        );
+    }
     Ok(())
 }
 

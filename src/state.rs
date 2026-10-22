@@ -704,6 +704,24 @@ pub fn approved_sources(profile: &Value) -> Vec<Source> {
         .collect()
 }
 
+/// GitHub orgs that count as this user's work, from the `orgs` list on
+/// approved `code` sources. Empty means every org counts.
+pub fn code_orgs(profile: &Value) -> Vec<String> {
+    profile["sources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["readsApproved"] == json!(true))
+        .filter(|s| {
+            s["service"].as_str().and_then(crate::context::local_kind)
+                == Some(crate::context::Local::Code)
+        })
+        .flat_map(|s| s["orgs"].as_array().into_iter().flatten())
+        .filter_map(|o| o.as_str().map(str::trim).filter(|o| !o.is_empty()))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The profile's IANA timezone, when set and known.
 pub fn timezone(profile: &Value) -> Option<jiff::tz::TimeZone> {
     profile["timezone"]

@@ -64,6 +64,7 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         "facts": store::latest::<Facts>(home, Kind::Facts)?.map(|s| s.value),
         "history": history::load(home),
         "backfilled": history::backfilled(home),
+        "work_orgs": crate::context::work_orgs(ws),
         "archive": archive(home),
         "diagrams": diagrams,
         "workspace": workspace(ws),

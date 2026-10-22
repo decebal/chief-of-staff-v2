@@ -417,6 +417,13 @@ const DATA = "__COS_DATA__";
   // Local calendar date; toISOString() is UTC and shifts evening days back one.
   const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const merged = (facts && facts.merged) || [];
+  // "Shipped" counts only the orgs the profile names as work (`orgs` on the
+  // code source); with none named, every org counts.
+  const workOrgs = (DATA.work_orgs || []).map((o) => o.toLowerCase());
+  const inWork = (repo) => !workOrgs.length || workOrgs.includes(String(repo).split("/")[0].toLowerCase());
+  const shipped = merged.filter((p) => inWork(p.repo));
+  const workLabel = (DATA.work_orgs || []).join(", ");
+  if (workLabel) $("chart-merged").previousElementSibling.textContent = `Shipped to ${workLabel}, last 7 days`;
   const reviewQ = (facts && facts.review_requested) || [];
   const tasks = (facts && facts.tasks) || [];
 
@@ -426,13 +433,13 @@ const DATA = "__COS_DATA__";
   $("wins").innerHTML = changes.length
     ? changes.map((c) => { const [m, l] = KIND[c.kind] || ["•", c.kind];
         return `<li><span class="mark${c.kind === "risk" ? " bad" : ""}">${m}</span><b>${esc(l)}</b> ${esc(c.what)}<div class="muted" style="font-size:12px">${link(c.source)}</div></li>`; }).join("")
-    : (merged.length ? `<li class="muted" style="font-size:12px">Merged this week, all repos. A brief names the changes that matter.</li>` : "") +
-      merged.slice(0, 5).map((p) => `<li><span class="mark">✓</span><b>${esc(p.repo)}#${p.number}</b> ${esc(p.title)}</li>`).join("") || `<li class="empty">Nothing verified yet. Run <code>cos brief</code>.</li>`;
+    : (shipped.length ? `<li class="muted" style="font-size:12px">Merged this week${workLabel ? ` in ${esc(workLabel)}` : ", all repos"}. A brief names the changes that matter.</li>` : "") +
+      shipped.slice(0, 5).map((p) => `<li><span class="mark">✓</span><b>${esc(p.repo)}#${p.number}</b> ${esc(p.title)}</li>`).join("") || `<li class="empty">Nothing verified yet. Run <code>cos brief</code>.</li>`;
 
   const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return d; });
   const key = ymd;
   const byDay = Object.fromEntries(days.map((d) => [key(d), []]));
-  merged.forEach((p) => { const k = (p.closed || p.updated || "").slice(0, 10); if (byDay[k]) byDay[k].push(p); });
+  shipped.forEach((p) => { const k = (p.closed || p.updated || "").slice(0, 10); if (byDay[k]) byDay[k].push(p); });
   chart($("chart-merged"), () => columns($("chart-merged"), days.map((d) => {
     const ps = byDay[key(d)];
     return { label: d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" }), short: d.toLocaleDateString(undefined, { weekday: "short" }),
@@ -725,12 +732,12 @@ const DATA = "__COS_DATA__";
 
   {
     const counts = {};
-    H.merged.forEach((m) => { counts[m.day] = (counts[m.day] || 0) + 1; });
+    H.merged.filter((m) => inWork(m.repo)).forEach((m) => { counts[m.day] = (counts[m.day] || 0) + 1; });
     const days = H.days;
     const pts = (f) => days.map((d) => ({ label: d.date, v: f(d) })).filter((p) => p.v != null);
     const arch = (DATA.archive || []).map((d) => `<li><a href="reports/${esc(d)}.html">${esc(d)}</a></li>`).join("");
     $("history").innerHTML = `
-      <section class="card"><h3>Shipped, last 12 months</h3><div class="chart" id="chart-heat"></div></section>
+      <section class="card"><h3>Shipped${workLabel ? ` to ${esc(workLabel)}` : ""}, last 12 months</h3><div class="chart" id="chart-heat"></div></section>
       <section class="grid g2">
         <div class="card"><h3>Review queue (PRs waiting on you)</h3><div class="chart" id="trend-queue"></div></div>
         <div class="card"><h3>Ready tasks across repos</h3><div class="chart" id="trend-ready"></div></div>
