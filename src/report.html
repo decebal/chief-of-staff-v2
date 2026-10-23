@@ -211,14 +211,29 @@ const DATA = "__COS_DATA__";
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const human = (value) => String(value ?? "unknown").replaceAll("_", " ");
   const brief = DATA.brief && DATA.brief.report;
   const review = DATA.review && DATA.review.report;
   const facts = DATA.facts;
+  const workspace = DATA.workspace;
+  const savedRuns = workspace && !workspace.error ? workspace.runs || [] : [];
+  const latestSaved = savedRuns.at(-1);
+  const savedWeekly = [...savedRuns].reverse().find((r) => r.strategicReview);
+  const savedAssessment = [...savedRuns].reverse().find((r) => r.mode !== "publication_receipt") || latestSaved;
+  const savedTime = (at) => {
+    if (!at) return "not recorded";
+    const date = new Date(at);
+    return Number.isNaN(date.getTime()) ? String(at) : new Intl.DateTimeFormat("en-GB", {
+      timeZone: workspace.timezone || "UTC", dateStyle: "medium", timeStyle: "short",
+    }).format(date) + ` ${workspace.timezone || "UTC"}`;
+  };
+  const savedChanges = latestSaved && latestSaved.verifiedChanges || [];
 
   // ---- header & theme
   $("title").textContent = DATA.name ? `${DATA.name.split(" ")[0]}'s chief of staff` : "Chief of staff";
   $("meta").textContent = `Generated ${DATA.generated_at}` +
     (DATA.brief ? ` · brief ${DATA.brief.day}` : "") + (DATA.review ? ` · review ${DATA.review.day}` : "");
+  if (latestSaved) $("meta").textContent = `Assessment ${savedTime(savedAssessment.finishedAt || savedAssessment.invokedAt)} · latest update ${savedTime(latestSaved.finishedAt || latestSaved.invokedAt)} · revision ${workspace.revision}`;
   const themes = ["auto", "light", "dark"];
   const stored = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
   let theme = stored("cos-theme") || "auto";
@@ -430,7 +445,9 @@ const DATA = "__COS_DATA__";
   // ---- what changed: verified deltas from the brief and the review
   const KIND = { done: ["✓", "DONE"], unblocked: ["↗", "UNBLOCKED"], risk: ["!", "RISK"], time_changed: ["↻", "TIME CHANGED"] };
   const changes = [...((brief && brief.what_changed) || []), ...((review && review.what_changed) || [])];
-  $("wins").innerHTML = changes.length
+  $("wins").innerHTML = savedRuns.length
+    ? savedChanges.map((c) => `<li><b>${esc(human(c.boundary || "verified change"))}</b> ${esc(c.summary)}<div class="ids">${link(c.reference)}${c.commit ? ` · ${esc(c.commit.slice(0, 9))}` : ""}</div></li>`).join("") || `<li class="empty">Latest assessment records no new verified changes.</li>`
+    : changes.length
     ? changes.map((c) => { const [m, l] = KIND[c.kind] || ["•", c.kind];
         return `<li><span class="mark${c.kind === "risk" ? " bad" : ""}">${m}</span><b>${esc(l)}</b> ${esc(c.what)}<div class="muted" style="font-size:12px">${link(c.source)}</div></li>`; }).join("")
     : (shipped.length ? `<li class="muted" style="font-size:12px">Merged this week${workLabel ? ` in ${esc(workLabel)}` : ", all repos"}. A brief names the changes that matter.</li>` : "") +
@@ -440,7 +457,10 @@ const DATA = "__COS_DATA__";
   const key = ymd;
   const byDay = Object.fromEntries(days.map((d) => [key(d), []]));
   shipped.forEach((p) => { const k = (p.closed || p.updated || "").slice(0, 10); if (byDay[k]) byDay[k].push(p); });
-  chart($("chart-merged"), () => columns($("chart-merged"), days.map((d) => {
+  if (savedRuns.length) {
+    const diagnosis = (workspace.deliverables || []).find((d) => d.readinessEvidence)?.readinessEvidence.visibilityDiagnosis;
+    $("chart-merged").parentElement.innerHTML = `<h3>Delivery evidence</h3>${diagnosis ? `<p>Source repair: <b>${esc(human(diagnosis.sourceRepair))}</b></p><p>PR gates: <b>${esc(human(diagnosis.gateStatus || "unverified"))}</b></p><p>Release: <b>${diagnosis.releaseVerified === true ? "verified" : "unverified"}</b> · installed verification: <b>${diagnosis.installedVerified === true ? "verified" : "open"}</b></p><div class="ids">${link(diagnosis.pullRequest)}</div>` : `<p class="empty">Delivery evidence not recorded.</p>`}`;
+  } else chart($("chart-merged"), () => columns($("chart-merged"), days.map((d) => {
     const ps = byDay[key(d)];
     return { label: d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" }), short: d.toLocaleDateString(undefined, { weekday: "short" }),
       v: ps.length, note: ps.slice(0, 3).map((p) => `${p.repo.split("/")[1]}#${p.number}`).join(", ") };
@@ -453,12 +473,29 @@ const DATA = "__COS_DATA__";
     ? soon.map((m) => { const d = Math.round((Date.parse(m.date) - Date.parse(DATA.today)) / 864e5);
         return `<li><span class="date">${esc(m.date)}</span>${esc(m.what)}<div class="countdown">${d === 0 ? "today" : d > 0 ? `in ${d} day${d > 1 ? "s" : ""}` : `${-d} days ago`} · ${esc(m.source)}</div></li>`; }).join("")
     : `<li class="empty">No dated milestones yet. Add dates to context/goals.md.</li>`;
+  if (savedRuns.length) $("soon").innerHTML = `<li>${esc(workspace.schedule?.cadence || "Assessment cadence not recorded")}</li>` + (workspace.goals || []).filter((g) => g.status === "active" && g.targetDate).map((g) => `<li><span class="date">${esc(g.targetDate)}</span>${esc(g.title)}<div class="countdown">Outcome horizon · ${esc(g.priority || "active")}</div></li>`).join("");
 
   // ---- left brain: tactician
   const list = (items, fn, cls = "plain") => items && items.length ? `<ul class="${cls}">${items.map((x) => `<li>${fn(x)}</li>`).join("")}</ul>` : `<p class="empty">None.</p>`;
   const tile = (v, l) => `<div class="card tile"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`;
 
-  if (!brief) {
+  const savedCoverage = (sources) => `<section class="card"><h3>Evidence coverage</h3>${list(sources, (s) => `<b>${esc(s.id || s.source)}</b> · ${esc(s.health)} · ${esc(s.review)}<div class="sub">Checked ${esc(savedTime(s.checkedAt))}</div><p>${esc(s.note)}</p>`)}</section>`;
+  const savedReadiness = () => (workspace.deliverables || []).filter((d) => d.readinessEvidence && !["complete", "cancelled", "retired"].includes(d.status)).map((d) => {
+    const e = d.readinessEvidence, v = e.visibilityDiagnosis || {};
+    return `<section class="card" data-readiness="${esc(d.id)}"><h3>${esc(d.title)} · readiness</h3><p class="headline">${esc(d.status)} · customer acceptance ${d.completionEvidence ? "recorded" : "unverified"}</p>
+      <p>Participant: <b>${esc(d.customerIdentity || "not selected")}</b> · customer team: <b>${esc(d.dashboardTeam || "not selected")}</b></p>
+      <p>Saved producer: ${esc(e.skill?.slug)} ${esc(e.skill?.version)} · ${esc(e.workflow?.slug)} ${esc(e.workflow?.version)}</p>
+      <p class="sub">Producer observed ${esc(savedTime(e.checkedAt))}; no fresh customer runtime read. Required sources: ${(e.skill?.required || []).map(esc).join(", ") || "not recorded"}. Supplemental: ${(e.skill?.supplemental || []).map(esc).join(", ") || "none recorded"}.</p>
+      <p>Repair ${esc(human(v.sourceRepair))} · PR gates ${esc(human(v.gateStatus || "unverified"))} · release ${v.releaseVerified === true ? "verified" : "unverified"} · installed verification ${v.installedVerified === true ? "verified" : "open"}.</p>
+      <p class="ids">${link(v.pullRequest || d.source)}${v.repairCommit ? ` · ${esc(v.repairCommit.slice(0, 9))}` : ""}</p>
+      <h3>Acceptance evidence</h3>${list(d.evidenceGates, (g) => `<b>${esc(g.id.replaceAll("-", " "))}</b> · ${esc(g.status)}${g.reference ? `<div class="ids">${link(g.reference)}</div>` : ""}`)}
+      <h3>Blockers and next actions</h3>${list((d.readinessBlockers || []).filter((b) => !["complete", "resolved", "retired", "cancelled"].includes(b.status)), (b) => `<b>${esc(b.id)} · ${esc(b.summary)}</b><p><b>Next:</b> ${esc(b.nextAction)}</p><div class="sub">${esc(b.owner || "owner unassigned")} · ${esc(b.status)} · ${link(d.source)}</div>`)}
+      <details><summary>Customer proof finish line</summary><p>${esc(d.doneWhen)}</p></details></section>`;
+  }).join("");
+
+  if (latestSaved) {
+    $("left").innerHTML = `<section class="card"><h3>Latest saved assessment</h3><p>Assessment ${esc(savedTime(savedAssessment.finishedAt || savedAssessment.invokedAt))} · ${esc(savedAssessment.status)} coverage.</p><p>Latest evidence update ${esc(savedTime(latestSaved.finishedAt || latestSaved.invokedAt))} · ${esc(human(latestSaved.mode))}.</p><p class="sub">Saved assessments from this chat; no additional model run. Unknown outcome readings remain unknown.</p></section>${savedReadiness()}${savedCoverage(workspace.sources || [])}`;
+  } else if (!brief) {
     $("left").innerHTML = `<section class="card"><p class="empty">No brief saved yet.</p>${promptBlock("cos brief", "Command")}</section>`;
   } else {
     const nowMin = (() => { const [h, m] = DATA.now.split(":"); return +h * 60 + +m; })();
@@ -522,7 +559,16 @@ const DATA = "__COS_DATA__";
 
   // ---- right brain: strategist
   const glyph = { rock: "●", sand: "◐", water: "○" };
-  if (!review) {
+  if (savedWeekly) {
+    const s = savedWeekly.strategicReview;
+    $("right").innerHTML = `<section class="card"><h3>Saved strategic review</h3><p class="sub">${esc(savedTime(savedWeekly.finishedAt || savedWeekly.invokedAt))} · ${esc(s.window)}</p><p class="headline">${esc(s.recommendation)}</p><p>${esc(s.baselineLimit)}</p></section>
+      <section class="card"><h3>Latest evidence since review</h3>${list(savedChanges, (c) => `${esc(c.summary)}<div class="ids">${esc(human(c.boundary))} · ${link(c.reference)}</div>`)}</section>
+      <section class="card"><h3>Outcome evidence at review</h3>${list(Object.entries(s.goalEvidence || {}), ([goal, evidence]) => `<b>${esc(goal)}</b><p>${esc(evidence)}</p>`)}</section>
+      <section class="card"><h3>Assumptions challenged</h3>${list(s.challengedAssumptions, esc)}</section>
+      <section class="card"><h3>Proposed deliverables · not commitments</h3>${list(s.proposedDeliverables, (p) => `<b>${esc(p.title)}</b> · ${esc(p.status)}<p>${esc(p.doneWhen)}</p><div class="sub">${esc(p.ownerBasis || "unassigned")} · ${esc(p.confidence || "unknown")} · ${link(p.source)}</div>`)}</section>`;
+  } else if (latestSaved) {
+    $("right").innerHTML = `<section class="card"><h3>Saved strategic review</h3><p>No strategic review recorded yet.</p><p>${esc(workspace.schedule?.weeklyReview || "Review cadence not recorded")}</p></section>`;
+  } else if (!review) {
     $("right").innerHTML = `<section class="card"><p class="empty">No weekly review saved yet. It runs Fridays at 16:00, or now:</p>${promptBlock("cos review", "Command")}</section>
       <section class="card"><h3>Goals flywheel</h3><div class="diagram" id="diagram-flywheel"></div></section>`;
   } else {
@@ -569,7 +615,7 @@ const DATA = "__COS_DATA__";
   // ---- plan: the workspace state (.chief-of-staff/state.json)
   {
     const W = DATA.workspace;
-    const TERM = ["complete", "cancelled"];
+    const TERM = ["complete", "cancelled", "retired"];
     if (!W) {
       $("plan").innerHTML = `<section class="card"><p class="empty">No workspace yet. Goals, KPIs and this week's deliverables live in
         <code>.chief-of-staff/</code>, created once and filled in with you, one question at a time.</p>
@@ -584,7 +630,7 @@ const DATA = "__COS_DATA__";
         const pct = known && k.target ? Math.max(0, Math.min(100, ((k.current - (k.baseline || 0)) / ((k.target - (k.baseline || 0)) || 1)) * 100)) : null;
         return `<div class="kpi"><span>${esc(k.name)} <span class="muted">· ${esc(k.reportingWindow || "no window")}${k.evidenceAt ? " · " + esc(String(k.evidenceAt).slice(0, 10)) : ""}</span>
           ${pct != null ? `<div class="bar" role="img" aria-label="${Math.round(pct)}% of target"><i style="width:${pct}%"></i></div>` : ""}</span>
-          <b>${known ? esc(k.current) : "unknown"} / ${esc(k.target ?? "?")} ${esc(k.unit)}</b></div>`;
+          <b>${known ? esc(k.current) : "unknown"} / ${esc(k.target ?? "?")} ${esc(k.unit)}${k.targetBasis === "proposed" || k.status === "proposed" ? " (proposed · later phase)" : ""}</b></div>`;
       };
       const openGoals = (W.goals || []).filter((g) => !TERM.includes(g.status));
       const items = (W.deliverables || []);
@@ -601,11 +647,13 @@ const DATA = "__COS_DATA__";
           ${tile(open.filter((d) => d.status === "blocked" || d.blocker).length, "blocked or with a blocker")}
           ${tile(commitments.length, "open commitments")}
         </section>
+        ${savedReadiness()}
         <section class="card"><h3>Goals · finish lines and KPIs</h3>
           ${openGoals.length ? openGoals.map((g) => `<div style="padding:10px 0;border-top:1px solid var(--grid)">
             <div><span class="ids">${esc(g.id)}</span> <span class="item">${esc(g.title)}</span> <span class="chip">${esc(g.status)}</span></div>
             <div class="sub">Finish line: ${esc(g.finishLine)}${g.targetDate ? ` · by ${esc(g.targetDate)}` : ""}${g.owner ? ` · ${esc(g.owner)}` : ""}</div>
-            ${(W.kpis || []).filter((k) => k.goalId === g.id).map(kpiLine).join("") || `<div class="kpi"><span class="muted">No KPI yet: progress is unknown, not zero.</span></div>`}
+            ${(W.kpis || []).filter((k) => k.goalId === g.id && !TERM.includes(k.status) && k.targetBasis !== "retired" && !k.excludeFromActiveScore && k.status !== "proposed" && k.targetBasis !== "proposed").map(kpiLine).join("") || `<div class="kpi"><span class="muted">No KPI yet: progress is unknown, not zero.</span></div>`}
+            ${(W.kpis || []).some((k) => k.goalId === g.id && (k.status === "proposed" || k.targetBasis === "proposed")) ? `<details><summary>Later proposals · outside first proof</summary>${(W.kpis || []).filter((k) => k.goalId === g.id && (k.status === "proposed" || k.targetBasis === "proposed") && !TERM.includes(k.status) && !k.excludeFromActiveScore).map(kpiLine).join("")}</details>` : ""}
           </div>`).join("") : `<p class="empty">No confirmed goals.</p>`}
         </section>
         <section class="card"><h3>This week · deliverables</h3>
@@ -631,7 +679,7 @@ const DATA = "__COS_DATA__";
                 <td class="${s.health === "healthy" ? "ok" : "bad"}">${esc(s.health)}</td><td>${esc(s.review)}${s.checkedAt ? `<div class="ids">checked ${esc(String(s.checkedAt).slice(0, 16))}</div>` : ""}</td>
                 <td class="ids">${esc(s.lastCompleteThrough || "never")}</td></tr>`).join("")}</table></div>` : `<p class="empty">No sources recorded.</p>`}
             ${incidents.length ? `<h3 style="margin-top:14px">Open incidents · stopped until resolved</h3>${list(incidents, (i) => `<b>${esc(i.sourceId)}</b> ${esc(i.kind)} <span class="ids">since ${esc(i.observedAt)}</span>`)}` : ""}
-            <p class="sub" style="margin-top:10px">Local tracking ${W.tracking ? "approved: <code>cos brief</code> records each run here" : "not approved: runs are not recorded"} · state revision ${esc(W.revision)}</p>
+            <p class="sub" style="margin-top:10px">Local tracking ${W.tracking ? "approved; saved assessments refresh this view" : "not approved: runs are not recorded"} · state revision ${esc(W.revision)}</p>
           </div>
         </section>`;
     }
@@ -730,7 +778,9 @@ const DATA = "__COS_DATA__";
     el.innerHTML = legend + `<div style="overflow-x:auto">${s}</div>` + tableView(["month", "merged"], Object.entries(months).sort().reverse());
   }
 
-  {
+  if (savedRuns.length) {
+    $("history").innerHTML = `<section class="card"><h3>Saved assessment history</h3><p class="sub">Historical evidence retains its original date. Newer receipts supersede earlier delivery claims.</p>${list([...savedRuns].reverse(), (r) => `<b>${esc(human(r.mode))}</b> · ${esc(savedTime(r.finishedAt || r.invokedAt))} · ${esc(r.status)}${r.report ? `<div class="ids">${link(r.report)}</div>` : ""}${list(r.coverage, (c) => `${esc(c.source)} · ${esc(c.review)}<p>${esc(c.note)}</p>`)}`)}</section>`;
+  } else {
     const counts = {};
     H.merged.filter((m) => inWork(m.repo)).forEach((m) => { counts[m.day] = (counts[m.day] || 0) + 1; });
     const days = H.days;

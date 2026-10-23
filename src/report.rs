@@ -80,11 +80,61 @@ fn workspace(ws: &Path) -> Value {
         Err(e) => return json!({ "error": format!("{e:#}") }),
     };
     let profile = crate::state::profile(ws);
+    let mut runs = st["runs"].as_array().cloned().unwrap_or_default();
+    runs.sort_by_key(|run| {
+        run["finishedAt"]
+            .as_str()
+            .or_else(|| run["invokedAt"].as_str())
+            .and_then(|at| at.parse::<jiff::Timestamp>().ok())
+    });
+    let kpis: Vec<_> = st["kpis"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|k| {
+            k["status"] != "retired"
+                && k["targetBasis"] != "retired"
+                && k["excludeFromActiveScore"] != true
+        })
+        .collect();
+    let mut sources = st["sources"].as_array().cloned().unwrap_or_default();
+    for source in &mut sources {
+        if let Some((run, coverage)) = runs.iter().rev().find_map(|run| {
+            run["coverage"].as_array()?.iter().find_map(|coverage| {
+                (coverage["source"] == source["id"]).then_some((run, coverage))
+            })
+        }) {
+            let at = run["finishedAt"]
+                .as_str()
+                .or_else(|| run["invokedAt"].as_str());
+            let received = at.and_then(|v| v.parse::<jiff::Timestamp>().ok());
+            let checked = source["checkedAt"]
+                .as_str()
+                .and_then(|v| v.parse::<jiff::Timestamp>().ok());
+            if received < checked {
+                continue;
+            }
+            for key in ["health", "review", "note"] {
+                if !coverage[key].is_null() {
+                    source[key] = coverage[key].clone();
+                }
+            }
+            if let Some(at) = at {
+                source["checkedAt"] = json!(at);
+            }
+        }
+    }
+    let mut handoff_state = st.clone();
+    handoff_state["kpis"] = json!(
+        kpis.iter()
+            .filter(|k| k["status"] != "proposed" && k["targetBasis"] != "proposed")
+            .collect::<Vec<_>>()
+    );
     let handoffs: serde_json::Map<String, Value> = crate::state::open(&st, "deliverables")
         .filter_map(|d| {
             let id = d["id"].as_str()?;
             let text = crate::handoff::deliverable(
-                &st,
+                &handoff_state,
                 profile.as_ref(),
                 id,
                 crate::handoff::Receiver::Chat,
@@ -96,12 +146,14 @@ fn workspace(ws: &Path) -> Value {
     json!({
         "revision": st["revision"],
         "goals": st["goals"],
-        "kpis": st["kpis"],
+        "kpis": kpis,
         "deliverables": st["deliverables"],
         "commitments": st["commitments"],
-        "sources": st["sources"],
+        "sources": sources,
         "incidents": st["incidents"],
-        "runs": st["runs"],
+        "runs": runs,
+        "timezone": profile.as_ref().and_then(|p| p["timezone"].as_str()),
+        "schedule": profile.as_ref().map(|p| &p["schedule"]),
         "handoffs": handoffs,
         "tracking": profile.as_ref().is_some_and(crate::state::tracking_approved),
     })
