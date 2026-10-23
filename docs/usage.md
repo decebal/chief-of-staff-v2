@@ -193,9 +193,12 @@ cos agents spawn --from review --item 1 --harness codex
 cos agents spawn --from brief --all           # one agent per action
 cos agents spawn --deliverable D-1            # the handoff for D-1, built from the state
 cos agents spawn --prompt "…" --repo ~/Projects/my-repo
+cos agents spawn --deliverable D-1 --check "task test" --scope src/   # hired against a contract
 cos agents watch                              # the table, redrawn until all finish
 cos agents tail -f <id>                       # one line per tool call or message
-cos agents show <id>                          # summary, cost, how to take it over
+cos agents show <id>                          # verdict, checks, diff, cost, how to take it over
+cos agents judge <id>                         # judge again, e.g. after finishing its work by hand
+cos agents scorecard                          # how agents did, by harness, model and repo
 cos agents kill <id>
 cos agents clean                              # remove finished worktrees (keeps any holding work)
 ```
@@ -210,6 +213,29 @@ cos agents clean                              # remove finished worktrees (keeps
   and leaves the draft for you, as every agent prompt asks.
 - **Limits**: `--deadline` seconds (default 1800, ceiling 7200) and
   `--budget` dollars for Claude (default $5). Codex has no spend flag.
+- **The hiring policy**: `context/agents.json` (seeded by `task setup`)
+  fills what a spawn leaves out, per repo directory name over `defaults`:
+  `checks`, `scope`, `deadline_secs`, `budget_usd`, and the watch limits
+  `stall_secs` (default 600) and `repeat` (default 5). Checks or scope given
+  on the spawn win whole; the policy never adds to them. An unknown field
+  makes `cos` ignore the file and say so, rather than hire on a typo.
+- **Trouble while it runs**: `stalled` (no output for `stall_secs`) and
+  `looping` (the same call, arguments and all, `repeat` times in a row) show
+  in the verdict column of `ls` and `/agents`, and in `show`. They flag; they
+  never stop an agent. Spend is not watched live: Claude reports its cost
+  only when it ends, and `--budget` already caps it.
+- **The scorecard**: every verdict is a line in `out/agents/ledger.jsonl`,
+  which `clean` leaves alone. `cos agents scorecard`, `/agents` and the MCP
+  `agents` tool group it by harness, model and repo: runs, accepted, needs
+  you, rejected, overclaimed, median cost and time.
+- **The verdict**: when an agent ends, `cos` judges it from what it left,
+  never from its summary. It lists the files that differ from the commit the
+  agent started from, re-runs each `--check` in the workdir itself (one 300 s
+  budget for all of them), and compares the diff with `--scope`. `accepted`:
+  every check passed and the diff is in scope. `needs_you`: nothing failed,
+  but there were no checks, no changes, or changes outside scope.
+  `rejected`: the agent did not finish, or a check failed; `rejected!` means
+  it claimed success anyway. `--deliverable` brings its `done_when`.
 - **Take over**: `cos agents show <id>` prints `claude --resume <session>` or
   `codex resume <session>` for the worktree.
 - **From Claude Desktop or Codex**: the `spin_off`, `agents` and `stop_agent`

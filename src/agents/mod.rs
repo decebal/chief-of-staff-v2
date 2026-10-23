@@ -22,11 +22,16 @@ use crate::reports::{Brief, Review};
 use crate::store::{self, Kind};
 
 pub mod harness;
+pub mod judge;
+pub mod ledger;
+pub mod policy;
 pub mod seed;
 pub mod slots;
 mod supervise;
 pub mod view;
+pub mod watch;
 
+pub use judge::{Contract, Outcome, Verdict};
 pub use supervise::supervise;
 
 /// No agent runs longer than this, whatever it asks for.
@@ -85,6 +90,12 @@ pub struct Spec {
     /// Agents allowed to run at once while this one waits; fixed at spawn.
     #[serde(default)]
     pub slots: Option<usize>,
+    /// What it is judged against when it ends.
+    #[serde(default)]
+    pub contract: Contract,
+    /// When the supervisor flags it as stalled or looping.
+    #[serde(default)]
+    pub limits: watch::Limits,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -158,6 +169,15 @@ pub struct State {
     /// Build tools shimmed onto the harness's PATH to share the build slot.
     #[serde(default)]
     pub shimmed: Vec<String>,
+    /// Set once it has ended and been judged; `None` while running or judging.
+    #[serde(default)]
+    pub verdict: Option<Verdict>,
+    /// Trouble showing right now; cleared when it passes.
+    #[serde(default)]
+    pub flags: Vec<watch::Flag>,
+    /// Every kind of trouble it showed at any point in the run.
+    #[serde(default)]
+    pub flagged: Vec<watch::Kind>,
 }
 
 pub struct Request {
@@ -175,6 +195,9 @@ pub struct Request {
     pub budget_usd: f64,
     /// Run slots; `None` takes `slots::run_slots()`.
     pub slots: Option<usize>,
+    pub contract: Contract,
+    /// Fields the caller chose; `context/agents.json` fills the rest.
+    pub explicit: policy::Explicit,
 }
 
 /// One agent prompt from a saved run, numbered as the report numbers it.
@@ -273,11 +296,13 @@ pub fn infer_repo(prompt: &str, projects: &Path) -> Option<PathBuf> {
 /// Creates the agent's directory and worktree, records its spec, and starts
 /// its supervisor detached. Returns once the supervisor is started; the agent
 /// itself runs in the background.
-pub fn spawn(home: &Path, req: Request, cos: &Path) -> Result<Spec> {
+pub fn spawn(home: &Path, mut req: Request, cos: &Path) -> Result<Spec> {
     if req.prompt.trim().is_empty() {
         bail!("empty prompt");
     }
     let home = std::path::absolute(home)?;
+    let explicit = req.explicit;
+    let limits = policy::load(&home).apply(&mut req, explicit);
     let id = new_id()?;
     let d = dir(&home, &id);
     std::fs::create_dir_all(&d)?;
@@ -298,7 +323,8 @@ pub fn spawn(home: &Path, req: Request, cos: &Path) -> Result<Spec> {
             )?;
             (tree, Some(base))
         }
-        (Some(repo), false) => (repo.clone(), None),
+        // The judge diffs against this; `clean` only reads it for worktrees.
+        (Some(repo), false) => (repo.clone(), git(repo, &["rev-parse", "HEAD"]).ok()),
         (None, _) => {
             let scratch = d.join("scratch");
             std::fs::create_dir_all(&scratch)?;
@@ -324,6 +350,8 @@ pub fn spawn(home: &Path, req: Request, cos: &Path) -> Result<Spec> {
         budget_usd: req.budget_usd,
         created: jiff::Timestamp::now().to_string(),
         slots: Some(req.slots.unwrap_or_else(slots::run_slots)),
+        contract: req.contract,
+        limits,
     };
     write_json(&d.join("spec.json"), &spec)?;
     write_state(&home, &id, &State::default())?;
@@ -401,6 +429,23 @@ fn reconcile(home: &Path, spec: &Spec, state: State) -> Result<State> {
     state.error = Some(note);
     write_state(home, &spec.id, &state)?;
     Ok(state)
+}
+
+/// Judges an ended agent again and records the new verdict, e.g. after its
+/// checks were fixed or its work was finished by hand.
+pub fn rejudge(home: &Path, id: &str) -> Result<Verdict> {
+    let (spec, mut state) = read(home, id)?;
+    if !state.status.terminal() {
+        bail!("{id} is {}; it is judged when it ends", state.status);
+    }
+    let bin = dir(home, id).join("bin");
+    let v = judge::judge(&spec, &state, bin.exists().then_some(bin.as_path()));
+    state.verdict = Some(v.clone());
+    write_state(home, id, &state)?;
+    if let Some(row) = ledger::row(&spec, &state) {
+        ledger::append(home, &row)?;
+    }
+    Ok(v)
 }
 
 /// Asks the supervisor to stop the agent, and waits up to `wait` for it to

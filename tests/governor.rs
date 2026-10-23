@@ -68,6 +68,8 @@ fn request(repo: Option<PathBuf>, prompt: &str, slots: usize) -> Request {
         deadline: Duration::from_secs(30),
         budget_usd: 1.0,
         slots: Some(slots),
+        contract: Default::default(),
+        explicit: Default::default(),
     }
 }
 

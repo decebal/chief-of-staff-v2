@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+use super::watch::Watch;
 use super::{
-    CEILING, Spec, State, Status, dir, harness, read, seed, slots, started_at, write_state,
+    CEILING, Spec, State, Status, dir, harness, judge, ledger, read, seed, slots, started_at,
+    write_state,
 };
 use crate::proc;
 
@@ -56,7 +58,7 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
         }
         if stopped() {
             let _ = std::fs::remove_file(&stop_file);
-            return finish(home, id, &mut state, Status::Killed, None);
+            return finish(home, &spec, &mut state, Status::Killed, None);
         }
         std::thread::sleep(TICK);
     };
@@ -65,7 +67,13 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
     let mut cmd = match prepare(home, id, &spec, &mut state) {
         Ok(cmd) => cmd,
         Err(e) => {
-            finish(home, id, &mut state, Status::Failed, Some(format!("{e:#}")))?;
+            finish(
+                home,
+                &spec,
+                &mut state,
+                Status::Failed,
+                Some(format!("{e:#}")),
+            )?;
             return Err(e);
         }
     };
@@ -73,7 +81,13 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
     let mut child = match proc::spawn_grouped(&mut cmd) {
         Ok(c) => c,
         Err(e) => {
-            finish(home, id, &mut state, Status::Failed, Some(format!("{e:#}")))?;
+            finish(
+                home,
+                &spec,
+                &mut state,
+                Status::Failed,
+                Some(format!("{e:#}")),
+            )?;
             return Err(e);
         }
     };
@@ -87,6 +101,7 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
     let until = Instant::now() + Duration::from_secs(spec.deadline_secs).min(CEILING);
     let mut failed = None;
     let mut flushed = Instant::now();
+    let mut watch = Watch::new(spec.limits, Instant::now());
 
     let status = loop {
         if stopped() {
@@ -98,25 +113,36 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
             proc::kill_and_reap(&mut child);
             break Status::TimedOut;
         }
+        let mut dirty = false;
         match rx.recv_timeout(left.min(TICK)) {
             Ok(line) => {
                 writeln!(events, "{line}")?;
-                apply(&mut state, harness::read(spec.harness, &line), &mut failed);
-                if flushed.elapsed() >= FLUSH {
-                    write_state(home, id, &state)?;
-                    flushed = Instant::now();
-                }
+                let tick = harness::read(spec.harness, &line);
+                watch.line(tick.call.as_deref(), Instant::now());
+                apply(&mut state, tick, &mut failed);
+                dirty = flushed.elapsed() >= FLUSH;
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 break exit(&mut child, &mut state, until, &stopped, failed.is_some());
             }
         }
+        let flags = watch.flags(Instant::now());
+        if flags != state.flags {
+            state.flags = flags;
+            state.flagged = watch.seen().to_vec();
+            dirty = true;
+        }
+        if dirty {
+            write_state(home, id, &state)?;
+            flushed = Instant::now();
+        }
     };
     // Whatever the harness started and left running goes with it.
     proc::kill_group(pgid);
     let _ = std::fs::remove_file(&stop_file);
-    finish(home, id, &mut state, status, failed)
+    state.flags.clear();
+    finish(home, &spec, &mut state, status, failed)
 }
 
 /// Seeds a worktree agent's tree, then builds the harness command with the
@@ -201,9 +227,11 @@ fn apply(state: &mut State, t: harness::Tick, failed: &mut Option<String>) {
     }
 }
 
+/// Records how the agent ended, then judges it. The outcome is on disk
+/// before the verdict, so a watcher sees the agent end while it is judged.
 fn finish(
     home: &Path,
-    id: &str,
+    spec: &Spec,
     state: &mut State,
     status: Status,
     failed: Option<String>,
@@ -216,5 +244,12 @@ fn finish(
         Status::Killed => Some("stopped on request".into()),
         _ => None,
     };
-    write_state(home, id, state)
+    write_state(home, &spec.id, state)?;
+    let bin = (!state.shimmed.is_empty()).then(|| dir(home, &spec.id).join("bin"));
+    state.verdict = Some(judge::judge(spec, state, bin.as_deref()));
+    write_state(home, &spec.id, state)?;
+    if let Some(row) = ledger::row(spec, state) {
+        ledger::append(home, &row)?;
+    }
+    Ok(())
 }

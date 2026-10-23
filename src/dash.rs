@@ -65,7 +65,11 @@ fn route(
             Ok(list) => respond(
                 StatusCode::OK,
                 "text/html; charset=utf-8",
-                crate::agents::view::html(&list).into(),
+                crate::agents::view::html(
+                    &list,
+                    &crate::agents::ledger::scorecard(&crate::agents::ledger::read(home)),
+                )
+                .into(),
             ),
             Err(e) => text(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
         },

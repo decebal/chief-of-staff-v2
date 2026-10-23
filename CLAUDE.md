@@ -47,7 +47,7 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 | `src/track.rs` | what `cos` commits: run receipts and source coverage (tracking approved only); review proposals as a candidate |
 | `src/handoff.rs` | the kit's nine-part handoff, from a tracked deliverable |
 | `src/proc.rs` | bounded child processes: one deadline, kill the group, reap |
-| `src/agents/` | `cos agents`: spawn, supervise, monitor and stop Claude Code / Codex agents in worktrees; `slots.rs` run slots and the build lock, `seed.rs` worktree seeding |
+| `src/agents/` | `cos agents`: spawn, supervise, monitor and stop Claude Code / Codex agents in worktrees; `slots.rs` run slots and the build lock, `seed.rs` worktree seeding, `judge.rs` the verdict from diff, checks and scope (never the agent's summary), `policy.rs` hiring defaults from `context/agents.json`, `watch.rs` stalled/looping flags from the stream, `ledger.rs` the verdict ledger and scorecard |
 | `apps/desktop/` | Tauri 2 app over the `cos` lib: the report on `cosreport://` in a sandboxed iframe, the agent launcher; `tests/ipc.rs` drives its commands on the mock runtime |
 | `src/gather.rs` | `cn` / `gh` facts collected without the model |
 | `src/pipeline.rs` | brief, review, ask — shared by CLI and MCP |

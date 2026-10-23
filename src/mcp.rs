@@ -69,6 +69,13 @@ pub struct SpinOffArgs {
     /// "claude" (default) or "codex".
     #[serde(default)]
     harness: Option<agents::Harness>,
+    /// Shell commands cos runs in the agent's workdir when it ends; each must
+    /// exit 0 for the verdict to be "accepted".
+    #[serde(default)]
+    checks: Vec<String>,
+    /// Paths the agent may change, relative to the repo; empty allows any.
+    #[serde(default)]
+    scope: Vec<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -237,7 +244,8 @@ impl Cos {
                         "harness": spec.harness, "workdir": spec.workdir, "state": st })
                     })
                     .collect();
-                CallToolResult::structured(json!({ "agents": rows }))
+                let scorecard = agents::ledger::scorecard(&agents::ledger::read(&self.cfg.home));
+                CallToolResult::structured(json!({ "agents": rows, "scorecard": scorecard }))
             }
             Err(e) => failed(e),
         }
@@ -252,6 +260,7 @@ impl Cos {
         let home = self.cfg.home.clone();
         let projects = self.cfg.projects.clone();
         let budget = self.cfg.budget.unwrap_or(5.0);
+        let explicit_budget = self.cfg.budget.is_some();
         let run = move || -> Result<agents::Spec> {
             let task = agents::tasks(&home, args.from)?
                 .into_iter()
@@ -272,6 +281,15 @@ impl Cos {
                     deadline: std::time::Duration::from_secs(1800),
                     budget_usd: budget,
                     slots: None,
+                    contract: agents::Contract {
+                        done_when: None,
+                        checks: args.checks,
+                        scope: args.scope,
+                    },
+                    explicit: agents::policy::Explicit {
+                        deadline: false,
+                        budget: explicit_budget,
+                    },
                 },
                 &cos,
             )

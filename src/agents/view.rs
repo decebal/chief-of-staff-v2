@@ -5,22 +5,23 @@ use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
-use super::{Harness, Spec, State, Status, harness};
+use super::{Harness, Spec, State, Status, harness, ledger};
 
 pub fn table(agents: &[(Spec, State)]) -> String {
     if agents.is_empty() {
         return "no agents yet — `cos agents spawn --from brief --item 1`\n".into();
     }
     let mut s = format!(
-        "{:<21} {:<9} {:<6} {:>5} {:>7}  {}\n",
-        "ID", "STATUS", "HARN", "TOOLS", "COST", "TITLE / LAST"
+        "{:<21} {:<9} {:<9} {:<6} {:>5} {:>7}  {}\n",
+        "ID", "STATUS", "VERDICT", "HARN", "TOOLS", "COST", "TITLE / LAST"
     );
     for (spec, st) in agents {
         let _ = writeln!(
             s,
-            "{:<21} {:<9} {:<6} {:>5} {:>7}  {}\n{:>53}{}",
+            "{:<21} {:<9} {:<9} {:<6} {:>5} {:>7}  {}\n{:>63}{}",
             spec.id,
             st.status.to_string(),
+            verdict_word(st),
             harness_name(spec.harness),
             st.tool_calls,
             cost(st),
@@ -81,8 +82,64 @@ pub fn show(spec: &Spec, st: &State) -> String {
         };
         let _ = writeln!(s, "take over: cd {} && {resume}", spec.workdir.display());
     }
+    let c = &spec.contract;
+    if let Some(d) = &c.done_when {
+        let _ = writeln!(s, "done when {d}");
+    }
+    if !c.scope.is_empty() {
+        let _ = writeln!(s, "scope    {}", c.scope.join(", "));
+    }
+    for f in &st.flags {
+        let _ = writeln!(s, "TROUBLE  {}: {}", f.kind, f.detail);
+    }
+    if st.flags.is_empty() && !st.flagged.is_empty() {
+        let kinds: Vec<String> = st.flagged.iter().map(ToString::to_string).collect();
+        let _ = writeln!(s, "flagged  {} during the run", kinds.join(", "));
+    }
+    match &st.verdict {
+        Some(v) => {
+            let _ = writeln!(
+                s,
+                "\nverdict  {}{}",
+                v.outcome,
+                if v.overclaimed {
+                    "  (it claimed success; the checks disagree)"
+                } else {
+                    ""
+                }
+            );
+            for r in &v.reasons {
+                let _ = writeln!(s, "  - {r}");
+            }
+            for k in &v.checks {
+                let _ = writeln!(s, "  {} {}", if k.passed { "ok  " } else { "FAIL" }, k.cmd);
+                if !k.passed && !k.tail.is_empty() {
+                    for line in k.tail.lines() {
+                        let _ = writeln!(s, "         {line}");
+                    }
+                }
+            }
+            let _ = writeln!(s, "  changed  {} file(s)", v.changed.len());
+            for f in &v.changed {
+                let mark = if v.out_of_scope.contains(f) {
+                    "  out of scope"
+                } else {
+                    ""
+                };
+                let _ = writeln!(s, "    {f}{mark}");
+            }
+        }
+        None if st.status.terminal() => {
+            let _ = writeln!(s, "\nverdict  judging…");
+        }
+        None => {}
+    }
     if !st.summary.is_empty() {
-        let _ = writeln!(s, "\n{}", st.summary.trim());
+        let _ = writeln!(
+            s,
+            "\nits own summary (not evidence):\n{}",
+            st.summary.trim()
+        );
     }
     s
 }
@@ -117,18 +174,19 @@ pub fn activity(events: &Path, harness: Harness, from: u64) -> (Vec<String>, u64
 }
 
 /// `/agents` for `cos dash`: a self-refreshing table, nothing to install.
-pub fn html(agents: &[(Spec, State)]) -> String {
+pub fn html(agents: &[(Spec, State)], scores: &[ledger::Score]) -> String {
     let mut rows = String::new();
     for (spec, st) in agents {
         let _ = write!(
             rows,
-            "<tr class=\"{cls}\"><td><code>{id}</code></td><td>{status}</td><td>{harn}</td>\
+            "<tr class=\"{cls}\"><td><code>{id}</code></td><td>{status}</td><td>{verdict}</td><td>{harn}</td>\
              <td class=n>{tools}</td><td class=n>{cost}</td>\
              <td><b>{title}</b><br><span class=dim>{last}</span></td>\
              <td class=dim><code>{dir}</code></td></tr>",
             cls = if st.status.terminal() { "done" } else { "live" },
             id = esc(&spec.id),
             status = st.status,
+            verdict = verdict_word(st),
             harn = harness_name(spec.harness),
             tools = st.tool_calls,
             cost = esc(&cost(st)),
@@ -153,9 +211,94 @@ th{{font-weight:600;color:var(--dim);font-size:12px}} .n{{text-align:right;font-
 .dim{{color:var(--dim)}} tr.live td:nth-child(2){{color:var(--live);font-weight:600}} code{{font-size:12px}}
 </style>
 <main><h1>Agents</h1><p>{live} running · {total} total · refreshes every 3 s · <a href="/">report</a></p>
-<div class=wrap><table><tr><th>ID</th><th>Status</th><th>Harness</th><th class=n>Tools</th><th class=n>Cost</th><th>Task / latest</th><th>Workdir</th></tr>
-{rows}</table></div></main>"#,
+<div class=wrap><table><tr><th>ID</th><th>Status</th><th>Verdict</th><th>Harness</th><th class=n>Tools</th><th class=n>Cost</th><th>Task / latest</th><th>Workdir</th></tr>
+{rows}</table></div>{score}</main>"#,
         total = agents.len(),
+        score = scorecard_html(scores),
+    )
+}
+
+/// The verdict once judged; while running, the trouble it shows, if any.
+fn verdict_word(st: &State) -> String {
+    match &st.verdict {
+        Some(v) if v.overclaimed => format!("{}!", v.outcome),
+        Some(v) => v.outcome.to_string(),
+        None if st.status.terminal() => "judging".into(),
+        None => match st.flags.first() {
+            Some(f) => f.kind.to_string(),
+            None => "—".into(),
+        },
+    }
+}
+
+/// `cos agents scorecard`: how agents hired on the same terms did.
+pub fn scorecard(scores: &[ledger::Score]) -> String {
+    if scores.is_empty() {
+        return "no judged agents yet\n".into();
+    }
+    let mut s = format!(
+        "{:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>7} {:>6}\n",
+        "HARN", "MODEL", "REPO", "RUNS", "ACCEPTED", "NEEDS", "REJECT", "OVER", "COST", "SECS"
+    );
+    for sc in scores {
+        let _ = writeln!(
+            s,
+            "{:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>7} {:>6}",
+            harness_name(sc.harness),
+            sc.model.as_deref().unwrap_or("default"),
+            sc.repo.as_deref().unwrap_or("(scratch)"),
+            sc.runs,
+            sc.accepted,
+            sc.needs_you,
+            sc.rejected,
+            sc.overclaimed,
+            sc.median_cost_usd
+                .map(|c| format!("${c:.2}"))
+                .unwrap_or_else(|| "—".into()),
+            sc.median_secs
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "—".into()),
+        );
+    }
+    s.push_str("COST and SECS are medians; OVER counts agents that claimed success while a check failed.\n");
+    s
+}
+
+fn scorecard_html(scores: &[ledger::Score]) -> String {
+    if scores.is_empty() {
+        return String::new();
+    }
+    let mut rows = String::new();
+    for sc in scores {
+        let _ = write!(
+            rows,
+            "<tr><td>{harn}</td><td>{model}</td><td>{repo}</td><td class=n>{runs}</td>\
+             <td class=n>{acc}</td><td class=n>{needs}</td><td class=n>{rej}</td>\
+             <td class=n>{over}</td><td class=n>{cost}</td><td class=n>{secs}</td></tr>",
+            harn = harness_name(sc.harness),
+            model = esc(sc.model.as_deref().unwrap_or("default")),
+            repo = esc(sc.repo.as_deref().unwrap_or("(scratch)")),
+            runs = sc.runs,
+            acc = sc.accepted,
+            needs = sc.needs_you,
+            rej = sc.rejected,
+            over = sc.overclaimed,
+            cost = sc
+                .median_cost_usd
+                .map(|c| format!("${c:.2}"))
+                .unwrap_or_else(|| "—".into()),
+            secs = sc
+                .median_secs
+                .map(|t| format!("{t}s"))
+                .unwrap_or_else(|| "—".into()),
+        );
+    }
+    format!(
+        "<h2>Scorecard</h2><p>Every judged agent, from the ledger; cost and time are medians; \
+         overclaimed = claimed success while a check failed.</p>\
+         <div class=wrap><table><tr><th>Harness</th><th>Model</th><th>Repo</th><th class=n>Runs</th>\
+         <th class=n>Accepted</th><th class=n>Needs you</th><th class=n>Rejected</th>\
+         <th class=n>Overclaimed</th><th class=n>Cost</th><th class=n>Time</th></tr>{rows}</table></div>"
     )
 }
 

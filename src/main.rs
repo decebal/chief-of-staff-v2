@@ -150,10 +150,26 @@ enum AgentCmd {
         in_place: bool,
         #[arg(long)]
         model: Option<String>,
-        /// Seconds before the agent is stopped; capped at 7200.
-        #[arg(long, default_value_t = 1800)]
-        deadline: u64,
+        /// Seconds before the agent is stopped; capped at 7200. Default:
+        /// `context/agents.json`, else 1800.
+        #[arg(long)]
+        deadline: Option<u64>,
+        /// A command that must exit 0 in the agent's workdir once it ends;
+        /// repeatable. cos runs it itself to judge the agent.
+        #[arg(long = "check")]
+        checks: Vec<String>,
+        /// A path the agent may change, relative to the repo; repeatable.
+        /// Changes elsewhere make the verdict `needs_you`.
+        #[arg(long)]
+        scope: Vec<String>,
+        /// The finish line in words; a deliverable brings its own `done_when`.
+        #[arg(long)]
+        done_when: Option<String>,
     },
+    /// Judge an ended agent again: its diff, its checks, its scope.
+    Judge { id: String },
+    /// How agents did, by harness, model and repo, from every verdict.
+    Scorecard,
     /// Every agent: status, tool calls, cost, latest activity.
     Ls,
     /// The table, redrawn every 2 s until no agent is running.
@@ -290,7 +306,11 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
             in_place,
             model,
             deadline,
+            checks,
+            scope,
+            done_when,
         } => {
+            let mut done_when = done_when.clone();
             let picked: Vec<agents::Task> = match (from, prompt) {
                 _ if deliverable.is_some() => {
                     let id = deliverable.as_deref().unwrap_or_default();
@@ -301,10 +321,17 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
                         id,
                         cos::handoff::Receiver::Agent,
                     )?;
-                    let title = cos::state::find(&st, "deliverables", id)
+                    let found = cos::state::find(&st, "deliverables", id);
+                    let title = found
                         .and_then(|d| d["title"].as_str())
                         .unwrap_or(id)
                         .to_owned();
+                    if done_when.is_none() {
+                        done_when = found
+                            .and_then(|d| d["done_when"].as_str())
+                            .filter(|s| !s.trim().is_empty())
+                            .map(str::to_owned);
+                    }
                     vec![agents::Task {
                         n: 0,
                         title,
@@ -341,6 +368,9 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
                 }
             };
             let cos = std::env::current_exe().context("locate the cos binary")?;
+            if let Some(note) = agents::policy::load(home).note {
+                eprintln!("{note}; hiring on the built-in defaults");
+            }
             for t in picked {
                 let repo = repo
                     .clone()
@@ -356,9 +386,18 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
                         title: t.title,
                         source: t.source,
                         prompt: t.prompt,
-                        deadline: Duration::from_secs(*deadline),
+                        deadline: Duration::from_secs(deadline.unwrap_or(1800)),
                         budget_usd: cli.budget.unwrap_or(5.0),
                         slots: None,
+                        contract: agents::Contract {
+                            done_when: done_when.clone(),
+                            checks: checks.clone(),
+                            scope: scope.clone(),
+                        },
+                        explicit: agents::policy::Explicit {
+                            deadline: deadline.is_some(),
+                            budget: cli.budget.is_some(),
+                        },
                     },
                     &cos,
                 )?;
@@ -403,6 +442,17 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
                 }
                 std::thread::sleep(Duration::from_millis(500));
             }
+        }
+        AgentCmd::Scorecard => {
+            let scores = agents::ledger::scorecard(&agents::ledger::read(home));
+            print!("{}", agents::view::scorecard(&scores));
+            Ok(())
+        }
+        AgentCmd::Judge { id } => {
+            agents::rejudge(home, id)?;
+            let (spec, state) = agents::read(home, id)?;
+            print!("{}", agents::view::show(&spec, &state));
+            Ok(())
         }
         AgentCmd::Kill { id } => {
             let state = agents::stop(home, id, Duration::from_secs(10))?;

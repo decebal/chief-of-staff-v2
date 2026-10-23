@@ -18,6 +18,8 @@ fn spec(harness: Harness, prompt: &str) -> Spec {
         budget_usd: 2.5,
         created: String::new(),
         slots: None,
+        contract: Default::default(),
+        limits: Default::default(),
     }
 }
 
