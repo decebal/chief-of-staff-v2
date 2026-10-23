@@ -27,7 +27,7 @@ $1.50. Every run carries a spending cap and a 300 s deadline.
 - Connectors enabled on your claude.ai account: Google Calendar, Gmail,
   Atlassian, Notion — whichever you use. Check with `/mcp` in Claude Code.
 - `gh` logged in; optional `cn` (chronis) for tasks
-- Rust (stable), [Task](https://taskfile.dev), `jq`
+- Rust 1.99.1 (pinned in `rust-toolchain.toml`; `rustup toolchain install` in the repo fetches it), [Task](https://taskfile.dev), `jq`
 
 ## Quickstart
 
