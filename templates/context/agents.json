@@ -1,0 +1,13 @@
+{
+  "defaults": {
+    "deadline_secs": 1800,
+    "stall_secs": 600,
+    "repeat": 5
+  },
+  "repos": {
+    "example-repo": {
+      "checks": ["task test"],
+      "scope": ["src/", "tests/"]
+    }
+  }
+}

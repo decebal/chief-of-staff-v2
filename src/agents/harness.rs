@@ -52,6 +52,9 @@ pub fn command(spec: &Spec) -> Command {
 pub struct Tick {
     pub last: Option<String>,
     pub tool_calls: u32,
+    /// The call made, tool and arguments in full, so two calls compare equal
+    /// only when the agent repeated itself exactly.
+    pub call: Option<String>,
     pub cost_usd: Option<f64>,
     pub tokens: Option<u64>,
     pub summary: Option<String>,
@@ -80,7 +83,9 @@ fn claude(v: &Value) -> Tick {
                 match block["type"].as_str() {
                     Some("tool_use") => {
                         t.tool_calls += 1;
-                        t.last = Some(format!("tool {}", block["name"].as_str().unwrap_or("?")));
+                        let name = block["name"].as_str().unwrap_or("?");
+                        t.last = Some(format!("tool {name}"));
+                        t.call = Some(format!("{name} {}", block["input"]));
                     }
                     Some("text") => t.last = text(&block["text"]).map(|s| clip(&s)),
                     _ => {}
@@ -120,25 +125,25 @@ fn codex(v: &Value) -> Tick {
         (Some("thread.started"), _) => t.session = text(&v["thread_id"]),
         (Some("item.started"), Some("command_execution")) => {
             t.tool_calls = 1;
-            t.last = Some(format!(
-                "run {}",
-                clip(item["command"].as_str().unwrap_or("?"))
-            ));
+            let command = item["command"].as_str().unwrap_or("?");
+            t.last = Some(format!("run {}", clip(command)));
+            t.call = Some(format!("run {command}"));
         }
         (Some("item.started"), Some("mcp_tool_call")) => {
             t.tool_calls = 1;
-            t.last = Some(format!(
-                "tool {}.{}",
+            let tool = format!(
+                "{}.{}",
                 item["server"].as_str().unwrap_or("?"),
                 item["tool"].as_str().unwrap_or("?")
-            ));
+            );
+            t.call = Some(format!("{tool} {}", item["arguments"]));
+            t.last = Some(format!("tool {tool}"));
         }
         (Some("item.started"), Some("web_search")) => {
             t.tool_calls = 1;
-            t.last = Some(format!(
-                "search {}",
-                clip(item["query"].as_str().unwrap_or(""))
-            ));
+            let query = item["query"].as_str().unwrap_or("");
+            t.last = Some(format!("search {}", clip(query)));
+            t.call = Some(format!("search {query}"));
         }
         (Some("item.completed"), Some("agent_message")) => {
             t.summary = text(&item["text"]);

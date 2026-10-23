@@ -143,6 +143,9 @@ struct SpawnArgs {
     /// Overrides the harness binary; the window never sends it (tests do).
     #[serde(default)]
     program: Option<String>,
+    /// What the agent is judged against when it ends.
+    #[serde(default)]
+    contract: agents::Contract,
 }
 
 #[tauri::command]
@@ -184,6 +187,12 @@ async fn agents_spawn(app: tauri::State<'_, App>, args: SpawnArgs) -> Res<Vec<Sp
                         deadline: Duration::from_secs(args.deadline_secs),
                         budget_usd: args.budget_usd,
                         slots: s.slots,
+                        contract: args.contract.clone(),
+                        // The window always sends both.
+                        explicit: agents::policy::Explicit {
+                            deadline: true,
+                            budget: true,
+                        },
                     },
                     &cos,
                 )

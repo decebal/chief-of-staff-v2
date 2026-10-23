@@ -1,0 +1,6 @@
+# The cos CI job runs clippy with -D warnings, so a newer clippy on a
+# floating `stable` turns new lints into red checks on unrelated PRs. CI and
+# laptops both use this file; bump it deliberately and fix what it flags.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

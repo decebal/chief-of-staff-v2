@@ -86,7 +86,9 @@ tasks:
     cmds:
       # One after the other: the desktop build would otherwise race this one.
       - timeout 300 cargo build --bin cos
-      - timeout 300 cargo run -p cos-desktop
+      - timeout 300 cargo build -p cos-desktop
+      # The cap is for builds; a running app under it is killed after 5 minutes.
+      - target/debug/cos-desktop
 
   desktop-check:
     desc: fmt, clippy and build of the desktop crate
