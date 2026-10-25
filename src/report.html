@@ -230,7 +230,8 @@ const DATA = "__COS_DATA__";
   const savedChanges = latestSaved && latestSaved.verifiedChanges || [];
 
   // ---- header & theme
-  $("title").textContent = DATA.name ? `${DATA.name.split(" ")[0]}'s chief of staff` : "Chief of staff";
+  $("title").textContent = workspace?.dashboardTitle || (DATA.name ? `${DATA.name.split(" ")[0]}'s chief of staff` : "Chief of staff");
+  document.title = $("title").textContent;
   $("meta").textContent = `Generated ${DATA.generated_at}` +
     (DATA.brief ? ` · brief ${DATA.brief.day}` : "") + (DATA.review ? ` · review ${DATA.review.day}` : "");
   if (latestSaved) $("meta").textContent = `Assessment ${savedTime(savedAssessment.finishedAt || savedAssessment.invokedAt)} · latest update ${savedTime(latestSaved.finishedAt || latestSaved.invokedAt)} · revision ${workspace.revision}`;
@@ -648,6 +649,7 @@ const DATA = "__COS_DATA__";
           ${tile(commitments.length, "open commitments")}
         </section>
         ${savedReadiness()}
+        ${W.portfolio ? `<section class="card" data-portfolio><h3>Longhand workstreams</h3><p>${esc(W.portfolio.summary)}</p><p class="sub">Reviewed ${esc(savedTime(W.portfolio.assessedAt))}. ${esc(W.portfolio.coverage)}</p><div class="scroll"><table class="cov"><tr><th>Workstream</th><th>Evidence</th><th>Next proof</th></tr>${(W.portfolio.workstreams || []).map((x) => `<tr><td><b>${esc(x.name)}</b><p>${esc(x.status)}</p></td><td>${esc(x.evidence)}</td><td>${esc(x.nextAction)}<div class="ids">${link(x.source)}</div></td></tr>`).join("")}</table></div><h3>Decisions and material risks</h3>${list(W.portfolio.decisions, (x) => `<b>${esc(x.title)}</b><p>${esc(x.nextAction)}</p><div class="ids">${link(x.source)}</div>`)}<details><summary>Active work inventory · ${esc(W.portfolio.activeCount)} records</summary><p class="sub">Tracker status is bookkeeping. Rows are not new bets or accepted outcomes.</p><div class="scroll"><table class="cov"><tr><th>Work</th><th>Status</th><th>Priority</th><th>Owner</th></tr>${(W.portfolio.activeWork || []).map((x) => `<tr><td>${esc(x.title)}</td><td>${esc(x.status)}</td><td>${esc(x.priority)}</td><td>${esc(x.owner || "unassigned")}</td></tr>`).join("")}</table></div></details></section>` : ""}
         <section class="card"><h3>Goals · finish lines and KPIs</h3>
           ${openGoals.length ? openGoals.map((g) => `<div style="padding:10px 0;border-top:1px solid var(--grid)">
             <div><span class="ids">${esc(g.id)}</span> <span class="item">${esc(g.title)}</span> <span class="chip">${esc(g.status)}</span></div>
