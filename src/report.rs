@@ -153,6 +153,8 @@ fn workspace(ws: &Path) -> Value {
         "incidents": st["incidents"],
         "runs": runs,
         "timezone": profile.as_ref().and_then(|p| p["timezone"].as_str()),
+        "dashboardTitle": profile.as_ref().and_then(|p| p["dashboardTitle"].as_str()),
+        "portfolio": st["commitments"].as_array().and_then(|items| items.iter().find_map(|item| item.get("dashboard")?.get("portfolio"))),
         "schedule": profile.as_ref().map(|p| &p["schedule"]),
         "handoffs": handoffs,
         "tracking": profile.as_ref().is_some_and(crate::state::tracking_approved),
