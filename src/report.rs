@@ -155,6 +155,7 @@ fn workspace(ws: &Path) -> Value {
         "timezone": profile.as_ref().and_then(|p| p["timezone"].as_str()),
         "dashboardTitle": profile.as_ref().and_then(|p| p["dashboardTitle"].as_str()),
         "portfolio": st["commitments"].as_array().and_then(|items| items.iter().find_map(|item| item.get("dashboard")?.get("portfolio"))),
+        "production": st["commitments"].as_array().and_then(|items| items.iter().find_map(|item| item.get("dashboard")?.get("production"))),
         "schedule": profile.as_ref().map(|p| &p["schedule"]),
         "handoffs": handoffs,
         "tracking": profile.as_ref().is_some_and(crate::state::tracking_approved),
@@ -171,6 +172,25 @@ pub fn render(data: &Value) -> Result<String> {
     let json = serde_json::to_string(data)?.replace("</", "<\\/");
     Ok(TEMPLATE
         .replacen(MARKDY_SLOT, MARKDY, 1)
+        .replacen(
+            "/*__DASHBOARD_CSS__*/",
+            include_str!("report-dashboard.css"),
+            1,
+        )
+        .replacen(
+            "/*__DASHBOARD_JS__*/",
+            &format!(
+                "{}\n{}",
+                include_str!("report-dashboard.js"),
+                include_str!("report-production.js")
+            ),
+            1,
+        )
+        .replacen(
+            "__COS_ART__",
+            include_str!("assets/replies-sculpture.uri"),
+            1,
+        )
         .replacen(DATA_SLOT, &json, 1))
 }
 
