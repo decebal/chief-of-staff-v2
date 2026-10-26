@@ -157,6 +157,7 @@
   ul.archive li { padding: 2px 0; }
   #tip { position: fixed; pointer-events: none; background: var(--text-primary); color: var(--page);
     font-size: 12px; padding: 6px 9px; border-radius: 6px; max-width: 320px; opacity: 0; transition: opacity .08s; z-index: 10; }
+/*__DASHBOARD_CSS__*/
 </style>
 </head>
 <body>
@@ -219,7 +220,7 @@ const DATA = "__COS_DATA__";
   const savedRuns = workspace && !workspace.error ? workspace.runs || [] : [];
   const latestSaved = savedRuns.at(-1);
   const savedWeekly = [...savedRuns].reverse().find((r) => r.strategicReview);
-  const savedAssessment = [...savedRuns].reverse().find((r) => r.mode !== "publication_receipt") || latestSaved;
+  const savedAssessment = [...savedRuns].reverse().find((r) => !["publication_receipt", "dashboard_configuration"].includes(r.mode)) || latestSaved;
   const savedTime = (at) => {
     if (!at) return "not recorded";
     const date = new Date(at);
@@ -819,6 +820,7 @@ const DATA = "__COS_DATA__";
     }, 3000);
   }
 
+  /*__DASHBOARD_JS__*/
   const want = location.hash ? location.hash.slice(1) : stored("cos-tab");
   const start = tabs.find((t) => t.getAttribute("aria-controls") === want);
   if (start) {
