@@ -195,12 +195,14 @@
     <button class="tab" role="tab" id="tab-plan" aria-controls="plan" aria-selected="false">Plan<small>goals · KPIs · this week</small></button>
     <button class="tab" role="tab" id="tab-right" aria-controls="right" aria-selected="false">Steering<small>weekly review · strategist</small></button>
     <button class="tab" role="tab" id="tab-history" aria-controls="history" aria-selected="false">History<small>builds up every run</small></button>
+    <button class="tab" role="tab" id="tab-staff" aria-controls="staff" aria-selected="false" hidden>Staff<small>mandates · follow-up</small></button>
   </div>
 
   <div role="tabpanel" id="left" aria-labelledby="tab-left"></div>
   <div role="tabpanel" id="plan" aria-labelledby="tab-plan" hidden></div>
   <div role="tabpanel" id="right" aria-labelledby="tab-right" hidden></div>
   <div role="tabpanel" id="history" aria-labelledby="tab-history" hidden></div>
+  <div role="tabpanel" id="staff" aria-labelledby="tab-staff" hidden></div>
 </main>
 <div id="tip" role="tooltip"></div>
 </div>
@@ -252,7 +254,7 @@ const DATA = "__COS_DATA__";
   applyTheme();
 
   // ---- tabs
-  const tabs = [$("tab-left"), $("tab-plan"), $("tab-right"), $("tab-history")];
+  const tabs = [$("tab-left"), $("tab-plan"), $("tab-right"), $("tab-history"), $("tab-staff")];
   const select = (t) => {
     for (const x of tabs) {
       const on = x === t;

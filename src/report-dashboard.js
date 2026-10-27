@@ -4,12 +4,13 @@ if (workspace && !workspace.error && latestSaved) {
   shell.classList.add('workspace-shell');
   const workspaceName = (workspace.dashboardTitle || 'Workspace').replace(/ chief of staff/i, '');
   shell.style.setProperty('--workspace-label', JSON.stringify(workspaceName.toUpperCase()));
-  const labels = ['Overview', workspace.production ? 'Delivery proof' : 'Work & outcomes', 'Strategy', 'Evidence'];
+  const labels = ['Overview', workspace.production ? 'Delivery proof' : 'Work & outcomes', 'Strategy', 'Evidence', 'Staff'];
   const navPaths = [
     '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
     '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
     '<circle cx="12" cy="12" r="9"/><path d="m16 8-2.5 5.5L8 16l2.5-5.5Z"/>',
-    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>'
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
+    '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M21 21v-3a6 6 0 0 0-3-5.2"/>'
   ];
   tabs.forEach((tab, i) => {
     tab.innerHTML = `<svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${navPaths[i]}</svg><span>${esc(labels[i])}</span>`;
