@@ -11,6 +11,7 @@ pub mod pipeline;
 pub mod proc;
 pub mod report;
 pub mod reports;
+pub mod staff;
 pub mod state;
 pub mod store;
 pub mod track;

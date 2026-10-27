@@ -93,6 +93,15 @@ enum Cmd {
     /// "Delegate this": print the handoff for a tracked deliverable. Starts
     /// nothing; `cos agents spawn --deliverable` runs it in a worktree.
     Handoff { id: String },
+    /// Refresh a staff role from an enrolled AllStack coordinator. Starts no work.
+    StaffSync {
+        #[arg(long)]
+        coordinator: PathBuf,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        role: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -254,6 +263,17 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
         }
         Cmd::Auth => auth_check(&cli.home, auth),
         Cmd::State { cmd } => state_cmd(&cli.home, &ws, cmd),
+        Cmd::StaffSync {
+            coordinator,
+            run,
+            role,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&cos::staff::sync(&ws, coordinator, run, role)?)?
+            );
+            Ok(())
+        }
         Cmd::Handoff { id } => {
             let (st, profile) = workspace(&ws)?;
             print!(

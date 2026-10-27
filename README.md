@@ -154,6 +154,7 @@ cos --home /tmp/cos-demo dash
 | | |
 |---|---|
 | [Usage](docs/usage.md) | customising, agents and the hiring policy, Codex timeouts, the remote connector |
+| [Managed staff](docs/managed-staff.md) | configured mandates, AllStack evidence refresh, handoffs and parking |
 | [Design](docs/design.md) | how it works, and the measurements behind each decision |
 | [Desktop plan](docs/plans/2026-10-21-desktop-app.md) | the workspace split, the agent governor and seeding, and the Tauri app |
 
