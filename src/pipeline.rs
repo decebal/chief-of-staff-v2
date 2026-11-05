@@ -1,24 +1,21 @@
-//! The three runs `cos` offers — brief, review, ask — shared by the CLI and the
-//! MCP server. Blocking: each spawns `claude` children under one deadline.
+//! The runs `cos` offers — the daily brief and a question — shared by the CLI
+//! and the MCP server. Blocking: each spawns one `claude` child under one
+//! deadline.
 
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
-use crate::claude::{self, Outcome, Run, Toolset};
+use crate::claude::{self, Run, Toolset};
 use crate::context::{self, Local};
 use crate::gather::{self, Facts};
-use crate::reports::{
-    self, Brief, Completeness, Coverage, Health, MAX_ACTIONS, MAX_CHANGES, Review, Route,
-};
+use crate::reports::{self, Brief, Completeness, Coverage, Health, MAX_ACTIONS, MAX_CHANGES};
 use crate::store::{self, Kind};
 use crate::track::{self, Recorded};
-
-/// Route, then brains in parallel, then merge: all three inside this ceiling.
-const ASK_DEADLINE: Duration = Duration::from_secs(300);
+use crate::wake::{self, Wake};
 
 #[derive(Clone)]
 pub struct Config {
@@ -29,6 +26,72 @@ pub struct Config {
     pub projects: PathBuf,
     /// Overrides each run's default spending cap, in USD.
     pub budget: Option<f64>,
+    pub bins: Bins,
+}
+
+/// The programs a run starts. `pmset` and `caffeinate` are `None` where
+/// there is no dark wake to detect or sleep to hold off.
+#[derive(Clone)]
+pub struct Bins {
+    pub claude: PathBuf,
+    pub pmset: Option<PathBuf>,
+    pub caffeinate: Option<PathBuf>,
+}
+
+impl Default for Bins {
+    fn default() -> Self {
+        let mac = cfg!(target_os = "macos");
+        Self {
+            claude: "claude".into(),
+            pmset: mac.then(|| "/usr/bin/pmset".into()),
+            caffeinate: mac.then(|| "/usr/bin/caffeinate".into()),
+        }
+    }
+}
+
+/// The run did not start: the Mac is in a dark wake and would sleep again
+/// mid-run. Nothing was spent.
+#[derive(Debug)]
+pub struct Deferred(pub &'static str);
+
+impl std::fmt::Display for Deferred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Mac asleep (dark wake): {} deferred", self.0)
+    }
+}
+
+impl std::error::Error for Deferred {}
+
+/// A retry needs at least this much of the shared budget left.
+const MIN_RETRY: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Ok,
+    Failed,
+    Deferred,
+}
+
+/// What became of a day's brief run, `out/runs/<day>.json`: the Today page
+/// says so when today's brief is missing rather than show an older one as
+/// current. The last run of the day wins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunReceipt {
+    pub day: String,
+    pub at: String,
+    pub status: RunStatus,
+    #[serde(default)]
+    pub reason: String,
+    pub attempts: u32,
+    pub cost_usd: f64,
+}
+
+/// Attempts and spend across one operation's `claude` children.
+#[derive(Default)]
+struct Tally {
+    attempts: u32,
+    cost_usd: f64,
 }
 
 /// What a run produced, plus what it cost across every `claude` child.
@@ -213,6 +276,19 @@ fn hold_to_limits(brief: &mut Brief) {
     }
 }
 
+/// The model's own reason when a run ended in an error result, else the
+/// whole chain.
+fn failure_reason(e: &anyhow::Error) -> String {
+    match e.chain().find_map(|c| c.downcast_ref::<claude::Failed>()) {
+        Some(f) => f
+            .reason
+            .strip_prefix("claude run failed: ")
+            .unwrap_or(&f.reason)
+            .to_owned(),
+        None => format!("{e:#}"),
+    }
+}
+
 fn report_tracking(r: Result<Recorded>) -> Option<Recorded> {
     match r {
         Ok(r) => Some(r),
@@ -231,6 +307,28 @@ fn facts_block(facts: &Facts) -> String {
 }
 
 /// Everything a brain reads that is not a connector: `context/`, then facts.
+/// The profile's `jiraProjects` turned into one bounded Jira read for the
+/// brief's `tickets`; nothing when the profile names none.
+pub fn tickets_rule(workspace: &Path) -> String {
+    let projects: Vec<String> = crate::state::profile(workspace)
+        .and_then(|p| p["jiraProjects"].as_array().cloned())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .filter(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric()))
+        .collect();
+    if projects.is_empty() {
+        return String::new();
+    }
+    format!(
+        " Fill `tickets` from one Jira search, `assignee = currentUser() AND project in ({}) \
+         AND statusCategory != Done`, if Jira is an approved source: every result with its key, \
+         summary, status, priority and URL, and goal_id when a workspace goal's `jira` list \
+         names the key. When Jira was not read, leave `tickets` empty and say so in coverage.",
+        projects.join(", ")
+    )
+}
+
 fn grounding(home: &Path, workspace: &Path, facts: &Facts) -> String {
     format!(
         "{}\n\n{}",
@@ -254,47 +352,110 @@ impl Config {
         Ok(facts)
     }
 
+    /// The one daily run: goals, then this week's deliverables, then today.
+    /// The default cap carries the goal judgement's old $5.00 opus ceiling at
+    /// sonnet's price, about half per token, plus headroom for today's part;
+    /// both parts share one set of connector reads.
     pub fn brief_run(&self, facts: &Facts) -> Run<'static> {
         let d = dates_in(&self.workspace);
         let prompt = format!(
-            "Today is {}, now {}. Write today's brief: at most {MAX_ACTIONS} actions that need \
-             the user and at most {MAX_CHANGES} verified changes. Meetings that have already \
-             ended go nowhere but a one-line note; prep only for what is still ahead. {}\n\n{}",
+            "Today is {}, now {}. Write today's brief, working down from the goals. First the \
+             week: each confirmed goal in the workspace (or context/goals.md when there is no \
+             workspace) judged on this week's evidence (work merged since {}, this \
+             Monday-to-Sunday calendar, tickets, mail), with its steer, the deliverables this \
+             week should hold worked back from its finish line, decisions only the user can \
+             take, and what to stop doing. Then today, set against that week: at most \
+             {MAX_ACTIONS} actions that need the user, each citing the goal and deliverable it \
+             serves when there is one, and at most {MAX_CHANGES} verified changes. Meetings that \
+             have already ended go nowhere but a one-line note; prep only for what is still \
+             ahead. {}{}\n\n{}",
             d.day,
             d.now,
+            d.week_ago,
             d.calendar_rule(),
+            tickets_rule(&self.workspace),
             grounding(&self.home, &self.workspace, facts)
         );
         Run {
             json_schema: Some(reports::brief_schema()),
-            ..self.brain("tactician", "sonnet", prompt, self.budget.unwrap_or(2.0))
+            ..self.brain("tactician", "sonnet", prompt, self.budget.unwrap_or(3.0))
         }
     }
 
-    pub fn review_run(&self, facts: &Facts) -> Run<'static> {
+    /// A question answered by the tactician on the same grounding as a brief,
+    /// with facts read fresh and not saved.
+    pub fn ask_run(&self, question: &str) -> Run<'static> {
         let d = dates_in(&self.workspace);
-        let prompt = format!(
-            "Today is {}. Run the weekly steering review: each confirmed goal in the workspace \
-             (or context/goals.md when there is no workspace), worked back into this week's \
-             proposed deliverables.\n\n{}",
-            d.day,
-            grounding(&self.home, &self.workspace, facts)
+        let facts = gather::collect_for(
+            &self.projects,
+            &d.week_ago,
+            context::local_reads(&self.workspace),
+            &context::work_orgs(&self.workspace),
         );
-        Run {
-            json_schema: Some(reports::review_schema()),
-            ..self.brain("strategist", "opus", prompt, self.budget.unwrap_or(5.0))
-        }
+        let prompt = format!(
+            "Today is {}, now {}. Answer this question under your Answering rules; do not write \
+             a brief.\n\nQuestion: {question}\n\n{}",
+            d.day,
+            d.now,
+            grounding(&self.home, &self.workspace, &facts)
+        );
+        self.brain("tactician", "sonnet", prompt, self.budget.unwrap_or(2.0))
     }
 
+    /// The daily brief, when the Mac is fully awake, under a sleep assertion.
+    /// Every outcome, deferred and failed included, leaves a `RunReceipt`.
     pub fn brief(&self) -> Result<Done<Brief>> {
         let d = dates_in(&self.workspace);
-        let day = d.day.clone();
         let invoked = crate::state::now();
+        let mut tally = Tally::default();
+        let result = self
+            .awake("brief")
+            .and_then(|_hold| self.brief_awake(&d, &invoked, &mut tally));
+        let (status, reason) = match &result {
+            Ok(_) => (RunStatus::Ok, String::new()),
+            Err(e) if e.is::<Deferred>() => (RunStatus::Deferred, e.to_string()),
+            Err(e) => (RunStatus::Failed, failure_reason(e)),
+        };
+        let receipt = RunReceipt {
+            day: d.day.clone(),
+            at: crate::state::now(),
+            status,
+            reason,
+            attempts: tally.attempts,
+            cost_usd: tally.cost_usd,
+        };
+        if let Err(e) = store::save_json(&self.home, Kind::Runs, &d.day, &receipt) {
+            eprintln!("cos: run receipt not saved: {e:#}");
+        }
+        if result.is_err() {
+            // The page carries the receipt; rebuild it so it says so today.
+            if let Err(e) = crate::report::build(&self.home, &self.workspace) {
+                eprintln!("cos: report not rebuilt: {e:#}");
+            }
+        }
+        result
+    }
+
+    /// `Deferred` in a dark wake; otherwise the sleep assertion to hold for
+    /// the run.
+    fn awake(&self, what: &'static str) -> Result<wake::Hold> {
+        match wake::probe(self.bins.pmset.as_deref()) {
+            Wake::Dark => Err(Deferred(what).into()),
+            Wake::Full => Ok(wake::Hold::start(self.bins.caffeinate.as_deref())),
+            Wake::Unknown(why) => {
+                eprintln!("cos: wake state unknown ({why}); running");
+                Ok(wake::Hold::start(self.bins.caffeinate.as_deref()))
+            }
+        }
+    }
+
+    fn brief_awake(&self, d: &Dates, invoked: &str, tally: &mut Tally) -> Result<Done<Brief>> {
+        let day = d.day.clone();
         let facts = self.gather()?;
         let (mut brief, cost, called): (Brief, f64, _) =
-            self.structured(&self.brief_run(&facts))?;
+            self.structured(&self.brief_run(&facts), tally)?;
         hold_to_limits(&mut brief);
-        hold_to_window(&mut brief, &d);
+        hold_to_window(&mut brief, d);
         cover_every_source(&mut brief, &self.workspace, &facts, &called);
         let markdown = brief.to_markdown(&day);
         let saved = store::save(&self.home, Kind::Briefs, &day, &brief, &markdown)?;
@@ -304,7 +465,7 @@ impl Config {
             "brief",
             &brief.coverage,
             brief.gaps.len(),
-            &invoked,
+            invoked,
             &crate::state::now(),
         ));
         crate::report::build(&self.home, &self.workspace)?;
@@ -317,140 +478,146 @@ impl Config {
         })
     }
 
-    pub fn review(&self) -> Result<Done<Review>> {
-        let day = dates_in(&self.workspace).day;
-        let invoked = crate::state::now();
-        let facts = self.gather()?;
-        let (mut review, cost, _): (Review, f64, _) = self.structured(&self.review_run(&facts))?;
-        review.what_changed.truncate(MAX_CHANGES);
-        let markdown = review.to_markdown(&day);
-        let saved = store::save(&self.home, Kind::Reviews, &day, &review, &markdown)?;
-        crate::history::record(&self.home, &day, &facts, None)?;
-        let tracked = report_tracking(track::record_run(
-            &self.workspace,
-            "review",
-            &[],
-            review.gaps.len(),
-            &invoked,
-            &crate::state::now(),
-        ));
-        crate::report::build(&self.home, &self.workspace)?;
+    /// A question, under the same wake check and sleep assertion as a brief.
+    pub fn ask(&self, question: &str) -> Result<Done<()>> {
+        let _hold = self.awake("question")?;
+        let out = self.execute(&self.ask_run(question), &mut Tally::default())?;
         Ok(Done {
-            value: review,
-            markdown,
-            cost_usd: cost,
-            saved: Some(saved),
-            tracked,
-        })
-    }
-
-    pub fn route_run(question: &str) -> Run<'static> {
-        Run {
-            deadline: Duration::from_secs(60),
-            json_schema: Some(reports::route_schema()),
-            ..bare(format!(
-                "Today is {}. Routing step only — do not answer. Pick the brain(s) for \
-                 this question and restate it so each brain can answer it alone.\n\n\
-                 Question: {question}",
-                dates_at(jiff::Zoned::now()).day
-            ))
-        }
-    }
-
-    /// Route, run the chosen brains in parallel, merge. `value` is the routing.
-    pub fn ask(&self, question: &str) -> Result<Done<Route>> {
-        let started = Instant::now();
-        let left = || ASK_DEADLINE.saturating_sub(started.elapsed());
-        let audit = claude::audit_path(&self.home);
-        let d = dates_in(&self.workspace);
-
-        let (route, mut cost, _): (Route, f64, _) = self.structured(&Self::route_run(question))?;
-        let prompt = format!(
-            "Today is {}. {}\n\nOriginal question: {question}\n\n{}",
-            d.day,
-            route.framing,
-            grounding(
-                &self.home,
-                &self.workspace,
-                &gather::collect_for(
-                    &self.projects,
-                    &d.week_ago,
-                    context::local_reads(&self.workspace),
-                    &context::work_orgs(&self.workspace),
-                )
-            )
-        );
-        let budget = self.budget.unwrap_or(2.0);
-        let answers: Vec<(&str, Result<Outcome>)> = thread::scope(|s| {
-            let handles: Vec<_> = route
-                .brains
-                .iter()
-                .map(|b| {
-                    let run = Run {
-                        deadline: left(),
-                        ..self.brain(b.agent(), b.model(), prompt.clone(), budget)
-                    };
-                    let (home, audit) = (&self.home, &audit);
-                    (
-                        b.agent(),
-                        s.spawn(move || claude::execute(home, audit, &run)),
-                    )
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|(name, h)| {
-                    let r = h
-                        .join()
-                        .unwrap_or_else(|_| Err(anyhow!("{name} thread panicked")));
-                    (name, r)
-                })
-                .collect()
-        });
-
-        let mut merged_input = String::new();
-        for (name, r) in &answers {
-            let body = match r {
-                Ok(o) => {
-                    cost += o.total_cost_usd;
-                    o.result.clone().unwrap_or_default()
-                }
-                Err(e) => format!("FAILED: {e:#}"),
-            };
-            merged_input.push_str(&format!("## {name}\n\n{body}\n\n"));
-        }
-
-        let merged = claude::execute(
-            &self.home,
-            &audit,
-            &Run {
-                deadline: left(),
-                ..bare(format!(
-                    "Merge step. Question: {question}\n\n\
-                     Answers from the brains (a FAILED entry is a gap, not an empty answer):\n\n\
-                     {merged_input}Write the final answer under your Answering rules."
-                ))
-            },
-        )?;
-        cost += merged.total_cost_usd;
-        Ok(Done {
-            value: route,
-            markdown: merged.result.unwrap_or_default(),
-            cost_usd: cost,
+            value: (),
+            markdown: out.result.unwrap_or_default(),
+            cost_usd: out.total_cost_usd,
             saved: None,
             tracked: None,
         })
     }
 
+    /// Lists the Notion pages about the monitored projects for the
+    /// documentation room, through the user's Notion connector. A listing,
+    /// not a judgement: titles and URLs as Notion returns them.
+    pub fn notion_pages(&self) -> Result<(crate::docs::NotionList, f64)> {
+        let projects: Vec<String> = crate::docs::monitored(&self.workspace)
+            .iter()
+            .map(|s| s.rsplit('/').next().unwrap_or(s).to_owned())
+            .collect();
+        anyhow::ensure!(
+            !projects.is_empty(),
+            "no monitoredRepos in the profile: nothing to list Notion pages for"
+        );
+        let prompt = format!(
+            "Documentation room inventory only — no brief, no advice. Using the Notion search \
+             tool (one search per project name, then one for each obvious synonym), list the \
+             Notion pages that document these projects: {}. For each page give its exact title, \
+             its URL, its parent page or database title (empty when unknown), and which of the \
+             projects it belongs to (one of the names above, or empty). At most 150 pages; skip \
+             meeting notes older than 90 days. Never invent a page or a URL: list only what a \
+             search returned.",
+            projects.join(", ")
+        );
+        let run = Run {
+            json_schema: Some(serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["pages"],
+                "properties": { "pages": { "type": "array", "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["title", "url", "parent", "project"],
+                    "properties": {
+                        "title": { "type": "string" },
+                        "url": { "type": "string" },
+                        "parent": { "type": "string" },
+                        "project": { "type": "string" }
+                    }
+                }}}
+            })),
+            ..self.brain("tactician", "sonnet", prompt, self.budget.unwrap_or(1.5))
+        };
+        let (mut list, cost, _): (crate::docs::NotionList, f64, _) =
+            self.structured(&run, &mut Tally::default())?;
+        list.pages
+            .retain(|p| p.url.starts_with("https://") && !p.title.trim().is_empty());
+        list.listed_at = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string();
+        Ok((list, cost))
+    }
+
     /// The parsed output, its cost, and the tools the run called.
-    fn structured<T: DeserializeOwned>(&self, run: &Run) -> Result<(T, f64, Vec<String>)> {
-        let out = claude::execute(&self.home, &claude::audit_path(&self.home), run)?;
+    fn structured<T: DeserializeOwned>(
+        &self,
+        run: &Run,
+        tally: &mut Tally,
+    ) -> Result<(T, f64, Vec<String>)> {
+        let out = self.execute(run, tally)?;
         let value = out
             .structured_output
             .context("run returned no structured_output")?;
         let parsed =
             serde_json::from_value(value).context("structured_output did not match the schema")?;
         Ok((parsed, out.total_cost_usd, out.called))
+    }
+
+    /// One `claude` run, and one more after a transient failure (a timeout,
+    /// a dropped connection, a sleep mid-response) when the Mac is awake and
+    /// the shared wall-clock budget has `MIN_RETRY` left. Both attempts sit
+    /// inside `run.deadline`; the cost returned is their sum.
+    fn execute(&self, run: &Run, tally: &mut Tally) -> Result<claude::Outcome> {
+        let audit = claude::audit_path(&self.home);
+        let started = SystemTime::now();
+        tally.attempts += 1;
+        let err = match claude::execute(&self.bins.claude, &self.home, &audit, run) {
+            Ok(o) => {
+                tally.cost_usd += o.total_cost_usd;
+                return Ok(o);
+            }
+            Err(e) => e,
+        };
+        let Some(first) = err.downcast_ref::<claude::Failed>() else {
+            return Err(err);
+        };
+        tally.cost_usd += first.cost_usd;
+        if !first.transient {
+            return Err(err);
+        }
+        let budget = run.deadline.min(crate::proc::CEILING);
+        let left = budget.saturating_sub(started.elapsed().unwrap_or(budget));
+        if left < MIN_RETRY {
+            return Err(err.context(format!(
+                "not retried: {}s of the {}s budget left",
+                left.as_secs(),
+                budget.as_secs()
+            )));
+        }
+        if wake::probe(self.bins.pmset.as_deref()) == Wake::Dark {
+            return Err(err.context("not retried: Mac asleep (dark wake)"));
+        }
+        let first_reason = first.reason.clone();
+        let first_cost = first.cost_usd;
+        claude::audit_note(
+            &audit,
+            run.agent,
+            serde_json::json!({
+                "retry": 2,
+                "after": first_reason,
+                "deadline_s": left.as_secs(),
+            }),
+        )?;
+        let second = Run {
+            deadline: left,
+            ..run.clone()
+        };
+        tally.attempts += 1;
+        match claude::execute(&self.bins.claude, &self.home, &audit, &second) {
+            Ok(mut o) => {
+                tally.cost_usd += o.total_cost_usd;
+                o.total_cost_usd += first_cost;
+                Ok(o)
+            }
+            Err(e) => {
+                if let Some(f) = e.downcast_ref::<claude::Failed>() {
+                    tally.cost_usd += f.cost_usd;
+                }
+                Err(e.context(format!("retried once after: {first_reason}")))
+            }
+        }
     }
 
     fn brain(
@@ -470,19 +637,5 @@ impl Config {
             deadline: Duration::from_secs(300),
             denied: crate::context::denied_servers(&self.home),
         }
-    }
-}
-
-/// The chief with no tools: routing and merging read only the prompt.
-fn bare(prompt: String) -> Run<'static> {
-    Run {
-        agent: "chief-of-staff",
-        model: "sonnet",
-        prompt,
-        json_schema: None,
-        max_budget_usd: 0.5,
-        tools: Toolset::None,
-        deadline: Duration::from_secs(120),
-        denied: Vec::new(),
     }
 }

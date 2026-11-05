@@ -3,6 +3,8 @@ pub mod auth;
 pub mod claude;
 pub mod context;
 pub mod dash;
+pub mod design;
+pub mod docs;
 pub mod gather;
 pub mod handoff;
 pub mod history;
@@ -14,8 +16,10 @@ pub mod reports;
 pub mod staff;
 pub mod state;
 pub mod store;
+pub mod today;
 pub mod track;
 pub mod tunnel;
+pub mod wake;
 
 /// Read-only surface. With `--permission-mode dontAsk`, any tool not listed is
 /// denied — sending mail, editing Jira, reading or writing files included.

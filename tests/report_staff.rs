@@ -37,7 +37,7 @@ fn configured_staff_remain_distinct_from_execution_and_customer_proof() {
             .unwrap()
     );
     let html = report::render(&data).unwrap();
-    assert!(html.contains("id=\"tab-staff\""));
+    assert!(html.contains("data-staff"));
     assert!(html.contains("Run reference; evidence missing"));
     assert!(html.contains("No linked run"));
     assert_eq!(

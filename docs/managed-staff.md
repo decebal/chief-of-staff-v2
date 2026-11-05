@@ -1,8 +1,8 @@
 # Managed staff dashboard
 
-The Staff tab follows configured mandates and source-backed AllStack delivery records. It does not launch models, assign customers or authorize publication. Staff data lives under the existing dashboard commitment, with private roster and handoff material outside Git.
+The Staff card follows configured mandates and source-backed AllStack delivery records. It does not launch models, assign customers or authorize publication. Staff data lives under the existing dashboard commitment, with private roster and handoff material outside Git.
 
-Each role shows its mandate, goals, native methods, permission boundary, follow-ups and evidence. Search, attention and linked-run filters distinguish configured roles from recorded work. Several roles can refer to one run; the open-run count deduplicates its identity. A run reference without a receipt and readback date remains unverified.
+The report's Plan tab shows a Staff card when the dashboard commitment carries a `staff` block: one row per role with its status, its first follow-up and its execution proof, and a summary of configured roles, open managed runs and follow-ups that need attention. Several roles can refer to one run; the open-run count deduplicates its identity. A run reference without a receipt and readback date shows as "Run reference; evidence missing", never as a verified run.
 
 ## Refresh existing evidence
 

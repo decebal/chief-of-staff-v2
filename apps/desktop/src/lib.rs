@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cos::agents::{self, Harness, Request, Spec, State};
+use cos::agents::{self, Harness, Spec, State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime};
@@ -108,6 +108,54 @@ pub fn report_response<R: Runtime>(
         .expect("static response parts")
 }
 
+/// `cosreport://localhost/docs…`: the documentation room, through the same
+/// handler `cos dash` uses, so reading and saving behave alike in both.
+pub fn docs_response<R: Runtime>(
+    app: &AppHandle<R>,
+    req: &tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let s = app.state::<App>().get();
+    let ask = cos::docs::Ask {
+        method: req.method().as_str(),
+        path: req.uri().path(),
+        query: req.uri().query(),
+        cos_header: req.headers().get("x-cos").and_then(|h| h.to_str().ok()),
+        body: req.body(),
+    };
+    docs_http(
+        cos::docs::handle(&s.home, &s.workspace, &s.projects, &ask).unwrap_or(cos::docs::Reply {
+            status: 404,
+            kind: "text/plain; charset=utf-8",
+            body: b"not found".to_vec(),
+            headers: Vec::new(),
+        }),
+    )
+}
+
+/// A docs room answer as the scheme response, its own headers included.
+pub fn docs_http(r: cos::docs::Reply) -> tauri::http::Response<Vec<u8>> {
+    let mut b = tauri::http::Response::builder()
+        .status(r.status)
+        .header("Content-Type", r.kind)
+        .header("Cache-Control", "no-store");
+    for (k, v) in r.headers {
+        b = b.header(k, v);
+    }
+    b.body(r.body).expect("static response parts")
+}
+
+/// Saves the documentation room's organisation. The room asks for it by
+/// `postMessage`, which the window checks came from the Docs frame.
+#[tauri::command]
+async fn docs_save(app: tauri::State<'_, App>, organize: Value) -> Res<()> {
+    let home = app.get().home;
+    blocking(move || {
+        let org: cos::docs::Organize = serde_json::from_value(organize)?;
+        cos::docs::save_organize(&home, &org)
+    })
+    .await
+}
+
 #[derive(Serialize)]
 struct Row {
     spec: Spec,
@@ -126,12 +174,116 @@ async fn agents_list(app: tauri::State<'_, App>) -> Res<Vec<Row>> {
     .await
 }
 
+/// The staff: every role in `context/agents.json` (the template's when the
+/// file has none) with the terms it hires on outside any repo, and why the
+/// file was not used, if it was not.
+#[tauri::command]
+async fn agents_roles(app: tauri::State<'_, App>) -> Res<Value> {
+    let home = app.get().home;
+    blocking(move || {
+        let p = agents::policy::load(&home);
+        let roles: Vec<Value> = p
+            .roles
+            .iter()
+            .map(|r| json!({ "role": r, "terms": p.terms_for(None, Some(r)) }))
+            .collect();
+        Ok(json!({ "roles": roles, "defaults": p.defaults, "note": p.note }))
+    })
+    .await
+}
+
+/// How agents did, from every verdict in the ledger: by role, harness, model
+/// and repo (`scores`), and by role alone (`roles`).
+#[tauri::command]
+async fn agents_scorecard(app: tauri::State<'_, App>) -> Res<Value> {
+    let home = app.get().home;
+    blocking(move || {
+        let rows = agents::ledger::read(&home);
+        Ok(json!({
+            "scores": agents::ledger::scorecard(&rows),
+            "roles": agents::ledger::by_role(&rows),
+        }))
+    })
+    .await
+}
+
+/// Judges an ended agent again from what it left.
+#[tauri::command]
+async fn agents_rejudge(app: tauri::State<'_, App>, id: String) -> Res<agents::Verdict> {
+    let home = app.get().home;
+    blocking(move || agents::rejudge(&home, &id)).await
+}
+
+/// The workspace's open deliverables, the work a role can be hired for.
+#[tauri::command]
+async fn deliverables_open(app: tauri::State<'_, App>) -> Res<Vec<Value>> {
+    let ws = app.get().workspace;
+    blocking(move || {
+        let Some(st) = cos::state::read(&ws)? else {
+            return Ok(Vec::new());
+        };
+        Ok(cos::state::open(&st, "deliverables")
+            .map(|d| {
+                let goal = cos::state::find(&st, "goals", d["goalId"].as_str().unwrap_or(""));
+                json!({
+                    "id": d["id"], "title": d["title"], "status": d["status"],
+                    "goalId": d["goalId"], "goal": goal.map(|g| &g["title"]),
+                    "owner": d["owner"], "dueDate": d["dueDate"],
+                    "doneWhen": d.get("doneWhen").or_else(|| d.get("done_when")),
+                })
+            })
+            .collect())
+    })
+    .await
+}
+
+/// The chief of staff's latest brief, as counts: what it handed out.
+#[tauri::command]
+async fn brief_summary(app: tauri::State<'_, App>) -> Res<Value> {
+    let s = app.get();
+    blocking(move || {
+        let open = cos::state::read(&s.workspace)?
+            .map_or(0, |st| cos::state::open(&st, "deliverables").count());
+        let Some(b) = cos::store::latest::<cos::reports::Brief>(&s.home, cos::store::Kind::Briefs)?
+        else {
+            return Ok(json!({ "day": null, "openDeliverables": open }));
+        };
+        let v = &b.value;
+        let prompts = v
+            .needs_you
+            .iter()
+            .filter(|a| !a.agent_prompt.trim().is_empty())
+            .count()
+            + v.week
+                .goals
+                .iter()
+                .filter(|g| !g.agent_prompt.trim().is_empty())
+                .count();
+        Ok(json!({
+            "day": b.day,
+            "actions": v.needs_you.len(),
+            "goals": v.week.goals.len(),
+            "prompts": prompts,
+            "openDeliverables": open,
+        }))
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SpawnArgs {
     harness: Harness,
     repo: Option<String>,
+    /// Ignored when `deliverable` is set: the handoff is the prompt.
+    #[serde(default)]
     prompt: String,
+    /// A staff role from `context/agents.json`.
+    #[serde(default)]
+    role: Option<String>,
+    /// A tracked deliverable to hand off, by id.
+    #[serde(default)]
+    deliverable: Option<String>,
     title: Option<String>,
     model: Option<String>,
     worktree: bool,
@@ -148,6 +300,64 @@ struct SpawnArgs {
     contract: agents::Contract,
 }
 
+/// The hire as planned from the dialog's fields: the repo, the fit, the
+/// contract, and why it would be refused.
+fn plan(s: &Settings, args: &SpawnArgs) -> anyhow::Result<agents::hire::Plan> {
+    let ask = match args.deliverable.as_deref().filter(|d| !d.trim().is_empty()) {
+        Some(id) => agents::hire::Ask::Deliverable(id.to_owned()),
+        None => {
+            if args.prompt.trim().is_empty() {
+                anyhow::bail!("write the prompt first");
+            }
+            agents::hire::Ask::Task(agents::Task {
+                n: 0,
+                title: args
+                    .title
+                    .clone()
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        args.prompt
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take(80)
+                            .collect()
+                    }),
+                prompt: args.prompt.clone(),
+                source: args.source.clone().unwrap_or_else(|| "desktop".into()),
+            })
+        }
+    };
+    let repo = args
+        .repo
+        .as_deref()
+        .filter(|r| !r.trim().is_empty())
+        .map(PathBuf::from);
+    let mut p = agents::hire::plan(
+        &agents::hire::Where {
+            home: &s.home,
+            workspace: &s.workspace,
+            projects: &s.projects,
+        },
+        args.role.as_deref().filter(|r| !r.trim().is_empty()),
+        ask,
+        repo,
+        &args.contract,
+    )?;
+    if let Some(t) = args.title.as_deref().filter(|t| !t.trim().is_empty()) {
+        p.title = t.to_owned();
+    }
+    Ok(p)
+}
+
+/// The pre-hire check the dialog shows before anything starts.
+#[tauri::command]
+async fn agents_fit(app: tauri::State<'_, App>, args: SpawnArgs) -> Res<agents::hire::Plan> {
+    let s = app.get();
+    blocking(move || plan(&s, &args)).await
+}
+
 #[tauri::command]
 async fn agents_spawn(app: tauri::State<'_, App>, args: SpawnArgs) -> Res<Vec<Spec>> {
     let s = app.get();
@@ -155,49 +365,55 @@ async fn agents_spawn(app: tauri::State<'_, App>, args: SpawnArgs) -> Res<Vec<Sp
         "no cos binary: set COS_BIN, build it (`cargo build`), or `task install`".to_owned(),
     )?;
     blocking(move || {
-        let repo = args
-            .repo
-            .filter(|r| !r.trim().is_empty())
-            .map(PathBuf::from);
-        let title = args
-            .title
-            .filter(|t| !t.trim().is_empty())
-            .unwrap_or_else(|| {
-                args.prompt
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .chars()
-                    .take(80)
-                    .collect()
-            });
+        let planned = plan(&s, &args)?;
         (0..args.count.clamp(1, 32))
             .map(|_| {
-                agents::spawn(
-                    &s.home,
-                    Request {
-                        harness: args.harness,
-                        program: args.program.clone(),
-                        model: args.model.clone().filter(|m| !m.trim().is_empty()),
-                        worktree: args.worktree && repo.is_some(),
-                        repo: repo.clone(),
-                        title: title.clone(),
-                        source: args.source.clone().unwrap_or_else(|| "desktop".into()),
-                        prompt: args.prompt.clone(),
-                        deadline: Duration::from_secs(args.deadline_secs),
-                        budget_usd: args.budget_usd,
-                        slots: s.slots,
-                        contract: args.contract.clone(),
-                        // The window always sends both.
-                        explicit: agents::policy::Explicit {
-                            deadline: true,
-                            budget: true,
-                        },
+                let req = planned.clone().request(agents::hire::Run {
+                    harness: args.harness,
+                    program: args.program.clone(),
+                    model: args.model.clone().filter(|m| !m.trim().is_empty()),
+                    worktree: args.worktree,
+                    deadline: Duration::from_secs(args.deadline_secs),
+                    budget_usd: args.budget_usd,
+                    slots: s.slots,
+                    // The window always sends both.
+                    explicit: agents::policy::Explicit {
+                        deadline: true,
+                        budget: true,
                     },
-                    &cos,
-                )
+                })?;
+                agents::spawn(&s.home, req, &cos)
             })
             .collect()
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct RecordArgs {
+    id: String,
+    outcome: agents::Tested,
+    #[serde(default)]
+    notes: String,
+    #[serde(default)]
+    evidence: Vec<String>,
+}
+
+/// Stores what you found when you ran what a judged agent drafted.
+#[tauri::command]
+async fn agents_record(app: tauri::State<'_, App>, args: RecordArgs) -> Res<State> {
+    let home = app.get().home;
+    blocking(move || {
+        agents::record(
+            &home,
+            &args.id,
+            agents::Recorded {
+                outcome: args.outcome,
+                notes: args.notes,
+                evidence: args.evidence,
+                at: String::new(),
+            },
+        )
     })
     .await
 }
@@ -214,21 +430,23 @@ async fn agents_clean(app: tauri::State<'_, App>, id: String, force: bool) -> Re
     blocking(move || agents::clean(&home, &id, force)).await
 }
 
-/// Activity lines from byte offset `from`, and the offset to ask for next.
+/// Activity from byte offset `from`: each tool call with what it ran, each
+/// result, each message; and the offset to ask for next. Every entry has a
+/// `key` from its place in the file, so a range read twice adds nothing.
 #[tauri::command]
 async fn agents_tail(app: tauri::State<'_, App>, id: String, from: u64) -> Res<Value> {
     let home = app.get().home;
     blocking(move || {
         let (spec, _) = agents::read(&home, &id)?;
-        let (lines, next) =
-            agents::view::activity(&agents::events_path(&home, &id), spec.harness, from);
+        let (entries, next) =
+            agents::view::feed(&agents::events_path(&home, &id), spec.harness, from);
         let seed_log = std::fs::read_to_string(agents::dir(&home, &id).join("seed.log")).ok();
-        Ok(json!({ "lines": lines, "next": next, "seedLog": seed_log }))
+        Ok(json!({ "entries": entries, "next": next, "seedLog": seed_log }))
     })
     .await
 }
 
-/// Agent prompts from the latest brief or review, numbered as the report numbers them.
+/// Agent prompts from the latest brief (actions or week goals), numbered as the report numbers them.
 #[tauri::command]
 async fn agent_tasks(app: tauri::State<'_, App>, from: agents::From) -> Res<Vec<agents::Task>> {
     let home = app.get().home;
@@ -288,8 +506,16 @@ pub fn builder<R: Runtime>(builder: Builder<R>, settings: Option<Settings>) -> B
     };
     builder
         .register_asynchronous_uri_scheme_protocol("cosreport", |ctx, req, responder| {
-            let (app, path) = (ctx.app_handle().clone(), req.uri().path().to_owned());
-            std::thread::spawn(move || responder.respond(report_response(&app, &path)));
+            let app = ctx.app_handle().clone();
+            std::thread::spawn(move || {
+                let path = req.uri().path().to_owned();
+                let res = if path.starts_with("/docs") {
+                    docs_response(&app, &req)
+                } else {
+                    report_response(&app, &path)
+                };
+                responder.respond(res)
+            });
         })
         .setup(|app| {
             if app.try_state::<App>().is_none() {
@@ -302,11 +528,19 @@ pub fn builder<R: Runtime>(builder: Builder<R>, settings: Option<Settings>) -> B
             paths,
             set_workspace,
             agents_list,
+            agents_fit,
             agents_spawn,
+            agents_record,
             agents_stop,
             agents_clean,
             agents_tail,
             agent_tasks,
+            agents_roles,
+            agents_scorecard,
+            agents_rejudge,
+            deliverables_open,
+            brief_summary,
             repos,
+            docs_save,
         ])
 }

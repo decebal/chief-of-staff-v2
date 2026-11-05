@@ -18,7 +18,7 @@ won; `cos` is the engine that runs it.
 |---|---|
 | `scripts/state.py` | `src/state.rs`: same files, rules and messages, same `write.lock`. `tests/state.rs` ports all 21 kit tests and runs both validators over 25 candidates; each reads what the other commits |
 | `references/review.md`: ≤ 3 actions, ≤ 2 changes, DECIDE / DO / DELEGATE / BATCH, coverage kept honest | `Brief` (`src/reports.rs`): `needs_you` (schema `maxItems` 3, cut in code too), `what_changed` (2), `backlog`, `coverage` with health and completeness apart |
-| `references/strategy.md`: weekly steering, outcomes not outputs | `Review`: a `GoalCheck` per goal with KPI, weakened assumption, bottleneck, steer and what would change it; `proposed` deliverables |
+| `references/strategy.md`: weekly steering, outcomes not outputs | `Brief.week` (`Week`): a `GoalCheck` per goal with KPI, this week's evidence, bottleneck, steer and what would change it; `proposed` deliverables, `decisions`, `stop_doing`. Judged in the daily brief, before today's actions, so today is ranked against it |
 | `references/delegation.md`: nine-part handoff | `src/handoff.rs`, from the state, no model; `cos handoff`, MCP `handoff`, the Plan tab, `cos agents spawn --deliverable` |
 | profile `sources[].readsApproved` | `context::tools`: only approved sources' connectors reach a brain; `context::local_reads`: `gh` / `cn` run only for an approved `code` / `tasks` source; `pipeline::cover_every_source`: each approved source gets a coverage row |
 | `references/review.md`: calendar is this week plus tomorrow when outside it | `pipeline::dates_at` computes the window, the prompt carries exact bounds, `hold_to_window` drops entries dated outside it |
@@ -26,9 +26,12 @@ won; `cos` is the engine that runs it.
 | `guides/OPTIONAL-DASHBOARD.md` | `cos dash` / the report: Today (priorities), Plan (goals, KPIs, this week, sources), Steering, History; loopback only, no remote scripts, 320 px without sideways scroll |
 | Codex plugin + marketplace | unchanged, plus `.claude-plugin/` manifests so Claude Code installs the same skill directory |
 
-Runs saved before the kit's shape still load: `Brief` and `Review`
-deserialize through wire types that fold `must_do`, `celebrations`, `bets`,
-`drift` and the rest into the new fields.
+Briefs saved before the kit's shape still load: `Brief` deserializes through
+a wire type that folds `must_do`, `celebrations` and the rest into the new
+fields, and a brief with no `week` loads with an empty one. One run a day
+does both horizons: a separate weekly review left the report showing a
+Friday steer beside today's actions, and the brief never read it. Saved
+`out/reviews/` are no longer read by anything.
 
 ## Transport
 
@@ -45,28 +48,20 @@ for four MCP servers and rebuilding subagents by hand.
 | Cookbook piece | Here |
 |---|---|
 | `CLAUDE.md` company context | `CLAUDE.md` + `context/goals.md`, `principles.md`, `decisions/` |
-| `.claude/agents/financial-analyst.md` | `.claude/agents/{tactician,strategist}.md` |
-| main agent with "delegate, don't answer" | `.claude/agents/chief-of-staff.md` |
+| `.claude/agents/financial-analyst.md` | `.claude/agents/tactician.md` |
 | `scripts/*.py` called through Bash | `src/gather.rs` — `cn` and `gh`, run by `cos`, not by the model |
-| `/budget-impact` slash command | `cos brief`, `cos review`, `cos ask` |
+| `/budget-impact` slash command | `cos brief`, `cos ask` |
 | PostToolUse `report-tracker.py` hook | `out/audit/YYYY-MM-DD.jsonl`, written from the event stream |
-| `executive` output style | the `Answering` rules in the chief's prompt + typed reports |
+| `executive` output style | the `Answering a question` rules in the tactician's prompt + the typed brief |
 | `send_query()` | `claude::execute` |
 
-## `cos ask`: orchestration in Rust
+## `cos ask`: one run
 
 The Agent tool runs subagents in the background, and `claude -p` emits its
 result before they report: the first live run returned "both brains are still
-running" for $0.85. So `cos ask` orchestrates outside the model:
-
-1. **Route** — the chief, no tools, returns `{brains, framing}` (`--json-schema`).
-2. **Brains** — `cos` runs each chosen brain as its own `claude -p --agent …`,
-   in parallel threads, sharing one deadline.
-3. **Merge** — the chief, no tools, merges under its Answering rules. A failed
-   brain arrives as `FAILED: …`, which the chief reports as a gap.
-
-Interactive sessions (agents installed in `~/.claude/agents`) still delegate
-in-session; there background agents report back.
+running" for $0.85. With one brain there is nothing to route or merge, so
+`cos ask` is a single `claude -p --agent tactician` run on the same grounding
+as a brief (workspace, `context/`, local facts read fresh), under one deadline.
 
 ## Cost
 
@@ -79,11 +74,14 @@ one-word reply (Sonnet):
 | `--tools ""` (drops ToolSearch, so MCP tools load eagerly) | 209,597 | $0.84 |
 | `--setting-sources project`, unused servers denied, ToolSearch kept | 42,465 | $0.17 |
 
-`cos` uses the last for brains and `--tools "" --strict-mcp-config` for route
-and merge. Which servers are "unused" is per person, so the deny list is data:
-`context/deny-mcp.txt`, seeded empty from `templates/context/`. Live runs:
-`cos brief` $0.32 / 9 turns; `cos ask` (both brains) $1.45 including the route
-step. Every run carries `--max-budget-usd`.
+`cos` uses the last for every run. Which servers are "unused" is per person,
+so the deny list is data: `context/deny-mcp.txt`, seeded empty from
+`templates/context/`. Live run, before the brief carried the week part:
+`cos brief` $0.32 / 9 turns; the brief with its week part is not yet
+measured. Every run carries `--max-budget-usd`: the brief defaults to $3.00,
+the weekly review's $5.00 opus cap at sonnet's price (about half per token)
+plus headroom for today's part, which shares the same connector reads; `ask`
+defaults to $2.00.
 
 ## Safety
 
@@ -119,15 +117,17 @@ built on `rmcp` 3.5 (`src/mcp.rs`).
 | Mode | Tools | Why |
 |---|---|---|
 | stdio (`Local`) | all of them | runs as you, on your machine |
-| HTTP (`Remote`) | `latest_brief`, `latest_review` only | a leaked URL must not spend money or start runs |
+| HTTP (`Remote`) | `latest_brief` only | a leaked URL must not spend money or start runs |
 
 The remote filter sits in both `list_tools` and `call_tool`, so a client that
 calls an unlisted tool by name gets `-32602 tool … is local-only`. HTTP is
 served at `/mcp/<token>` (≥ 32 chars); every other path is a 404. Verified
-2026-10-16 with curl: wrong path 404, two tools listed, `brief` refused.
+2026-10-16 with curl, when two read tools existed: wrong path 404, two tools
+listed, `brief` refused. Since then the remote list is `latest_brief` alone
+(not re-verified over HTTP).
 
 Saved runs are stored as JSON next to the markdown (`src/store.rs`), so the
-free tools return typed `structuredContent`. Brief and review tools carry
+free tools return typed `structuredContent`. The brief tools carry
 `_meta.ui.resourceUri = ui://cos/dashboard`; that resource is
 `src/dashboard.html` with mime `text/html;profile=mcp-app`, speaking the MCP
 Apps postMessage protocol (2026-01-26) without the JS SDK.
@@ -149,8 +149,8 @@ way to populate a Space from a server was found.
 
 ## Agents: from prompt to running work
 
-A brief hands out one `agent_prompt` per action and a review one per goal;
-every tracked deliverable has a handoff. `cos agents spawn --from brief --item 2`
+A brief hands out one `agent_prompt` per action and one per goal of its week
+(`--from goals`); every tracked deliverable has a handoff. `cos agents spawn --from brief --item 2`
 or `--deliverable D-1` runs it instead of leaving it to be pasted
 (`src/agents/`).
 
@@ -185,6 +185,6 @@ clean refusing work.
   from the page. The page is read-only; acknowledgments go through
   `cos state commit` or the skill.
 - A scheduler that follows the kit's scheduling reference. `task schedule`
-  runs `cos brief` and `cos review` under launchd, with tracking gated on the
+  runs `cos brief` on weekdays under launchd, with tracking gated on the
   profile; there is no quiet-run notification path.
 - Automatic rate-limit recovery. Off in the kit, and off here.

@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::agents;
 use crate::pipeline::Config;
-use crate::reports::{Brief, Review};
+use crate::reports::Brief;
 use crate::store::{self, Kind};
 
 const DASHBOARD_URI: &str = "ui://cos/dashboard";
@@ -28,7 +28,7 @@ const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 const APP_MIME: &str = "text/html;profile=mcp-app";
 
 /// Tools a remote client may call. Everything else is local-only.
-const REMOTE_TOOLS: &[&str] = &["latest_brief", "latest_review"];
+const REMOTE_TOOLS: &[&str] = &["latest_brief"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -45,7 +45,7 @@ pub struct Cos {
 /// What every tool returns as structured content; the dashboard reads this.
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct Report {
-    /// "brief" or "review"; null when nothing is saved yet.
+    /// "brief"; null when nothing is saved yet.
     kind: Option<String>,
     day: Option<String>,
     report: Option<Value>,
@@ -62,7 +62,8 @@ pub struct AskArgs {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct SpinOffArgs {
-    /// "brief" (an action) or "review" (a goal), from the latest saved run.
+    /// "brief" (an action) or "goals" (a goal of the week), from the latest
+    /// saved brief.
     from: agents::From,
     /// The item's number, as the report numbers it.
     item: usize,
@@ -76,6 +77,10 @@ pub struct SpinOffArgs {
     /// Paths the agent may change, relative to the repo; empty allows any.
     #[serde(default)]
     scope: Vec<String>,
+    /// A staff role from the hiring policy (builder, reviewer, tester, ...).
+    /// The hire is refused when the role cannot do the work from its sandbox.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -112,25 +117,18 @@ impl Cos {
     }
 
     /// The most recent saved daily brief: at most three actions that need you,
-    /// what changed, then calendar, backlog and source coverage. Free and
-    /// instant; does not call Claude.
+    /// what changed, this week against your goals (each with rock/sand/water
+    /// confidence and a steer, proposed deliverables, decisions), then
+    /// calendar, backlog and source coverage. Free and instant; does not call
+    /// Claude.
     #[tool(meta = ui_meta(), output_schema = schema_for_output::<Report>(),
            annotations(read_only_hint = true, open_world_hint = false))]
     async fn latest_brief(&self) -> CallToolResult {
         self.latest::<Brief>(Kind::Briefs, "brief")
     }
 
-    /// The most recent saved weekly review: each goal with rock/sand/water
-    /// confidence and a steer, proposed deliverables, decisions. Free and
-    /// instant; does not call Claude.
-    #[tool(meta = ui_meta(), output_schema = schema_for_output::<Report>(),
-           annotations(read_only_hint = true, open_world_hint = false))]
-    async fn latest_review(&self) -> CallToolResult {
-        self.latest::<Review>(Kind::Reviews, "review")
-    }
-
-    /// Run a fresh daily brief now. Calls Claude: costs money (about $0.30) and
-    /// can take a few minutes. Prefer latest_brief unless asked to refresh.
+    /// Run a fresh daily brief now. Calls Claude: costs money and can take a
+    /// few minutes. Prefer latest_brief unless asked to refresh.
     #[tool(meta = ui_meta(), output_schema = schema_for_output::<Report>(),
            annotations(read_only_hint = true, open_world_hint = true))]
     async fn brief(&self) -> CallToolResult {
@@ -148,28 +146,9 @@ impl Cos {
         }
     }
 
-    /// Run a fresh weekly review now. Calls Claude: costs money (about $1–2)
-    /// and can take a few minutes. Prefer latest_review unless asked to refresh.
-    #[tool(meta = ui_meta(), output_schema = schema_for_output::<Report>(),
-           annotations(read_only_hint = true, open_world_hint = true))]
-    async fn review(&self) -> CallToolResult {
-        let cfg = self.cfg.clone();
-        match tokio::task::spawn_blocking(move || cfg.review()).await {
-            Ok(Ok(done)) => structured(Report {
-                kind: Some("review".into()),
-                day: Some(jiff::Zoned::now().date().to_string()),
-                report: serde_json::to_value(&done.value).ok(),
-                markdown: Some(done.markdown),
-                cost_usd: Some(done.cost_usd),
-            }),
-            Ok(Err(e)) => failed(e),
-            Err(e) => failed(e),
-        }
-    }
-
-    /// Ask the chief of staff a question about priorities or today's work. It
-    /// routes to the tactical and/or strategic brain and merges their answers.
-    /// Calls Claude: costs money (about $1–1.50) and can take a few minutes.
+    /// Ask the chief of staff a question about goals, priorities or today's
+    /// work; the tactician answers it on the same sources as a brief. Calls
+    /// Claude: costs money and can take a few minutes.
     #[tool(annotations(read_only_hint = true, open_world_hint = true))]
     async fn ask(&self, Parameters(args): Parameters<AskArgs>) -> CallToolResult {
         let cfg = self.cfg.clone();
@@ -258,6 +237,7 @@ impl Cos {
     #[tool(annotations(read_only_hint = false, open_world_hint = true))]
     async fn spin_off(&self, Parameters(args): Parameters<SpinOffArgs>) -> CallToolResult {
         let home = self.cfg.home.clone();
+        let workspace = self.cfg.workspace.clone();
         let projects = self.cfg.projects.clone();
         let budget = self.cfg.budget.unwrap_or(5.0);
         let explicit_budget = self.cfg.budget.is_some();
@@ -267,32 +247,35 @@ impl Cos {
                 .find(|t| t.n == args.item)
                 .ok_or_else(|| anyhow::anyhow!("item {} has no agent prompt", args.item))?;
             let cos = std::env::current_exe()?;
-            agents::spawn(
-                &home,
-                agents::Request {
-                    harness: args.harness.unwrap_or(agents::Harness::Claude),
-                    program: None,
-                    model: None,
-                    repo: agents::infer_repo(&task.prompt, &projects),
-                    worktree: true,
-                    title: task.title,
-                    source: task.source,
-                    prompt: task.prompt,
-                    deadline: std::time::Duration::from_secs(1800),
-                    budget_usd: budget,
-                    slots: None,
-                    contract: agents::Contract {
-                        done_when: None,
-                        checks: args.checks,
-                        scope: args.scope,
-                    },
-                    explicit: agents::policy::Explicit {
-                        deadline: false,
-                        budget: explicit_budget,
-                    },
+            let plan = agents::hire::plan(
+                &agents::hire::Where {
+                    home: &home,
+                    workspace: &workspace,
+                    projects: &projects,
                 },
-                &cos,
-            )
+                args.role.as_deref(),
+                agents::hire::Ask::Task(task),
+                None,
+                &agents::Contract {
+                    checks: args.checks,
+                    scope: args.scope,
+                    ..Default::default()
+                },
+            )?;
+            let req = plan.request(agents::hire::Run {
+                harness: args.harness.unwrap_or(agents::Harness::Claude),
+                program: None,
+                model: None,
+                worktree: true,
+                deadline: std::time::Duration::from_secs(1800),
+                budget_usd: budget,
+                slots: None,
+                explicit: agents::policy::Explicit {
+                    deadline: false,
+                    budget: explicit_budget,
+                },
+            })?;
+            agents::spawn(&home, req, &cos)
         };
         match tokio::task::spawn_blocking(run).await {
             Ok(Ok(spec)) => CallToolResult::success(vec![ContentBlock::text(format!(
@@ -369,9 +352,9 @@ impl ServerHandler for Cos {
             env!("CARGO_PKG_VERSION"),
         ))
         .with_instructions(
-            "Chief of staff. latest_brief / latest_review are free and instant: use them \
-                 first. brief, review and ask call Claude and cost money; use them only when \
-                 the user asks for a fresh run or a question the saved brief cannot answer.",
+            "Chief of staff. latest_brief is free and instant: use it first. brief and ask \
+                 call Claude and cost money; use them only when the user asks for a fresh run \
+                 or a question the saved brief cannot answer.",
         )
     }
 
@@ -426,8 +409,10 @@ impl ServerHandler for Cos {
                 None,
             ));
         }
+        let html = crate::design::inline(DASHBOARD_HTML)
+            .map_err(|e| ErrorData::internal_error(format!("{e:#}"), None))?;
         Ok(ReadResourceResult::new(vec![
-            ResourceContents::text(DASHBOARD_HTML, req.uri).with_mime_type(APP_MIME),
+            ResourceContents::text(html, req.uri).with_mime_type(APP_MIME),
         ])
         .into())
     }

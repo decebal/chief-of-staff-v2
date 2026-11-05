@@ -70,6 +70,7 @@ fn request(repo: Option<PathBuf>, prompt: &str, slots: usize) -> Request {
         slots: Some(slots),
         contract: Default::default(),
         explicit: Default::default(),
+        role: None,
     }
 }
 

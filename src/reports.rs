@@ -1,13 +1,13 @@
-//! The two structured outputs, shaped by the starter kit's review and strategy
-//! references: a brief is at most three actions that need the user and two
-//! verified changes, with the detail kept behind it; a review steers each goal.
-//! Each struct has its JSON Schema beside it; the schema is what
-//! `--json-schema` enforces, the struct is what Rust reads back.
-//! `tests/reports.rs` keeps the pair in step.
+//! The brief, shaped by the starter kit's review and strategy references: at
+//! most three actions that need the user and two verified changes, the week
+//! they sit in (each goal steered, the deliverables the week should hold), and
+//! the detail kept behind it. The struct has its JSON Schema beside it; the
+//! schema is what `--json-schema` enforces, the struct is what Rust reads
+//! back. `tests/reports.rs` keeps the pair in step.
 //!
-//! Runs saved before this shape still load: each struct deserializes through
-//! a wire type that folds the old fields (`must_do`, `celebrations`, `bets`, …)
-//! into the new ones.
+//! Briefs saved before this shape still load: the struct deserializes through
+//! a wire type that folds the old fields (`must_do`, `celebrations`, …) into
+//! the new ones, and a missing `week` is empty.
 
 use std::fmt::Write as _;
 
@@ -26,6 +26,8 @@ pub struct Brief {
     pub needs_you: Vec<Action>,
     /// At most two material, verified changes; empty when there are none.
     pub what_changed: Vec<Change>,
+    /// This week against the goals; empty in briefs saved before it existed.
+    pub week: Week,
     pub calendar: Vec<Slot>,
     /// Smaller follow-ups kept with an owner and a review trigger.
     pub backlog: Vec<Followup>,
@@ -34,6 +36,24 @@ pub struct Brief {
     /// Anything not read that is not a source: missing context, a skipped step.
     pub gaps: Vec<String>,
     pub upcoming: Vec<Milestone>,
+    /// Every open ticket assigned to the user in the profile's Jira projects,
+    /// as read this run; empty when Jira is not an approved source.
+    pub tickets: Vec<Ticket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Ticket {
+    /// `WEB-2929`.
+    pub key: String,
+    pub summary: String,
+    pub status: String,
+    #[serde(default)]
+    pub priority: String,
+    /// The issue's own URL.
+    pub url: String,
+    /// The goal whose `jira` list names it, else empty.
+    #[serde(default)]
+    pub goal_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,9 +172,11 @@ pub struct Milestone {
     pub source: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(from = "ReviewWire")]
-pub struct Review {
+/// The brief's week part: whether this week moved each goal, and what the
+/// week should hold, so today's actions are set against it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Week {
     pub summary: String,
     /// One per confirmed goal.
     pub goals: Vec<GoalCheck>,
@@ -162,9 +184,6 @@ pub struct Review {
     pub proposed: Vec<Proposal>,
     pub decisions: Vec<Decision>,
     pub stop_doing: Vec<String>,
-    pub what_changed: Vec<Change>,
-    pub gaps: Vec<String>,
-    pub upcoming: Vec<Milestone>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,8 +207,6 @@ pub struct GoalCheck {
     pub kpi: String,
     /// What gained evidence this week.
     pub evidence: String,
-    /// The assumption that weakened, if any.
-    pub weakened: String,
     pub bottleneck: String,
     pub recommendation: Steer,
     pub next: String,
@@ -243,6 +260,8 @@ struct BriefWire {
     #[serde(default)]
     what_changed: Vec<Change>,
     #[serde(default)]
+    week: Week,
+    #[serde(default)]
     calendar: Vec<Slot>,
     #[serde(default)]
     backlog: Vec<Followup>,
@@ -252,6 +271,8 @@ struct BriefWire {
     gaps: Vec<String>,
     #[serde(default)]
     upcoming: Vec<Milestone>,
+    #[serde(default)]
+    tickets: Vec<Ticket>,
     #[serde(default)]
     must_do: Vec<OldAction>,
     #[serde(default)]
@@ -345,80 +366,13 @@ impl From<BriefWire> for Brief {
             headline: w.headline,
             needs_you,
             what_changed,
+            week: w.week,
             calendar: w.calendar,
             backlog,
             coverage: w.coverage,
             gaps: w.gaps,
             upcoming: w.upcoming,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct ReviewWire {
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    goals: Vec<GoalCheck>,
-    #[serde(default)]
-    proposed: Vec<Proposal>,
-    #[serde(default)]
-    decisions: Vec<Decision>,
-    #[serde(default)]
-    stop_doing: Vec<String>,
-    #[serde(default)]
-    what_changed: Vec<Change>,
-    #[serde(default)]
-    gaps: Vec<String>,
-    #[serde(default)]
-    upcoming: Vec<Milestone>,
-    #[serde(default)]
-    bets: Vec<OldBet>,
-    #[serde(default)]
-    drift: Vec<String>,
-    #[serde(default)]
-    celebrations: Vec<OldWin>,
-}
-
-#[derive(Deserialize)]
-struct OldBet {
-    bet: String,
-    confidence: Confidence,
-    evidence: String,
-    next: String,
-    #[serde(default)]
-    agent_prompt: String,
-}
-
-impl From<ReviewWire> for Review {
-    fn from(w: ReviewWire) -> Self {
-        let mut goals = w.goals;
-        goals.extend(w.bets.into_iter().map(|b| GoalCheck {
-            goal_id: String::new(),
-            goal: b.bet,
-            confidence: b.confidence,
-            kpi: "unknown".into(),
-            evidence: b.evidence,
-            weakened: String::new(),
-            bottleneck: String::new(),
-            recommendation: Steer::Maintain,
-            next: b.next,
-            would_change: String::new(),
-            agent_prompt: b.agent_prompt,
-        }));
-        let mut stop_doing = w.stop_doing;
-        stop_doing.extend(w.drift.into_iter().map(|d| format!("Drift: {d}")));
-        let mut what_changed = w.what_changed;
-        what_changed.extend(w.celebrations.into_iter().map(Change::from));
-        Review {
-            summary: w.summary,
-            goals,
-            proposed: w.proposed,
-            decisions: w.decisions,
-            stop_doing,
-            what_changed,
-            gaps: w.gaps,
-            upcoming: w.upcoming,
+            tickets: w.tickets,
         }
     }
 }
@@ -481,6 +435,7 @@ pub fn brief_schema() -> Value {
             "agent_prompt": str_(),
         })), MAX_ACTIONS),
         "what_changed": changes(),
+        "week": week(),
         "calendar": list(obj(json!({ "date": str_(), "start": str_(), "end": str_(), "what": str_(), "prep": str_() }))),
         "backlog": list(obj(json!({ "item": str_(), "owner": str_(), "source": str_(), "next_review": str_() }))),
         "coverage": list(obj(json!({
@@ -493,10 +448,18 @@ pub fn brief_schema() -> Value {
         }))),
         "gaps": list(str_()),
         "upcoming": milestones(),
+        "tickets": list(obj(json!({
+            "key": str_(),
+            "summary": str_(),
+            "status": str_(),
+            "priority": str_(),
+            "url": str_(),
+            "goal_id": str_(),
+        }))),
     }))
 }
 
-pub fn review_schema() -> Value {
+fn week() -> Value {
     let basis = one_of(&["proposed", "confirmed", "unknown"]);
     obj(json!({
         "summary": str_(),
@@ -506,7 +469,6 @@ pub fn review_schema() -> Value {
             "confidence": one_of(&["rock", "sand", "water"]),
             "kpi": str_(),
             "evidence": str_(),
-            "weakened": str_(),
             "bottleneck": str_(),
             "recommendation": one_of(&["maintain", "sequence", "reduce_scope", "test", "delegate", "stop"]),
             "next": str_(),
@@ -525,53 +487,6 @@ pub fn review_schema() -> Value {
         }))),
         "decisions": list(obj(json!({ "decision": str_(), "options": list(str_()), "recommendation": str_() }))),
         "stop_doing": list(str_()),
-        "what_changed": changes(),
-        "gaps": list(str_()),
-        "upcoming": milestones(),
-    }))
-}
-
-/// The chief's routing decision for `cos ask`.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Route {
-    pub brains: Vec<BrainName>,
-    /// What each brain should answer, restated so it stands alone.
-    pub framing: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BrainName {
-    Tactician,
-    Strategist,
-}
-
-impl BrainName {
-    pub fn agent(self) -> &'static str {
-        match self {
-            Self::Tactician => "tactician",
-            Self::Strategist => "strategist",
-        }
-    }
-
-    pub fn model(self) -> &'static str {
-        match self {
-            Self::Tactician => "sonnet",
-            Self::Strategist => "opus",
-        }
-    }
-}
-
-pub fn route_schema() -> Value {
-    obj(json!({
-        "brains": {
-            "type": "array",
-            "items": { "type": "string", "enum": ["tactician", "strategist"] },
-            "minItems": 1,
-            "maxItems": 2,
-            "uniqueItems": true,
-        },
-        "framing": str_(),
     }))
 }
 
@@ -647,8 +562,8 @@ impl Coverage {
 
 impl Brief {
     /// The brief as the kit specifies it: Needs you, then What changed, each
-    /// only when it has content. The detail (calendar, backlog, coverage)
-    /// follows below a rule, for whoever wants it.
+    /// only when it has content. The week behind them and the detail
+    /// (calendar, backlog, coverage) follow below a rule, for whoever wants it.
     pub fn to_markdown(&self, day: &str) -> String {
         let mut s = format!("# Brief — {day}\n\n{}\n", self.headline);
         section(&mut s, "Needs you", &self.needs_you, |a| {
@@ -667,15 +582,18 @@ impl Brief {
             format!("**{}** {} _{}_", c.kind, c.what, c.source)
         });
         let partial: Vec<&Coverage> = self.coverage.iter().filter(|c| !c.complete()).collect();
-        if self.calendar.is_empty()
+        if self.week.is_empty()
+            && self.calendar.is_empty()
             && self.backlog.is_empty()
             && partial.is_empty()
             && self.gaps.is_empty()
             && self.upcoming.is_empty()
+            && self.tickets.is_empty()
         {
             return s;
         }
         s.push_str("\n---\n");
+        self.week.write_markdown(&mut s);
         section(&mut s, "Calendar", &self.calendar, |x| {
             let day = if x.date.is_empty() {
                 String::new()
@@ -698,6 +616,14 @@ impl Brief {
         section(&mut s, "Coming up", &self.upcoming, |m| {
             format!("{} {}", m.date, m.what)
         });
+        section(&mut s, "Jira assigned to you", &self.tickets, |t| {
+            let goal = if t.goal_id.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", t.goal_id)
+            };
+            format!("[{}]({}) {} — {}{goal}", t.key, t.url, t.summary, t.status)
+        });
         section(&mut s, "Coverage", &partial, |c| {
             format!(
                 "{}: {} · {}{}",
@@ -716,17 +642,28 @@ impl Brief {
     }
 }
 
-impl Review {
-    pub fn to_markdown(&self, day: &str) -> String {
-        let mut s = format!("# Weekly review — {day}\n\n{}\n", self.summary);
-        section(&mut s, "Goals", &self.goals, |g| {
+impl Week {
+    pub fn is_empty(&self) -> bool {
+        self.summary.is_empty()
+            && self.goals.is_empty()
+            && self.proposed.is_empty()
+            && self.decisions.is_empty()
+            && self.stop_doing.is_empty()
+    }
+
+    fn write_markdown(&self, s: &mut String) {
+        if self.is_empty() {
+            return;
+        }
+        s.push_str("\n## This week\n");
+        if !self.summary.is_empty() {
+            let _ = writeln!(s, "\n{}", self.summary);
+        }
+        section(s, "Goals", &self.goals, |g| {
             let mut line = format!(
                 "`{}` **{}** — KPI: {}. {} → {}: {}",
                 g.confidence, g.goal, g.kpi, g.evidence, g.recommendation, g.next
             );
-            if !g.weakened.is_empty() {
-                let _ = write!(line, " Weakened: {}.", g.weakened);
-            }
             if !g.bottleneck.is_empty() {
                 let _ = write!(line, " Bottleneck: {}.", g.bottleneck);
             }
@@ -735,7 +672,7 @@ impl Review {
             }
             line
         });
-        section(&mut s, "Proposed this week", &self.proposed, |p| {
+        section(s, "Proposed this week", &self.proposed, |p| {
             let due = if p.due_date.is_empty() {
                 "no date".to_owned()
             } else {
@@ -749,7 +686,7 @@ impl Review {
                 p.done_when
             )
         });
-        section(&mut s, "Decisions needed", &self.decisions, |d| {
+        section(s, "Decisions needed", &self.decisions, |d| {
             format!(
                 "{} — options: {} → recommend: {}",
                 d.decision,
@@ -757,15 +694,7 @@ impl Review {
                 d.recommendation
             )
         });
-        section(&mut s, "Stop doing", &self.stop_doing, String::clone);
-        section(&mut s, "What changed", &self.what_changed, |c| {
-            format!("**{}** {} _{}_", c.kind, c.what, c.source)
-        });
-        section(&mut s, "Coming up", &self.upcoming, |m| {
-            format!("{} {}", m.date, m.what)
-        });
-        section(&mut s, "Gaps (not read)", &self.gaps, String::clone);
-        s
+        section(s, "Stop doing", &self.stop_doing, String::clone);
     }
 }
 

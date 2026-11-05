@@ -20,6 +20,7 @@ fn spec(harness: Harness, prompt: &str) -> Spec {
         slots: None,
         contract: Default::default(),
         limits: Default::default(),
+        role: None,
     }
 }
 

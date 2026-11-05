@@ -6,12 +6,89 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 
 /// Hard ceiling for any child `cos` starts. Lower per call, never higher.
 pub const CEILING: Duration = Duration::from_secs(300);
+
+/// Longest single wait between deadline checks, so a deadline that passed
+/// while the machine slept fires within this of waking.
+const POLL: Duration = Duration::from_secs(1);
+
+/// The two clocks a deadline reads. On macOS `Instant` (mach uptime) stops
+/// while the machine sleeps, so a deadline on it alone never fires across
+/// hours asleep; the wall clock keeps counting.
+pub trait Clock {
+    fn mono(&self) -> Instant;
+    fn wall(&self) -> SystemTime;
+}
+
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn mono(&self) -> Instant {
+        Instant::now()
+    }
+    fn wall(&self) -> SystemTime {
+        SystemTime::now()
+    }
+}
+
+/// A deadline on both clocks: expired when either has run out. A wall clock
+/// stepped forward (NTP, a manual change) ends it early, never late.
+pub struct Deadline<'c> {
+    clock: &'c dyn Clock,
+    mono: Instant,
+    wall: SystemTime,
+    pub total: Duration,
+}
+
+impl Deadline<'static> {
+    pub fn after(total: Duration) -> Self {
+        Deadline::on(&SystemClock, total)
+    }
+
+    /// For the supervised agents, whose own ceiling sits above `CEILING`.
+    pub fn capped(total: Duration, ceiling: Duration) -> Self {
+        Deadline::new(&SystemClock, total.min(ceiling))
+    }
+}
+
+impl<'c> Deadline<'c> {
+    /// Starts now on `clock`, capped at `CEILING`.
+    pub fn on(clock: &'c dyn Clock, total: Duration) -> Self {
+        Self::new(clock, total.min(CEILING))
+    }
+
+    fn new(clock: &'c dyn Clock, total: Duration) -> Self {
+        Self {
+            clock,
+            mono: clock.mono() + total,
+            wall: clock.wall() + total,
+            total,
+        }
+    }
+
+    pub fn left(&self) -> Duration {
+        let mono = self.mono.saturating_duration_since(self.clock.mono());
+        let wall = self
+            .wall
+            .duration_since(self.clock.wall())
+            .unwrap_or(Duration::ZERO);
+        mono.min(wall)
+    }
+
+    pub fn expired(&self) -> bool {
+        self.left().is_zero()
+    }
+
+    /// How long to block before checking again.
+    pub fn slice(&self) -> Duration {
+        self.left().min(POLL)
+    }
+}
 
 /// How long a pipe may stay open after its child exited. Past this, whatever
 /// still holds it is a leftover of the child's group and is killed.
@@ -25,12 +102,12 @@ pub struct Output {
 
 /// Run to completion or kill at `deadline`. Never waits past `CEILING`.
 pub fn run(cmd: &mut Command, deadline: Duration) -> Result<Output> {
-    let deadline = deadline.min(CEILING);
+    let until = Deadline::after(deadline);
     let mut child = spawn_grouped(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()))?;
     let pgid = group_of(&child);
     let out = Drain::start(child.stdout.take());
     let err = Drain::start(child.stderr.take());
-    let status = wait_until(&mut child, Instant::now() + deadline)?;
+    let status = wait_until(&mut child, &until)?;
     Ok(Output {
         status,
         stdout: out.finish(pgid),
@@ -43,21 +120,30 @@ pub fn run(cmd: &mut Command, deadline: Duration) -> Result<Output> {
 pub fn stream_lines(
     cmd: &mut Command,
     deadline: Duration,
+    on_line: impl FnMut(&str) -> Result<bool>,
+) -> Result<(ExitStatus, String)> {
+    stream_lines_on(&SystemClock, cmd, deadline, on_line)
+}
+
+/// `stream_lines` against `clock`, the seam a test freezes `Instant` through.
+pub fn stream_lines_on(
+    clock: &dyn Clock,
+    cmd: &mut Command,
+    deadline: Duration,
     mut on_line: impl FnMut(&str) -> Result<bool>,
 ) -> Result<(ExitStatus, String)> {
-    let until = Instant::now() + deadline.min(CEILING);
+    let until = Deadline::on(clock, deadline);
     let mut child = spawn_grouped(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()))?;
     let pgid = group_of(&child);
     let err = Drain::start(child.stderr.take());
     let rx = lines(child.stdout.take().context("child stdout not piped")?);
 
     loop {
-        let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
+        if until.expired() {
             kill_and_reap(&mut child);
-            bail!("timed out after {}s", deadline.min(CEILING).as_secs());
+            bail!("timed out after {}s", until.total.as_secs());
         }
-        match rx.recv_timeout(left) {
+        match rx.recv_timeout(until.slice()) {
             Ok(line) => match on_line(&line) {
                 Ok(true) => {}
                 Ok(false) => break,
@@ -70,7 +156,7 @@ pub fn stream_lines(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    let status = wait_until(&mut child, until)?;
+    let status = wait_until(&mut child, &until)?;
     Ok((status, err.finish(pgid)))
 }
 
@@ -126,12 +212,12 @@ impl Drain {
     }
 }
 
-pub fn wait_until(child: &mut Child, until: Instant) -> Result<ExitStatus> {
+pub fn wait_until(child: &mut Child, until: &Deadline) -> Result<ExitStatus> {
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(status);
         }
-        if Instant::now() >= until {
+        if until.expired() {
             kill_and_reap(child);
             bail!("timed out waiting for child exit");
         }

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="3">
+<title>cos agents</title>
+<style>
+/*__COS_TOKENS__*/
+body{margin:0;padding:1.5rem 1rem}
+main{max-width:68.75rem;margin:0 auto}
+h1{font-size:var(--text-xl);line-height:var(--text-xl--line-height);font-weight:var(--font-weight-semibold);letter-spacing:var(--tracking-tight);margin:0 0 0.25rem}
+h2{font-size:var(--text-base);line-height:var(--text-base--line-height);font-weight:var(--font-weight-semibold);margin:1.5rem 0 0.25rem}
+p{color:var(--muted-foreground);margin:0 0 1rem}
+a{color:var(--brand-text)}
+.wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);color:var(--card-foreground)}
+table{border-collapse:collapse;width:100%}
+td,th{padding:0.5rem;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{font-weight:var(--font-weight-semibold);color:var(--muted-foreground);font-size:var(--text-xs);line-height:var(--text-xs--line-height)}
+.n{text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.dim{color:var(--muted-foreground)}
+tr.live td:nth-child(2){color:var(--success);font-weight:var(--font-weight-semibold)}
+code{font-size:var(--text-xs)}
+</style>
+</head>
+<body>
+<main><h1>Agents</h1><p><!--__LIVE__--> running · <!--__TOTAL__--> total · refreshes every 3 s · <a href="/">report</a></p>
+<div class="wrap"><table><tr><th>ID</th><th>Status</th><th>Verdict</th><th>Harness</th><th class="n">Tools</th><th class="n">Cost</th><th>Task / latest</th><th>Workdir</th></tr>
+<!--__ROWS__--></table></div><!--__SCORE__--></main>
+</body>
+</html>

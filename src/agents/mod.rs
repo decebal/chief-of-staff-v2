@@ -1,5 +1,5 @@
 //! `cos agents`: spin off coding agents (Claude Code, Codex) on the prompts a
-//! brief or review hands out, then watch them.
+//! brief hands out, then watch them.
 //!
 //! Each agent gets its own detached worktree and a `cos agents supervise`
 //! process that owns the harness for its whole life: one deadline, kill the
@@ -18,10 +18,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::proc;
-use crate::reports::{Brief, Review};
+use crate::reports::Brief;
 use crate::store::{self, Kind};
 
+pub mod fit;
 pub mod harness;
+pub mod hire;
 pub mod judge;
 pub mod ledger;
 pub mod policy;
@@ -31,7 +33,7 @@ mod supervise;
 pub mod view;
 pub mod watch;
 
-pub use judge::{Contract, Outcome, Verdict};
+pub use judge::{Contract, Expects, Outcome, Verdict};
 pub use supervise::supervise;
 
 /// No agent runs longer than this, whatever it asks for.
@@ -58,14 +60,15 @@ impl Harness {
     }
 }
 
-/// Where a spun-off prompt comes from: the latest saved brief or review.
+/// Where a spun-off prompt comes from in the latest saved brief: its actions
+/// (`brief`) or its week's goals (`goals`).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, schemars::JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum From {
     Brief,
-    Review,
+    Goals,
 }
 
 /// What an agent was asked to do, fixed at spawn.
@@ -96,6 +99,10 @@ pub struct Spec {
     /// When the supervisor flags it as stalled or looping.
     #[serde(default)]
     pub limits: watch::Limits,
+    /// The staff role it was hired into (`context/agents.json`); `None` for
+    /// agents spawned before roles, or without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -178,6 +185,40 @@ pub struct State {
     /// Every kind of trouble it showed at any point in the run.
     #[serde(default)]
     pub flagged: Vec<watch::Kind>,
+    /// What you found when you ran what it drafted; never written by the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded: Option<Recorded>,
+}
+
+/// The outcome you record for a run, e.g. after running a tester's script.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recorded {
+    pub outcome: Tested,
+    #[serde(default)]
+    pub notes: String,
+    /// Links or paths to what shows it: logs, screenshots, a ticket comment.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    #[serde(default)]
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Tested {
+    Passed,
+    Failed,
+    Blocked,
+}
+
+impl fmt::Display for Tested {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+        })
+    }
 }
 
 pub struct Request {
@@ -198,6 +239,9 @@ pub struct Request {
     pub contract: Contract,
     /// Fields the caller chose; `context/agents.json` fills the rest.
     pub explicit: policy::Explicit,
+    /// A role from `context/agents.json`: its contract and mandate fill what
+    /// the request left empty.
+    pub role: Option<String>,
 }
 
 /// One agent prompt from a saved run, numbered as the report numbers it.
@@ -221,7 +265,7 @@ pub fn events_path(home: &Path, id: &str) -> PathBuf {
     dir(home, id).join("events.jsonl")
 }
 
-/// The agent prompts in the latest saved brief (actions) or review (goals).
+/// The agent prompts in the latest saved brief: its actions or its week's goals.
 pub fn tasks(home: &Path, from: From) -> Result<Vec<Task>> {
     let pick = |day: &str, items: Vec<(String, String)>| -> Vec<Task> {
         items
@@ -236,42 +280,59 @@ pub fn tasks(home: &Path, from: From) -> Result<Vec<Task>> {
             })
             .collect()
     };
-    Ok(match from {
-        From::Brief => {
-            let b = latest::<Brief>(home, Kind::Briefs)?;
-            pick(
-                &b.day,
-                b.value
-                    .needs_you
-                    .into_iter()
-                    .map(|a| (a.recommendation, a.agent_prompt))
-                    .collect(),
-            )
-        }
-        From::Review => {
-            let r = latest::<Review>(home, Kind::Reviews)?;
-            pick(
-                &r.day,
-                r.value
-                    .goals
-                    .into_iter()
-                    .map(|g| (g.goal, g.agent_prompt))
-                    .collect(),
-            )
-        }
-    })
+    let b = store::latest::<Brief>(home, Kind::Briefs)?
+        .context("nothing saved yet: run `cos brief` first")?;
+    let items = match from {
+        From::Brief => b
+            .value
+            .needs_you
+            .into_iter()
+            .map(|a| (a.recommendation, a.agent_prompt))
+            .collect(),
+        From::Goals => b
+            .value
+            .week
+            .goals
+            .into_iter()
+            .map(|g| (g.goal, g.agent_prompt))
+            .collect(),
+    };
+    Ok(pick(&b.day, items))
+}
+
+/// A tracked deliverable as an agent's work: the kit's handoff for an agent
+/// as the prompt, its title, and its finish line. The kit writes `doneWhen`;
+/// `done_when` is read too, for state written before that.
+pub fn deliverable_task(
+    state: &serde_json::Value,
+    profile: Option<&serde_json::Value>,
+    id: &str,
+) -> Result<(Task, Option<String>)> {
+    let prompt = crate::handoff::deliverable(state, profile, id, crate::handoff::Receiver::Agent)?;
+    let found = crate::state::find(state, "deliverables", id);
+    let title = found
+        .and_then(|d| d["title"].as_str())
+        .unwrap_or(id)
+        .to_owned();
+    let done_when = found
+        .and_then(|d| d["doneWhen"].as_str().or_else(|| d["done_when"].as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let task = Task {
+        n: 0,
+        title,
+        prompt,
+        source: format!("deliverable {id}"),
+    };
+    Ok((task, done_when))
 }
 
 fn name(from: From) -> &'static str {
     match from {
         From::Brief => "brief",
-        From::Review => "review",
+        From::Goals => "brief goals",
     }
-}
-
-fn latest<T: DeserializeOwned>(home: &Path, kind: Kind) -> Result<store::Saved<T>> {
-    store::latest::<T>(home, kind)?
-        .context("nothing saved yet: run `cos brief` or `cos review` first")
 }
 
 /// The repo a prompt points at: the first path it names under `projects`
@@ -302,7 +363,7 @@ pub fn spawn(home: &Path, mut req: Request, cos: &Path) -> Result<Spec> {
     }
     let home = std::path::absolute(home)?;
     let explicit = req.explicit;
-    let limits = policy::load(&home).apply(&mut req, explicit);
+    let limits = policy::load(&home).apply(&mut req, explicit)?;
     let id = new_id()?;
     let d = dir(&home, &id);
     std::fs::create_dir_all(&d)?;
@@ -352,6 +413,7 @@ pub fn spawn(home: &Path, mut req: Request, cos: &Path) -> Result<Spec> {
         slots: Some(req.slots.unwrap_or_else(slots::run_slots)),
         contract: req.contract,
         limits,
+        role: req.role,
     };
     write_json(&d.join("spec.json"), &spec)?;
     write_state(&home, &id, &State::default())?;
@@ -446,6 +508,26 @@ pub fn rejudge(home: &Path, id: &str) -> Result<Verdict> {
         ledger::append(home, &row)?;
     }
     Ok(v)
+}
+
+/// Records what you found when you ran what a judged agent drafted. Stored
+/// on the run's state only; nothing is sent anywhere.
+pub fn record(home: &Path, id: &str, mut r: Recorded) -> Result<State> {
+    let (_, mut state) = read(home, id)?;
+    if state.verdict.is_none() {
+        bail!(
+            "{id} is {}; record a result once it is judged",
+            state.status
+        );
+    }
+    if r.notes.trim().is_empty() && r.evidence.is_empty() {
+        bail!("say what happened: notes or evidence");
+    }
+    r.evidence.retain(|e| !e.trim().is_empty());
+    r.at = jiff::Timestamp::now().to_string();
+    state.recorded = Some(r);
+    write_state(home, id, &state)?;
+    Ok(state)
 }
 
 /// Asks the supervisor to stop the agent, and waits up to `wait` for it to

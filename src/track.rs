@@ -1,12 +1,12 @@
 //! What `cos` writes to the workspace state, always through `state::commit`.
 //!
-//! A brief or review records its run receipt, each profile source's health and
+//! A brief records its run receipt, each profile source's health and
 //! coverage, and an incident per new access failure. Only when the profile
 //! approves local tracking. The model's word that a source was read in full
 //! is testimony, so `cos` records at most `partial` and never advances a
 //! review watermark; the user confirms completeness.
 //!
-//! Review proposals are never committed here: `proposal_candidate` writes a
+//! The brief's proposed deliverables are never committed here: `proposal_candidate` writes a
 //! candidate file the user reads and commits with `cos state commit`.
 
 use std::path::{Path, PathBuf};
@@ -54,7 +54,7 @@ fn window(c: &Coverage) -> Option<(String, String)> {
     (ta <= tb).then(|| (c.window_start.clone(), c.window_end.clone()))
 }
 
-/// Records one run. `mode` is `brief` or `review`; times are ISO-8601.
+/// Records one run. `mode` is `brief`; times are ISO-8601.
 pub fn record_run(
     home: &Path,
     mode: &str,
@@ -187,7 +187,7 @@ pub struct Candidate {
     pub skipped: Vec<String>,
 }
 
-/// Writes the review's proposals into `.chief-of-staff/candidate.json` as
+/// Writes the brief's proposals for the week into `.chief-of-staff/candidate.json` as
 /// `proposed` deliverables. Nothing is committed.
 pub fn proposal_candidate(home: &Path, proposals: &[Proposal], source: &str) -> Result<Candidate> {
     let ws = std::path::absolute(home)?;

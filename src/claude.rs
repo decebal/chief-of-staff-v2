@@ -14,6 +14,7 @@ use serde_json::Value;
 use crate::proc;
 
 /// One headless run. Every field maps to a `claude` flag.
+#[derive(Clone)]
 pub struct Run<'a> {
     pub agent: &'a str,
     pub model: &'a str,
@@ -26,6 +27,7 @@ pub struct Run<'a> {
     pub denied: Vec<String>,
 }
 
+#[derive(Clone)]
 pub enum Toolset {
     /// The connectors, limited to this allowlist (`context::tools`).
     Brain(Vec<&'static str>),
@@ -109,7 +111,12 @@ pub struct Outcome {
 /// The `claude` invocation for `run`, with `home` as cwd so the repo's
 /// CLAUDE.md and `.claude/agents` load.
 pub fn command(home: &Path, run: &Run) -> Command {
-    let mut cmd = Command::new("claude");
+    command_with(Path::new("claude"), home, run)
+}
+
+/// `command` with `program` standing in for `claude`.
+pub fn command_with(program: &Path, home: &Path, run: &Run) -> Command {
+    let mut cmd = Command::new(program);
     cmd.current_dir(home)
         .args(["-p", &run.prompt])
         .args(["--output-format", "stream-json", "--verbose"])
@@ -140,9 +147,51 @@ pub fn command(home: &Path, run: &Run) -> Command {
     cmd
 }
 
-/// Runs `run` and appends every tool call to `audit`.
-pub fn execute(home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
-    let mut cmd = command(home, run);
+/// A run that ended in an error result, with what it cost and whether one
+/// more attempt could succeed.
+#[derive(Debug)]
+pub struct Failed {
+    pub reason: String,
+    pub cost_usd: f64,
+    pub transient: bool,
+}
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for Failed {}
+
+/// Whether `o` failed on the connection or the machine rather than on the
+/// request: a timeout, a dropped socket, a stalled MCP server, a sleep
+/// mid-response. A budget, auth or schema stop never is.
+pub fn transient(o: &Outcome) -> bool {
+    if o.subtype.starts_with("error_max") {
+        return false;
+    }
+    let text = error_reason(o).to_lowercase();
+    if ["login", "api key", "authenticat", "401", "oauth", "budget"]
+        .iter()
+        .any(|k| text.contains(k))
+    {
+        return false;
+    }
+    [
+        "request timed out",
+        "went to sleep mid-response",
+        "econnreset",
+        "sent no response or progress",
+    ]
+    .iter()
+    .any(|k| text.contains(k))
+}
+
+/// Runs `run` and appends every tool call to `audit`. An error result comes
+/// back as a [`Failed`].
+pub fn execute(program: &Path, home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
+    let mut cmd = command_with(program, home, run);
     let mut log = AuditLog::open(audit, run.agent)?;
     let mut outcome = None;
     let mut called = Vec::new();
@@ -199,9 +248,28 @@ pub fn execute(home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
     outcome.called = called;
     log.outcome(&outcome)?;
     if outcome.is_error {
-        bail!("{}", error_reason(&outcome));
+        return Err(Failed {
+            reason: error_reason(&outcome),
+            cost_usd: outcome.total_cost_usd,
+            transient: transient(&outcome),
+        }
+        .into());
     }
     Ok(outcome)
+}
+
+/// Appends a note between attempts, so the audit shows both runs and why
+/// the second started.
+pub fn audit_note(audit: &Path, agent: &str, note: serde_json::Value) -> Result<()> {
+    let mut log = AuditLog::open(audit, agent)?;
+    let mut v = serde_json::json!({
+        "at": jiff::Timestamp::now().to_string(),
+        "agent": agent,
+    });
+    if let (Some(m), Some(n)) = (v.as_object_mut(), note.as_object()) {
+        m.extend(n.clone());
+    }
+    log.write(v)
 }
 
 /// Why a run failed, in the user's terms. An auth failure arrives as
@@ -228,7 +296,13 @@ pub fn error_reason(o: &Outcome) -> String {
     } else {
         ""
     };
-    format!("claude run failed ({}): {reason}{hint}", o.subtype)
+    // An error result can still carry `subtype: "success"`; naming it reads
+    // as if the run worked.
+    if o.subtype == "success" || o.subtype.is_empty() {
+        format!("claude run failed: {reason}{hint}")
+    } else {
+        format!("claude run failed ({}): {reason}{hint}", o.subtype)
+    }
 }
 
 struct AuditLog {

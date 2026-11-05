@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use cos::agents::{self, Contract, Harness, Outcome, Request, Spec, State, Status, Verdict};
+use cos::agents::{
+    self, Contract, Expects, Harness, Outcome, Request, Spec, State, Status, Verdict,
+};
 
 const COS: &str = env!("CARGO_BIN_EXE_cos");
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
@@ -71,6 +73,7 @@ fn judged(name: &str, prompt: &str, contract: Contract) -> (PathBuf, Spec, State
             slots: None,
             contract,
             explicit: Default::default(),
+            role: None,
         },
         Path::new(COS),
     )
@@ -91,7 +94,93 @@ fn contract(checks: &[&str], scope: &[&str]) -> Contract {
         done_when: Some("the file exists".into()),
         checks: checks.iter().map(|s| s.to_string()).collect(),
         scope: scope.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
     }
+}
+
+fn expecting(expects: Expects, output: &str, checks: &[&str]) -> Contract {
+    Contract {
+        checks: checks.iter().map(|s| s.to_string()).collect(),
+        expects,
+        output: Some(output.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_reviewer_that_leaves_its_file_is_accepted_without_a_diff_to_the_code() {
+    let (_, v) = run(
+        "expects-file",
+        "REVIEW and READONLY",
+        expecting(Expects::File, "REVIEW.md", &["test -s REVIEW.md"]),
+    );
+    assert_eq!(v.outcome, Outcome::Accepted, "{v:?}");
+    assert_eq!(v.changed, ["REVIEW.md"]);
+}
+
+#[test]
+fn an_agent_that_never_writes_its_expected_file_is_rejected_as_overclaiming() {
+    let (st, v) = run(
+        "expects-missing",
+        "READONLY",
+        expecting(Expects::File, "REVIEW.md", &["true"]),
+    );
+    assert_eq!(st.status, Status::Done);
+    assert_eq!(v.outcome, Outcome::Rejected);
+    assert!(v.overclaimed, "it claimed success");
+    assert!(
+        v.reasons
+            .iter()
+            .any(|r| r.contains("`REVIEW.md` is missing")),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn a_file_contract_never_asks_for_a_diff() {
+    let (_, v) = run(
+        "expects-file-nochecks",
+        "REVIEW and READONLY",
+        expecting(Expects::File, "REVIEW.md", &[]),
+    );
+    assert_eq!(v.outcome, Outcome::NeedsYou, "no checks still needs you");
+    assert!(!v.reasons.iter().any(|r| r.contains("no changes")), "{v:?}");
+}
+
+#[test]
+fn an_investigator_hired_to_change_nothing_is_judged_on_an_empty_diff() {
+    let (_, ok) = run(
+        "expects-none",
+        "READONLY",
+        expecting(Expects::Nothing, "ANSWER.md", &["true"]),
+    );
+    assert_eq!(ok.outcome, Outcome::Accepted, "{ok:?}");
+    assert!(ok.changed.is_empty());
+
+    let (_, bad) = run(
+        "expects-none-edit",
+        "edit a file",
+        expecting(Expects::Nothing, "ANSWER.md", &["true"]),
+    );
+    assert_eq!(bad.outcome, Outcome::Rejected);
+    assert!(
+        bad.reasons[0].contains("hired to change nothing, changed 1 file(s): made-by-agent.txt"),
+        "{bad:?}"
+    );
+}
+
+#[test]
+fn an_output_outside_the_workdir_is_refused() {
+    let (_, v) = run(
+        "expects-escape",
+        "REVIEW and READONLY",
+        expecting(Expects::File, "../REVIEW.md", &["true"]),
+    );
+    assert_eq!(v.outcome, Outcome::Rejected);
+    assert!(
+        v.reasons.iter().any(|r| r.contains("not a path inside")),
+        "{v:?}"
+    );
 }
 
 #[test]

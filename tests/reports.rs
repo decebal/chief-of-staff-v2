@@ -1,6 +1,4 @@
-use cos::reports::{
-    Basis, Brief, ChangeKind, MAX_ACTIONS, MAX_CHANGES, Review, Verb, brief_schema, review_schema,
-};
+use cos::reports::{Basis, Brief, ChangeKind, MAX_ACTIONS, MAX_CHANGES, Verb, brief_schema};
 use serde_json::{Value, json};
 
 /// Every property the schema requires must be a field the struct writes, and
@@ -34,30 +32,30 @@ fn brief_sample() -> Value {
             "agent_prompt": "… Stop before anything outward-facing."
         }],
         "what_changed": [{ "kind": "time_changed", "what": "Workshop moved to 10:00", "source": "cal" }],
+        "week": week_sample(),
         "calendar": [{ "start": "13:30", "end": "13:45", "what": "Stand-up", "prep": "bring blocker" }],
         "backlog": [{ "item": "Reply to A", "owner": "A", "source": "mail", "next_review": "Friday" }],
         "coverage": [{ "source": "email", "health": "healthy", "review": "partial",
                        "window_start": "2030-04-08T00:00:00Z", "window_end": "2030-04-09T09:00:00Z", "note": "first page" }],
         "gaps": [],
-        "upcoming": [{ "date": "2030-04-30", "what": "Pilot deadline", "source": "G-1" }]
+        "upcoming": [{ "date": "2030-04-30", "what": "Pilot deadline", "source": "G-1" }],
+        "tickets": [{ "key": "PLAT-7", "summary": "Canary pipeline", "status": "In Progress",
+                      "priority": "High", "url": "https://example.com/fictional/PLAT-7", "goal_id": "G-1" }]
     })
 }
 
-fn review_sample() -> Value {
+fn week_sample() -> Value {
     json!({
         "summary": "One goal moved.",
         "goals": [{
             "goal_id": "G-1", "goal": "Win five pilots", "confidence": "sand", "kpi": "unknown",
-            "evidence": "two calls", "weakened": "", "bottleneck": "deck", "recommendation": "sequence",
+            "evidence": "two calls", "bottleneck": "deck", "recommendation": "sequence",
             "next": "deck first", "would_change": "a signed pilot", "agent_prompt": ""
         }],
         "proposed": [{ "goal_id": "G-1", "title": "Deck v2", "owner": "Alex", "owner_basis": "proposed",
                        "due_date": "", "due_basis": "unknown", "done_when": "reviewer confirms", "blocker": "" }],
         "decisions": [{ "decision": "promote E2E", "options": ["now", "later"], "recommendation": "now" }],
-        "stop_doing": ["manual runs"],
-        "what_changed": [],
-        "gaps": [],
-        "upcoming": []
+        "stop_doing": ["manual runs"]
     })
 }
 
@@ -75,17 +73,6 @@ fn old_brief() -> Value {
     })
 }
 
-fn old_review() -> Value {
-    json!({
-        "summary": "One bet moved.",
-        "bets": [{ "bet": "E2E green", "confidence": "sand", "evidence": "3 PRs", "next": "shape scope" }],
-        "drift": ["unplanned review"],
-        "decisions": [{ "decision": "promote E2E", "options": ["now", "later"], "recommendation": "now" }],
-        "stop_doing": ["manual runs"],
-        "gaps": []
-    })
-}
-
 #[test]
 fn brief_schema_matches_struct_at_every_level() {
     let schema = brief_schema();
@@ -99,6 +86,7 @@ fn brief_schema_matches_struct_at_every_level() {
         "backlog",
         "coverage",
         "upcoming",
+        "tickets",
     ] {
         assert_eq!(
             required(&schema["properties"][key]["items"]),
@@ -106,21 +94,46 @@ fn brief_schema_matches_struct_at_every_level() {
             "{key}"
         );
     }
+    let week = &schema["properties"]["week"];
+    assert_eq!(required(week), keys(&brief["week"]));
+    for key in ["goals", "proposed", "decisions"] {
+        assert_eq!(
+            required(&week["properties"][key]["items"]),
+            keys(&brief["week"][key][0]),
+            "week.{key}"
+        );
+    }
 }
 
 #[test]
-fn review_schema_matches_struct_at_every_level() {
-    let schema = review_schema();
-    let review =
-        serde_json::to_value(serde_json::from_value::<Review>(review_sample()).unwrap()).unwrap();
-    assert_eq!(required(&schema), keys(&review));
-    for key in ["goals", "proposed", "decisions"] {
-        assert_eq!(
-            required(&schema["properties"][key]["items"]),
-            keys(&review[key][0]),
-            "{key}"
-        );
-    }
+fn jira_tickets_reach_the_brief_markdown_and_old_briefs_have_none() {
+    let brief: Brief = serde_json::from_value(brief_sample()).unwrap();
+    let md = brief.to_markdown("2030-04-09");
+    assert!(md.contains("## Jira assigned to you"), "{md}");
+    assert!(md.contains(
+        "[PLAT-7](https://example.com/fictional/PLAT-7) Canary pipeline — In Progress · G-1"
+    ));
+    let old: Brief = serde_json::from_value(old_brief()).unwrap();
+    assert!(old.tickets.is_empty());
+}
+
+#[test]
+fn the_tickets_rule_follows_the_profile_and_refuses_odd_project_keys() {
+    let ws = std::env::temp_dir().join(format!("cos-tickets-rule-{}", std::process::id()));
+    std::fs::create_dir_all(ws.join(".chief-of-staff")).unwrap();
+    assert_eq!(cos::pipeline::tickets_rule(&ws), "", "no profile, no rule");
+    std::fs::write(
+        ws.join(".chief-of-staff/profile.json"),
+        r#"{ "jiraProjects": ["WEB", "VM", "X) OR (1=1"] }"#,
+    )
+    .unwrap();
+    let rule = cos::pipeline::tickets_rule(&ws);
+    assert!(rule.contains("project in (WEB, VM)"), "{rule}");
+    assert!(
+        !rule.contains("1=1"),
+        "a key that is not alphanumeric never reaches JQL"
+    );
+    std::fs::remove_dir_all(ws).unwrap();
 }
 
 #[test]
@@ -158,18 +171,26 @@ fn briefs_saved_in_the_old_shape_still_load() {
     ] {
         assert!(saved.get(gone).is_none(), "{gone} written back");
     }
-
-    let r: Review = serde_json::from_value(old_review()).unwrap();
-    assert_eq!(r.goals[0].goal, "E2E green");
-    assert_eq!(r.goals[0].kpi, "unknown");
-    assert!(r.stop_doing.iter().any(|s| s == "Drift: unplanned review"));
+    assert!(
+        b.week.is_empty(),
+        "a brief saved before the week part has none"
+    );
 }
 
 #[test]
-fn review_rejects_confidence_outside_the_table() {
-    let mut v = review_sample();
-    v["goals"][0]["confidence"] = json!("medium");
-    assert!(serde_json::from_value::<Review>(v).is_err());
+fn a_brief_saved_without_the_week_part_loads_and_writes_no_week_section() {
+    let mut v = brief_sample();
+    v.as_object_mut().unwrap().remove("week");
+    let b: Brief = serde_json::from_value(v).unwrap();
+    assert!(b.week.is_empty());
+    assert!(!b.to_markdown("2030-04-09").contains("## This week"));
+}
+
+#[test]
+fn the_week_rejects_confidence_outside_the_table() {
+    let mut v = brief_sample();
+    v["week"]["goals"][0]["confidence"] = json!("medium");
+    assert!(serde_json::from_value::<Brief>(v).is_err());
 }
 
 #[test]
@@ -193,11 +214,14 @@ fn brief_markdown_leads_with_needs_you_and_omits_empty_sections() {
 }
 
 #[test]
-fn review_markdown_shows_the_steer_and_lowercase_tiers() {
-    let r: Review = serde_json::from_value(review_sample()).unwrap();
-    let md = r.to_markdown("2030-04-09");
+fn the_week_sits_behind_today_and_shows_the_steer_and_lowercase_tiers() {
+    let b: Brief = serde_json::from_value(brief_sample()).unwrap();
+    let md = b.to_markdown("2030-04-09");
+    let week = md.find("## This week").unwrap();
+    assert!(md.find("## Needs you").unwrap() < week);
+    assert!(week < md.find("## Calendar").unwrap());
     assert!(md.contains("`sand` **Win five pilots**"));
     assert!(md.contains("sequence differently: deck first"));
     assert!(md.contains("owner Alex (proposed), no date"));
-    assert!(!md.contains("Gaps"));
+    assert!(md.contains("## Stop doing\n\n- manual runs"));
 }

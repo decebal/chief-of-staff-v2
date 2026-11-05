@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Chief of Staff (16 to 32 px)</title>
+  <!-- icon.svg without the ring text, which is noise below 64 px -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#171717"/>
+  <path d="M535.5 277.9A190 190 0 1 0 535.5 522.1" fill="none" stroke="#FFFFFF" stroke-width="84" stroke-linecap="round"/>
+  <circle cx="585" cy="400" r="54" fill="#FFB224"/>
+  <circle cx="720" cy="720" r="190" fill="#2E2E2E"/>
+  <circle cx="720" cy="720" r="160" fill="none" stroke="#EDEDED" stroke-width="44"/>
+  <circle cx="720" cy="720" r="62" fill="#FFB224"/>
+</svg>

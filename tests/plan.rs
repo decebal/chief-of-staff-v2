@@ -328,7 +328,7 @@ fn proposals_become_a_candidate_not_a_commit() {
             blocker: String::new(),
         },
     ];
-    let c = track::proposal_candidate(&h.0, &proposals, "cos review 2030-04-10").unwrap();
+    let c = track::proposal_candidate(&h.0, &proposals, "cos brief 2030-04-10").unwrap();
     assert_eq!(c.added, ["D-2"]);
     assert_eq!(c.skipped, ["Orphan"]);
     assert_eq!(c.revision, 1);

@@ -61,6 +61,7 @@ fn request(harness: Harness, program: &str, repo: Option<PathBuf>, prompt: &str)
         slots: None,
         contract: Default::default(),
         explicit: Default::default(),
+        role: None,
     }
 }
 
@@ -289,15 +290,23 @@ fn tasks_number_items_as_the_report_does_and_skip_empty_prompts() {
         headline: String::new(),
         needs_you: vec![action("reply", ""), action("fix CI", "fix it")],
         what_changed: vec![],
+        week: Default::default(),
         calendar: vec![],
         backlog: vec![],
         coverage: vec![],
         gaps: vec![],
         upcoming: vec![],
+        tickets: vec![],
     };
     cos::store::save(&root, cos::store::Kind::Briefs, "2026-10-16", &brief, "").unwrap();
     let tasks = agents::tasks(&root, agents::From::Brief).unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!((tasks[0].n, tasks[0].title.as_str()), (2, "fix CI"));
     assert_eq!(tasks[0].source, "brief 2026-10-16 #2");
+    assert!(
+        agents::tasks(&root, agents::From::Goals)
+            .unwrap()
+            .is_empty(),
+        "a brief with no week has no goal prompts"
+    );
 }
