@@ -481,7 +481,15 @@ impl Config {
     /// A question, under the same wake check and sleep assertion as a brief.
     pub fn ask(&self, question: &str) -> Result<Done<()>> {
         let _hold = self.awake("question")?;
-        let out = self.execute(&self.ask_run(question), &mut Tally::default())?;
+        let mut tally = Tally::default();
+        let out = self
+            .execute(&self.ask_run(question), &mut tally)
+            .map_err(|e| {
+                e.context(format!(
+                    "question failed; reported spend ${:.4}",
+                    tally.cost_usd
+                ))
+            })?;
         Ok(Done {
             value: (),
             markdown: out.result.unwrap_or_default(),
@@ -532,8 +540,14 @@ impl Config {
             })),
             ..self.brain("tactician", "sonnet", prompt, self.budget.unwrap_or(1.5))
         };
+        let mut tally = Tally::default();
         let (mut list, cost, _): (crate::docs::NotionList, f64, _) =
-            self.structured(&run, &mut Tally::default())?;
+            self.structured(&run, &mut tally).map_err(|e| {
+                e.context(format!(
+                    "Notion listing failed; reported spend ${:.4}",
+                    tally.cost_usd
+                ))
+            })?;
         list.pages
             .retain(|p| p.url.starts_with("https://") && !p.title.trim().is_empty());
         list.listed_at = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string();
