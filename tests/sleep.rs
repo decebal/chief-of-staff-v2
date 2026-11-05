@@ -229,6 +229,39 @@ fn a_second_transient_failure_is_not_retried_again() {
 }
 
 #[test]
+fn a_failed_question_reports_the_cost_of_both_attempts() {
+    let (cfg, home) = setup(
+        "ask-always",
+        "CPU Graphics",
+        Some("always:Request timed out"),
+    );
+    let err = cfg.ask("What changed?").err().expect("failed");
+    assert_eq!(invocations(&home), 2);
+    let message = format!("{err:#}");
+    assert!(message.contains("$0.5000"), "{message}");
+    assert!(message.contains("Request timed out"), "{message}");
+}
+
+#[test]
+fn a_failed_notion_listing_reports_the_cost_of_both_attempts() {
+    let (cfg, home) = setup(
+        "notion-always",
+        "CPU Graphics",
+        Some("always:Request timed out"),
+    );
+    std::fs::write(
+        home.join(".chief-of-staff/profile.json"),
+        r#"{"sources": [], "monitoredRepos": ["example/project"]}"#,
+    )
+    .unwrap();
+    let err = cfg.notion_pages().expect_err("failed");
+    assert_eq!(invocations(&home), 2);
+    let message = format!("{err:#}");
+    assert!(message.contains("$0.5000"), "{message}");
+    assert!(message.contains("Request timed out"), "{message}");
+}
+
+#[test]
 fn a_budget_stop_is_never_retried() {
     let (cfg, home) = setup("budget", "CPU Graphics", Some("budget"));
     let err = cfg.brief().err().expect("failed");
