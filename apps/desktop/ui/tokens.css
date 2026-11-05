@@ -1,0 +1,184 @@
+/* The one token file. Every colour, font, type step and radius any cos page
+   uses is defined here, light and dark, under shadcn/Basecoat token names.
+   The desktop window links it after Basecoat; src/design.rs inlines it (with
+   the fonts as data: URLs) into the pages cos serves itself. tests/design.rs
+   fails a page that styles outside it.
+
+   Surfaces, text and borders: Geist neutral steps. Primary and accents: Geist
+   blue and amber steps, with an ink band behind the hero. Every colour is
+   light-dark(light, dark): `color-scheme` on the root picks the side, so a
+   page switches by setting data-theme="light|dark" (or the .dark class
+   Basecoat's own variants read) and never redefines a colour. */
+
+@font-face {
+  font-family: "Geist";
+  src: url("vendor/geist/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("vendor/geist/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+
+  --background: light-dark(#ffffff, #0a0a0a);
+  --foreground: light-dark(#171717, #ededed);
+  --card: light-dark(#ffffff, #1a1a1a);
+  --card-foreground: light-dark(#171717, #ededed);
+  --popover: light-dark(#ffffff, #1a1a1a);
+  --popover-foreground: light-dark(#171717, #ededed);
+  --secondary: light-dark(#f2f2f2, #1f1f1f);
+  --secondary-foreground: light-dark(#171717, #ededed);
+  --muted: light-dark(#f2f2f2, #1a1a1a);
+  --muted-foreground: light-dark(#4d4d4d, #a1a1a1);
+  --border: light-dark(#e6e6e6, #2e2e2e);
+  --input: light-dark(#c9c9c9, #454545);
+
+  /* brand: primary is a deep blue in light, a light blue in dark */
+  --primary: light-dark(#0062d1, #52a8ff);
+  --primary-foreground: light-dark(#ffffff, #0a0a0a);
+  --accent: light-dark(#eaf3ff, #0f1e33);
+  --accent-foreground: light-dark(#171717, #ededed);
+  --ring: light-dark(#0062d1, #52a8ff);
+  --brand-ink: light-dark(#171717, #171717);
+  --brand-amber: light-dark(#ffb224, #ffb224);
+  --brand-blue: light-dark(#52a8ff, #52a8ff);
+  --brand-white: light-dark(#ffffff, #ffffff);
+  /* the ink band a page opens with, and the text on it */
+  --hero: light-dark(#171717, #111111);
+  --hero-foreground: light-dark(#ffffff, #ffffff);
+  --hero-muted: light-dark(#a1a1a1, #a1a1a1);
+  --hero-border: light-dark(#3d3d3d, #333333);
+  /* the DO verb: ink, inverted in dark where ink sinks into the card */
+  --verb-do: light-dark(#171717, #ededed);
+  --verb-do-foreground: light-dark(#ffffff, #171717);
+  /* brand colours safe as text on --background */
+  --brand-text: light-dark(#0062d1, #52a8ff);
+  --brand-accent-text: light-dark(#aa4d00, #ffb224);
+
+  --destructive: light-dark(#c62828, #ff7b72);
+  --destructive-foreground: light-dark(#ffffff, #0a0a0a);
+  --success: light-dark(#1a7f37, #3fb950);
+  --success-foreground: light-dark(#ffffff, #0a0a0a);
+  --warning: light-dark(#aa4d00, #ffb224);
+  --warning-foreground: light-dark(#ffffff, #0a0a0a);
+  --info: light-dark(#0062d1, #52a8ff);
+  --info-foreground: light-dark(#ffffff, #0a0a0a);
+
+  /* charts: categorical, then a sequential ramp (low to high) */
+  --chart-1: light-dark(#0062d1, #52a8ff);
+  --chart-2: light-dark(#e59a00, #ffb224);
+  --chart-3: light-dark(#45a557, #62c073);
+  --chart-4: light-dark(#8e4ec6, #bf7af0);
+  --chart-5: light-dark(#8f8f8f, #8f8f8f);
+  --ramp-0: light-dark(#ebebeb, #1f1f1f);
+  --ramp-1: light-dark(#cde2fc, #0f2a4d);
+  --ramp-2: light-dark(#8ec1fb, #164a8a);
+  --ramp-3: light-dark(#3b8ef0, #2f7ce0);
+  --ramp-4: light-dark(#0062d1, #52a8ff);
+  --chart-grid: light-dark(#e6e6e6, #292929);
+  --chart-axis: light-dark(#c9c9c9, #454545);
+
+  --sidebar: light-dark(#fafafa, #000000);
+  --sidebar-foreground: light-dark(#171717, #ededed);
+  --sidebar-primary: light-dark(#0062d1, #52a8ff);
+  --sidebar-primary-foreground: light-dark(#ffffff, #0a0a0a);
+  --sidebar-accent: light-dark(#eaf3ff, #0f1e33);
+  --sidebar-accent-foreground: light-dark(#171717, #ededed);
+  --sidebar-border: light-dark(#e6e6e6, #2e2e2e);
+  --sidebar-ring: light-dark(#0062d1, #52a8ff);
+
+  --overlay: light-dark(rgb(0 0 0 / 0.35), rgb(0 0 0 / 0.6));
+  --shadow-sm: 0 1px 2px light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.5));
+  --shadow-md: 0 4px 12px light-dark(rgb(0 0 0 / 0.08), rgb(0 0 0 / 0.55));
+
+  /* type: Geist Sans for UI, Geist Mono for code, ids and numbers */
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, Menlo, monospace;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.375rem;
+  --text-display: 2.375rem;
+  --text-display--line-height: 2.875rem;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --tracking-tight: -0.01em;
+  --tracking-wide: 0.04em;
+  --tracking-display: -0.02em;
+  /* the reading measure for prose */
+  --measure: 68ch;
+
+  /* motion: one duration and easing for entrances; off under reduced motion */
+  --motion-enter: 420ms;
+  --motion-step: 60ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  --radius: 0.625rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+  --radius-full: 9999px;
+
+  --icon-xs: 0.75rem;
+  --icon-sm: 1rem;
+  --icon-md: 1.25rem;
+  --icon-lg: 1.5rem;
+}
+
+:root[data-theme="light"],
+:root.light {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"],
+:root.dark {
+  color-scheme: dark;
+}
+
+/* Base type, so a page that sets nothing still gets the scale. */
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  font-weight: var(--font-weight-normal);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+code,
+kbd,
+samp,
+pre,
+.mono {
+  font-family: var(--font-mono);
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

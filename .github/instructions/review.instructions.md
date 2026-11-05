@@ -18,7 +18,7 @@ for every pull request in this repository.
   post steps; its invariant table matches the skill above.
 - Treat any change under `src/claude.rs`, `src/lib.rs` (`READ_ONLY`),
   `src/mcp.rs`, `src/proc.rs`, `src/agents/`, `src/state.rs`,
-`src/track.rs`, `src/context.rs`, `.claude/agents/` or
+`src/track.rs`, `src/context.rs`, `src/wake.rs`, `src/staff.rs`, `.claude/agents/` or
 `plugins/chief-of-staff-starter/` as
   safety-relevant. For each, say which invariant you checked and why it holds.
 - A file added under `context/` or `out/`, or a screenshot that is not from

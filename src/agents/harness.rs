@@ -84,7 +84,12 @@ fn claude(v: &Value) -> Tick {
                     Some("tool_use") => {
                         t.tool_calls += 1;
                         let name = block["name"].as_str().unwrap_or("?");
-                        t.last = Some(format!("tool {name}"));
+                        let d = describe(name, &block["input"]);
+                        t.last = Some(if d.is_empty() {
+                            format!("tool {name}")
+                        } else {
+                            format!("tool {name}: {}", clip(&d))
+                        });
                         t.call = Some(format!("{name} {}", block["input"]));
                     }
                     Some("text") => t.last = text(&block["text"]).map(|s| clip(&s)),
@@ -173,6 +178,251 @@ fn codex(v: &Value) -> Tick {
         _ => {}
     }
     t
+}
+
+/// One thing the activity feed shows.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Entry {
+    /// Where it sits in `events.jsonl` (byte offset, block); the same line
+    /// read twice gets the same key.
+    pub key: String,
+    pub kind: EntryKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// The command, path, pattern, query or message, clipped.
+    pub detail: String,
+    /// The tool call's id: on a call its own, on a result the call it answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    Start,
+    Call,
+    Result,
+    Say,
+    Denied,
+    Failed,
+    End,
+}
+
+/// Longest detail kept for a call or a message.
+const DETAIL: usize = 300;
+
+/// What a feed shows for one stream line; `key` is the line's prefix.
+pub fn entries(harness: Harness, line: &str, key: &str) -> Vec<Entry> {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut push = |kind, tool: Option<String>, detail: String, call: Option<String>, ok| {
+        out.push(Entry {
+            key: format!("{key}:{}", out.len()),
+            kind,
+            tool,
+            detail,
+            call,
+            ok,
+        });
+    };
+    match harness {
+        Harness::Claude => match v["type"].as_str() {
+            Some("system") if v["subtype"] == "init" => push(
+                EntryKind::Start,
+                None,
+                v["model"].as_str().map_or("session started".into(), |m| {
+                    format!("session started on {m}")
+                }),
+                None,
+                None,
+            ),
+            Some("system") if v["subtype"] == "permission_denied" => push(
+                EntryKind::Denied,
+                text(&v["tool_name"]),
+                clip_to(v["message"].as_str().unwrap_or("permission denied"), DETAIL),
+                text(&v["tool_use_id"]),
+                Some(false),
+            ),
+            Some("assistant") => {
+                for b in v["message"]["content"].as_array().into_iter().flatten() {
+                    match b["type"].as_str() {
+                        Some("tool_use") => {
+                            let name = b["name"].as_str().unwrap_or("?").to_owned();
+                            let d = describe(&name, &b["input"]);
+                            push(EntryKind::Call, Some(name), d, text(&b["id"]), None);
+                        }
+                        Some("text") => {
+                            if let Some(t) = text(&b["text"]) {
+                                push(EntryKind::Say, None, clip_to(&t, DETAIL), None, None);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some("user") => {
+                for b in v["message"]["content"].as_array().into_iter().flatten() {
+                    if b["type"] == "tool_result" {
+                        let ok = b["is_error"].as_bool() != Some(true);
+                        push(
+                            EntryKind::Result,
+                            None,
+                            clip(&result_text(&b["content"])),
+                            text(&b["tool_use_id"]),
+                            Some(ok),
+                        );
+                    }
+                }
+            }
+            Some("result") => {
+                let ok = v["is_error"].as_bool() != Some(true);
+                let cost = v["total_cost_usd"]
+                    .as_f64()
+                    .map(|c| format!(", ${c:.2}"))
+                    .unwrap_or_default();
+                push(
+                    if ok {
+                        EntryKind::End
+                    } else {
+                        EntryKind::Failed
+                    },
+                    None,
+                    format!("ended {}{cost}", v["subtype"].as_str().unwrap_or("")),
+                    None,
+                    Some(ok),
+                );
+            }
+            _ => {}
+        },
+        Harness::Codex => {
+            let item = &v["item"];
+            match (v["type"].as_str(), item["type"].as_str()) {
+                (Some("thread.started"), _) => {
+                    push(EntryKind::Start, None, "session started".into(), None, None)
+                }
+                (Some("item.started"), Some("command_execution")) => push(
+                    EntryKind::Call,
+                    Some("run".into()),
+                    clip_to(item["command"].as_str().unwrap_or("?"), DETAIL),
+                    text(&item["id"]),
+                    None,
+                ),
+                (Some("item.completed"), Some("command_execution")) => push(
+                    EntryKind::Result,
+                    None,
+                    clip(item["aggregated_output"].as_str().unwrap_or("")),
+                    text(&item["id"]),
+                    Some(item["exit_code"].as_i64().is_none_or(|c| c == 0)),
+                ),
+                (Some("item.started"), Some("mcp_tool_call")) => push(
+                    EntryKind::Call,
+                    Some(format!(
+                        "{}.{}",
+                        item["server"].as_str().unwrap_or("?"),
+                        item["tool"].as_str().unwrap_or("?")
+                    )),
+                    clip_to(&item["arguments"].to_string(), DETAIL),
+                    text(&item["id"]),
+                    None,
+                ),
+                (Some("item.started"), Some("web_search")) => push(
+                    EntryKind::Call,
+                    Some("search".into()),
+                    clip_to(item["query"].as_str().unwrap_or(""), DETAIL),
+                    text(&item["id"]),
+                    None,
+                ),
+                (Some("item.completed"), Some("file_change")) => {
+                    let paths: Vec<&str> = item["changes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|c| c["path"].as_str())
+                        .collect();
+                    push(
+                        EntryKind::Call,
+                        Some("edit".into()),
+                        clip_to(&paths.join(", "), DETAIL),
+                        text(&item["id"]),
+                        Some(true),
+                    )
+                }
+                (Some("item.completed"), Some("agent_message")) => {
+                    if let Some(t) = text(&item["text"]) {
+                        push(EntryKind::Say, None, clip_to(&t, DETAIL), None, None);
+                    }
+                }
+                (Some("turn.failed"), _) => push(
+                    EntryKind::Failed,
+                    None,
+                    text(&v["error"]["message"]).unwrap_or_else(|| "turn failed".into()),
+                    None,
+                    Some(false),
+                ),
+                (Some("error"), _) => push(
+                    EntryKind::Failed,
+                    None,
+                    text(&v["message"]).unwrap_or_else(|| "error".into()),
+                    None,
+                    Some(false),
+                ),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// What a Claude Code tool call did, from its input: the command, the path,
+/// the pattern, the query; otherwise its input, compact.
+pub fn describe(name: &str, input: &Value) -> String {
+    let s = |k: &str| input[k].as_str().filter(|v| !v.is_empty());
+    let d = match name {
+        "Bash" => s("command").map(str::to_owned),
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
+            s("file_path").or(s("notebook_path")).map(str::to_owned)
+        }
+        "Grep" | "Glob" => s("pattern").map(|p| match s("path") {
+            Some(path) => format!("{p} in {path}"),
+            None => p.to_owned(),
+        }),
+        "WebFetch" => s("url").map(str::to_owned),
+        "WebSearch" => s("query").map(str::to_owned),
+        "Task" | "Agent" => s("description").or(s("prompt")).map(str::to_owned),
+        _ => None,
+    };
+    let d = d.unwrap_or_else(|| match input {
+        Value::Object(m) if m.is_empty() => String::new(),
+        Value::Null => String::new(),
+        v => v.to_string(),
+    });
+    clip_to(&d, DETAIL)
+}
+
+/// A tool result's text: a string, or the text blocks of an array.
+fn result_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Whitespace collapsed to single spaces, at most `n` characters.
+fn clip_to(s: &str, n: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.char_indices().nth(n) {
+        Some((i, _)) => format!("{}…", &flat[..i]),
+        None => flat,
+    }
 }
 
 fn text(v: &Value) -> Option<String> {

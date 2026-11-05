@@ -55,11 +55,11 @@ a defect.
 | I4 | A signal to a pid or group is preceded by an identity check: `is_cos`, the recorded `pgid_started`, or `comm` for the tunnel pidfile. | `tests/agents.rs` (lost) | every new `libc::kill` — what stops it hitting a recycled pid? |
 | I5 | The remote MCP server (`Mode::Remote`) offers only `REMOTE_TOOLS`, filtered in `list_tools` **and** `call_tool`; HTTP answers only `/mcp/<token>`. | `src/mcp.rs` | a new `#[tool]` added to `REMOTE_TOOLS`, or a filter removed from one of the two methods |
 | I6 | `cos dash` answers only localhost `Host` headers and serves no path outside `out/reports/<date>.html` and its fixed routes. | `src/dash.rs` | a new route reading a path from the URL |
-| I7 | Chart and history numbers come from `Facts`, never from model output. | `src/report.rs`, `src/history.rs` | a number in the report traced back to a `Brief`/`Review` field |
+| I7 | Chart and history numbers come from `Facts`, never from model output. | `src/report.rs`, `src/history.rs` | a number in the report traced back to a `Brief` field |
 | I8 | An agent's shell has no network and cannot leave its worktree: Claude with `CLAUDE_SANDBOX` (`strictAllowlist`, no unsandboxed retry) and `--permission-prompts none`; Codex `--sandbox workspace-write`. No `bypassPermissions`, no `danger-full-access`. | `tests/harness.rs` | any flag added to `agents::harness::command` |
 | I9 | `cos agents clean` never removes a worktree holding uncommitted changes or commits past its base without `--force`. | `tests/agents.rs` | a new removal path that skips `clean` |
 | I10 | A connector the brain could not read is listed in `gaps`, never rendered as empty. | `.claude/agents/*.md` | prompt edits that drop the gaps rule |
-| I11 | Schemas and structs move together: a new `Brief`/`Review` field is in its schema and in its wire type with `#[serde(default)]`; a brief holds ≤ 3 actions and ≤ 2 changes. | `tests/reports.rs` | a field added to one and not the other; a cap removed from schema or `hold_to_limits` |
+| I11 | Schemas and structs move together: a new `Brief`/`Week` field is in its schema and in its wire type with `#[serde(default)]`; a brief holds ≤ 3 actions and ≤ 2 changes. | `tests/reports.rs` | a field added to one and not the other; a cap removed from schema or `hold_to_limits` |
 | I12 | `src/state.rs` and the kit's `scripts/state.py` accept and refuse the same states, and each reads what the other commits. | `tests/state.rs` | a rule changed in one helper only: add the case to `parity_cases` and run it |
 | I13 | `cos` writes `.chief-of-staff/state.json` only through `state::commit`, only when `localTracking.approved`, never advances a watermark, never steals `write.lock`. | `tests/plan.rs` | `git diff $BASE..HEAD -G 'atomic_write\|state.json' -- src` — every write site |
 | I14 | With a profile, a brain gets only the connectors of `readsApproved` sources; the remote server offers no workspace tool (`plan`, `handoff`). | `tests/plan.rs`, `src/mcp.rs` | `context::tools` widened; a workspace tool added to `REMOTE_TOOLS` |
@@ -96,7 +96,7 @@ line. None of them spends money unless it says so.
 - **Kill**: spawn with a long prompt, `cos agents kill <id>`, then
   `ps -g <pgid>` prints only the header.
 - **Remote MCP**: `cos serve --token $(openssl rand -hex 32)`; a wrong path is
-  404, `tools/list` names only `latest_brief` and `latest_review`, a call to
+  404, `tools/list` names only `latest_brief`, a call to
   `brief` is `-32602`.
 - **Dash**: `cos dash --no-open`, open `/` and `/agents` in light and dark.
 

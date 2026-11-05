@@ -1,14 +1,17 @@
 # chief-of-staff
 
 A personal chief of staff: a Rust binary, `cos`, that drives headless Claude
-Code (`claude -p --output-format stream-json`) with two brains, and serves
-them over MCP to Claude Desktop, Codex and claude.ai. User guide: `README.md`.
+Code (`claude -p --output-format stream-json`) for one daily brief, and
+serves it over MCP to Claude Desktop, Codex and claude.ai. User guide:
+`README.md`.
 
 | Agent | Horizon | Invoked by |
 |---|---|---|
-| `chief-of-staff` | routes, never answers domain questions | `cos ask "…"` |
-| `tactician` | today, this week | `cos brief` |
-| `strategist` | this week against the quarter | `cos review` |
+| `tactician` | today, set against this week and the goals | `cos brief`, `cos ask "…"` |
+
+The brief works down from the goals: `week` (each goal's steer, the
+deliverables the week should hold, decisions, stop doing), then today's
+actions and changes.
 
 Design and measurements: `docs/design.md`. Slack copy for sharing the idea:
 `docs/slack-chief-of-staff.html`.
@@ -44,19 +47,23 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 | `src/claude.rs` | stream-json driver, audit log |
 | `src/context.rs` | the workspace and `context/` inlined into prompts (brains have no file tools); connectors narrowed to approved sources; `deny-mcp.txt` |
 | `src/state.rs` | the kit's `state.py` in Rust: validate, transition rules, lock, atomic journaled commit |
-| `src/track.rs` | what `cos` commits: run receipts and source coverage (tracking approved only); review proposals as a candidate |
+| `src/track.rs` | what `cos` commits: run receipts and source coverage (tracking approved only); the brief's proposed deliverables as a candidate |
 | `src/handoff.rs` | the kit's nine-part handoff, from a tracked deliverable |
 | `src/proc.rs` | bounded child processes: one deadline, kill the group, reap |
-| `src/agents/` | `cos agents`: spawn, supervise, monitor and stop Claude Code / Codex agents in worktrees; `slots.rs` run slots and the build lock, `seed.rs` worktree seeding, `judge.rs` the verdict from diff, checks and scope (never the agent's summary), `policy.rs` hiring defaults from `context/agents.json`, `watch.rs` stalled/looping flags from the stream, `ledger.rs` the verdict ledger and scorecard |
-| `apps/desktop/` | Tauri 2 app over the `cos` lib: the report on `cosreport://` in a sandboxed iframe, the agent launcher; `tests/ipc.rs` drives its commands on the mock runtime |
+| `src/agents/` | `cos agents`: spawn, supervise, monitor and stop Claude Code / Codex agents in worktrees; `slots.rs` run slots and the build lock, `seed.rs` worktree seeding, `judge.rs` the verdict from diff, checks and scope (never the agent's summary), `policy.rs` hiring defaults from `context/agents.json`, `hire.rs` the plan before any spawn (repo resolution, refusal), `fit.rs` the pre-hire fit check over the policy's `fit` vocabulary, `watch.rs` stalled/looping flags from the stream, `ledger.rs` the verdict ledger and scorecard |
+| `apps/desktop/` | Tauri 2 app over the `cos` lib: the report on `cosreport://` in a sandboxed iframe, the Agents tab (staff roster by role, run verdicts, hire dialog); `tests/ipc.rs` drives its commands on the mock runtime; `examples/preview.rs` serves the window's UI to a browser over the same commands; `task desktop-app` installs `~/Applications/Chief of Staff.app` |
+| `apps/desktop/ui/tokens.css` + `src/design.rs` | the one design token file (colour light/dark, Geist type scale, radii) over vendored Basecoat and Geist (`ui/vendor/README.md`); `design.rs` inlines it with the fonts into every page `cos` serves; `tests/design.rs` fails any page styling outside it |
 | `src/gather.rs` | `cn` / `gh` facts collected without the model |
-| `src/pipeline.rs` | brief, review, ask — shared by CLI and MCP |
-| `src/reports.rs` | typed outputs + their JSON Schemas |
+| `src/pipeline.rs` | brief and ask, shared by CLI and MCP |
+| `src/reports.rs` | the brief's type + its JSON Schema |
 | `src/store.rs` | `out/<kind>/<day>.{md,json}` |
 | `src/mcp.rs` + `src/dashboard.html` | MCP server (stdio = all tools, HTTP = read-only) and the MCP App view |
 | `src/report.rs` + `src/report.html` | the HTML report; `vendor/markdy/` is inlined into it |
+| `src/today.rs` | the report's hero and Brief tab, rendered server-side (`tests/today.rs`: actions first, no raw URL text, dates in words) |
+| `src/staff.rs` | `cos staff-sync`: refresh a configured staff role from an enrolled AllStack coordinator (bounded reads, revision checks, owner parking kept); the Plan tab's Staff card reads it (`docs/managed-staff.md`) |
 | `src/history.rs` | the archive under `out/history/`, backfilled two months per run |
 | `src/dash.rs` | `cos dash`, the live localhost page |
+| `src/docs.rs` + `src/docs.html` | the documentation room: repo docs from `monitoredRepos`, Notion pages from `cos docs notion`, the user's topics, links and marks in `context/docs.json`; served at `/docs` by `cos dash` and the desktop app |
 | `examples/demo.rs` | the synthetic home behind every screenshot (`task demo`) |
 
 Screenshots in `docs/assets/` come only from `task screenshots` on the demo
@@ -70,7 +77,7 @@ task desktop            # build cos, run the desktop app; `task desktop-check` l
 task kit OUT=/abs.zip   # package the starter kit from release-files.json
 task setup              # first run: seed context/, build, install
 task install-mcp        # register with Claude Desktop + Codex
-task schedule           # launchd: weekday brief, Friday review
+task schedule           # launchd: weekday brief, the dashboard
 cos --dry-run brief     # print the prompt, call nothing
 ```
 

@@ -1,6 +1,6 @@
 //! `cos dash`: the report served live on localhost. The page polls
 //! `/version`, which changes whenever a run writes to `out/`, and reloads
-//! itself, so a tab left open picks up every scheduled brief and review.
+//! itself, so a tab left open picks up every scheduled brief.
 
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -15,21 +15,29 @@ use hyper::{Request, Response, StatusCode, body::Incoming};
 use crate::report;
 
 /// Directories under the home whose writes mean "a run happened".
-const WATCHED: &[&str] = &["out/briefs", "out/reviews", "out/facts", "out/history"];
+const WATCHED: &[&str] = &["out/briefs", "out/facts", "out/history"];
 
-pub async fn serve(home: PathBuf, ws: PathBuf, port: u16) -> Result<()> {
+/// Largest `POST /docs/organize` body accepted.
+const MAX_BODY: usize = 2 * 1024 * 1024;
+
+pub async fn serve(home: PathBuf, ws: PathBuf, projects: PathBuf, port: u16) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let allowed: Arc<[String]> = [format!("127.0.0.1:{port}"), format!("localhost:{port}")].into();
-    let paths: Arc<(PathBuf, PathBuf)> = Arc::new((home, ws));
+    let paths: Arc<(PathBuf, PathBuf, PathBuf)> = Arc::new((home, ws, projects));
     eprintln!("cos: dashboard on http://{addr}  (Ctrl-C to stop)");
     loop {
         let (stream, _) = listener.accept().await?;
         let (paths, allowed) = (paths.clone(), allowed.clone());
         tokio::spawn(async move {
-            let svc = hyper::service::service_fn(move |req| {
+            let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let (paths, allowed) = (paths.clone(), allowed.clone());
-                async move { Ok::<_, Infallible>(route(&paths.0, &paths.1, &allowed, req)) }
+                async move {
+                    if req.uri().path().starts_with("/docs") && host_ok(&allowed, &req) {
+                        return Ok::<_, Infallible>(docs(&paths.0, &paths.1, &paths.2, req).await);
+                    }
+                    Ok::<_, Infallible>(route(&paths.0, &paths.1, &allowed, req))
+                }
             });
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
@@ -38,20 +46,66 @@ pub async fn serve(home: PathBuf, ws: PathBuf, port: u16) -> Result<()> {
     }
 }
 
+/// Only localhost Host headers: a DNS-rebound name pointing at 127.0.0.1
+/// must not read the brief.
+fn host_ok<B>(allowed: &[String], req: &Request<B>) -> bool {
+    let host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    allowed.iter().any(|a| a == host)
+}
+
+/// The documentation room's routes, with the request body read for a save.
+async fn docs(
+    home: &Path,
+    ws: &Path,
+    projects: &Path,
+    req: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    let (parts, body) = req.into_parts();
+    let bytes = match http_body_util::Limited::new(body, MAX_BODY).collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "body too large"),
+    };
+    let cos_header = parts.headers.get("x-cos").and_then(|h| h.to_str().ok());
+    let ask = crate::docs::Ask {
+        method: parts.method.as_str(),
+        path: parts.uri.path(),
+        query: parts.uri.query(),
+        cos_header,
+        body: &bytes,
+    };
+    match crate::docs::handle(home, ws, projects, &ask) {
+        Some(r) => docs_http(r),
+        None => text(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
+/// A docs room answer as the HTTP response `cos dash` sends, its own headers
+/// included.
+pub fn docs_http(r: crate::docs::Reply) -> Response<Full<Bytes>> {
+    let mut res = respond(
+        StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        r.kind,
+        r.body.into(),
+    );
+    for (k, v) in r.headers {
+        res.headers_mut()
+            .insert(k, hyper::header::HeaderValue::from_static(v));
+    }
+    res
+}
+
 fn route(
     home: &Path,
     ws: &Path,
     allowed: &[String],
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    // Only localhost Host headers: a DNS-rebound name pointing at 127.0.0.1
-    // must not read the brief.
-    let host = req
-        .headers()
-        .get(hyper::header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if !allowed.iter().any(|a| a == host) {
+    if !host_ok(allowed, &req) {
         return text(StatusCode::FORBIDDEN, "forbidden");
     }
     let path = req.uri().path();

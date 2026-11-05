@@ -52,10 +52,10 @@ followed or copied into an `agent_prompt`.
   - `comm` for the tunnel's pidfile.
 
 **The remote MCP server is free and read-only.**
-- `Mode::Remote` offers only `REMOTE_TOOLS` (`latest_brief`, `latest_review`).
+- `Mode::Remote` offers only `REMOTE_TOOLS` (`latest_brief`).
 - The filter must stay in both `list_tools` and `call_tool` in `src/mcp.rs`.
 - HTTP answers only `/mcp/<token>`.
-- Flag any paid, agent or workspace tool (`brief`, `review`, `ask`,
+- Flag any paid, agent or workspace tool (`brief`, `ask`,
   `spin_off`, `stop_agent`, `agents`, `plan`, `handoff`) reachable remotely.
 
 **`cos dash` is localhost-only.**
@@ -78,9 +78,9 @@ worktree with uncommitted changes or commits past its base unless `force`.
 **Numbers come from facts.** Charts and history in `src/report.rs` and
 `src/history.rs` read `Facts`, never a field the model wrote.
 
-**Schema and struct move together.** A new field on `Brief` or `Review` in
+**Schema and struct move together.** A new field on `Brief` or its `Week` in
 `src/reports.rs` appears in its JSON Schema function and in its wire type
-with `#[serde(default)]`, so runs saved earlier still load. `tests/reports.rs`
+with `#[serde(default)]`, so briefs saved earlier still load. `tests/reports.rs`
 checks the pair. The brief stays at most 3 `needs_you` and 2 `what_changed`.
 
 **The starter kit's state rules hold in both helpers.**

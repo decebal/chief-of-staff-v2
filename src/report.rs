@@ -1,4 +1,4 @@
-//! The HTML report: both brains, the archive, diagrams, charts, and a
+//! The HTML report: the brief and its week, the archive, diagrams, charts, and a
 //! copyable agent prompt per action. One self-contained file under `out/`,
 //! opened after every run, and the page `cos dash` serves live.
 
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::gather::Facts;
 use crate::history;
 use crate::proc;
-use crate::reports::{Brief, Change, ChangeKind, Milestone, Review};
+use crate::reports::{Brief, ChangeKind, Milestone};
 use crate::store::{self, Kind};
 
 const TEMPLATE: &str = include_str!("report.html");
@@ -36,12 +36,7 @@ pub fn build(home: &Path, ws: &Path) -> Result<PathBuf> {
 pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
     let now = jiff::Zoned::now();
     let brief = store::latest::<Brief>(home, Kind::Briefs)?;
-    let review = store::latest::<Review>(home, Kind::Reviews)?;
-    let mut upcoming: Vec<&Milestone> = brief
-        .iter()
-        .flat_map(|b| &b.value.upcoming)
-        .chain(review.iter().flat_map(|r| &r.value.upcoming))
-        .collect();
+    let mut upcoming: Vec<&Milestone> = brief.iter().flat_map(|b| &b.value.upcoming).collect();
     upcoming.sort_by(|a, b| a.date.cmp(&b.date));
     upcoming.dedup_by(|a, b| a.date == b.date && a.what == b.what);
     let today = now.date().to_string();
@@ -49,18 +44,24 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
 
     let diagrams = json!({
         "timeline": (!upcoming.is_empty()).then(|| timeline(&upcoming)),
-        "flywheel": flywheel(brief.as_ref().map(|s| &s.value), review.as_ref().map(|s| &s.value)),
+        "flywheel": flywheel(brief.as_ref().map(|s| &s.value)),
         "architecture": architecture(),
     });
 
+    let run = brief.as_ref().and_then(|b| brief_run(home, &b.day));
     Ok(json!({
         "generated_at": now.strftime("%Y-%m-%d %H:%M %Z").to_string(),
         "today": today,
         "now": now.strftime("%H:%M").to_string(),
+        "now_ts": now.timestamp().to_string(),
+        "run": run,
+        "last_run": store::latest::<crate::pipeline::RunReceipt>(home, Kind::Runs)
+            .ok()
+            .flatten()
+            .map(|s| s.value),
         "live": live,
         "name": profile_name(home, ws),
         "brief": brief.map(|s| json!({ "day": s.day, "report": s.value })),
-        "review": review.map(|s| json!({ "day": s.day, "report": s.value })),
         "facts": store::latest::<Facts>(home, Kind::Facts)?.map(|s| s.value),
         "history": history::load(home),
         "backfilled": history::backfilled(home),
@@ -155,7 +156,6 @@ fn workspace(ws: &Path) -> Value {
         "timezone": profile.as_ref().and_then(|p| p["timezone"].as_str()),
         "dashboardTitle": profile.as_ref().and_then(|p| p["dashboardTitle"].as_str()),
         "portfolio": st["commitments"].as_array().and_then(|items| items.iter().find_map(|item| item.get("dashboard")?.get("portfolio"))),
-        "production": st["commitments"].as_array().and_then(|items| items.iter().find_map(|item| item.get("dashboard")?.get("production"))),
         "staff": st["commitments"].as_array().and_then(|items| items.iter().find_map(|item| item.get("dashboard")?.get("staff"))),
         "schedule": profile.as_ref().map(|p| &p["schedule"]),
         "handoffs": handoffs,
@@ -163,37 +163,78 @@ fn workspace(ws: &Path) -> Value {
     })
 }
 
-/// Embeds `data` and the Markdy bundle in the template. `</` is escaped so no
-/// string in the data can close the `<script>` element early.
+/// When the saved brief was written and what its run cost: the brief file's
+/// time, and the last tactician outcome in that day's audit log at or before
+/// it (an `ask` later the same day is not the brief).
+fn brief_run(home: &Path, day: &str) -> Option<Value> {
+    let saved: jiff::Timestamp = std::fs::metadata(home.join(format!("out/briefs/{day}.json")))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| jiff::Timestamp::try_from(t).ok())?;
+    let audit = std::fs::read_to_string(home.join(format!("out/audit/{day}.jsonl"))).ok();
+    let outcome = audit.as_deref().and_then(|text| {
+        text.lines().rev().find_map(|line| {
+            let v: Value = serde_json::from_str(line).ok()?;
+            let at: jiff::Timestamp = v["at"].as_str()?.parse().ok()?;
+            (v["agent"] == "tactician"
+                && v.get("result").is_some()
+                && at <= saved + jiff::SignedDuration::from_secs(5))
+            .then(|| (at, v["cost_usd"].as_f64()))
+        })
+    });
+    Some(match outcome {
+        Some((at, cost)) => json!({ "at": at.to_string(), "cost_usd": cost }),
+        None => json!({ "at": saved.to_string(), "cost_usd": null }),
+    })
+}
+
+const HERO_SLOT: &str = "<!--__COS_HERO__-->";
+const TODAY_SLOT: &str = "<!--__COS_TODAY__-->";
+const TITLE: &str = "<title>Chief of staff</title>";
+
+/// The page title: the profile's dashboard title, else "<first name>'s chief of staff".
+pub fn title(data: &Value) -> String {
+    data["workspace"]["dashboardTitle"]
+        .as_str()
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            data["name"]
+                .as_str()
+                .and_then(|n| n.split_whitespace().next())
+                .map(|f| format!("{f}'s chief of staff"))
+        })
+        .unwrap_or_else(|| "Chief of staff".to_owned())
+}
+
+/// Embeds `data` and the Markdy bundle in the template, and the Today view
+/// rendered from the same data. `</` is escaped so no string in the data can
+/// close the `<script>` element early. The view goes into the markup before
+/// the first `<script>` and the bundle and data after it, so text in the view
+/// can never be taken for a slot.
 pub fn render(data: &Value) -> Result<String> {
     anyhow::ensure!(
-        TEMPLATE.contains(DATA_SLOT) && TEMPLATE.contains(MARKDY_SLOT),
+        [DATA_SLOT, MARKDY_SLOT, HERO_SLOT, TODAY_SLOT, TITLE]
+            .iter()
+            .all(|s| TEMPLATE.contains(s)),
         "report template lost a slot"
     );
+    let page = crate::design::inline(TEMPLATE)?;
+    let cut = page
+        .find("<script>")
+        .context("report template has no script")?;
+    let (markup, scripts) = page.split_at(cut);
+    let title = crate::today::esc(&title(data));
+    let markup = markup
+        .replacen(TITLE, &format!("<title>{title}</title>"), 1)
+        .replacen("<!--__COS_TITLE__-->", &title, 1)
+        .replacen(HERO_SLOT, &crate::today::hero(data), 1)
+        .replacen(TODAY_SLOT, &crate::today::body(data), 1);
     let json = serde_json::to_string(data)?.replace("</", "<\\/");
-    Ok(TEMPLATE
-        .replacen(MARKDY_SLOT, MARKDY, 1)
-        .replacen(
-            "/*__DASHBOARD_CSS__*/",
-            include_str!("report-dashboard.css"),
-            1,
-        )
-        .replacen(
-            "/*__DASHBOARD_JS__*/",
-            &format!(
-                "{}\n{}\n{}",
-                include_str!("report-dashboard.js"),
-                include_str!("report-production.js"),
-                include_str!("report-staff.js")
-            ),
-            1,
-        )
-        .replacen(
-            "__COS_ART__",
-            include_str!("assets/replies-sculpture.uri"),
-            1,
-        )
-        .replacen(DATA_SLOT, &json, 1))
+    Ok(markup
+        + &scripts
+            .replacen(MARKDY_SLOT, MARKDY, 1)
+            .replacen(DATA_SLOT, &json, 1))
 }
 
 pub fn open(path: &Path) -> Result<()> {
@@ -262,10 +303,11 @@ pub fn timeline(upcoming: &[&Milestone]) -> String {
     s
 }
 
-pub fn flywheel(brief: Option<&Brief>, review: Option<&Review>) -> String {
-    let goals = review.map_or("Goals: run cos review".to_owned(), |r| {
+pub fn flywheel(brief: Option<&Brief>) -> String {
+    let week = brief.map(|b| &b.week).filter(|w| !w.goals.is_empty());
+    let goals = week.map_or("Goals: run cos brief".to_owned(), |w| {
         let n = |c: &str| {
-            r.goals
+            w.goals
                 .iter()
                 .filter(|g| g.confidence.to_string() == c)
                 .count()
@@ -280,9 +322,12 @@ pub fn flywheel(brief: Option<&Brief>, review: Option<&Review>) -> String {
     let actions = brief.map_or("Today: run cos brief".to_owned(), |b| {
         format!("Today: {} need you", b.needs_you.len())
     });
-    let done = |c: &[Change]| c.iter().filter(|c| c.kind == ChangeKind::Done).count();
-    let wins = brief.map(|b| done(&b.what_changed)).unwrap_or(0)
-        + review.map(|r| done(&r.what_changed)).unwrap_or(0);
+    let wins = brief.map_or(0, |b| {
+        b.what_changed
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Done)
+            .count()
+    });
     format!(
         "scene theme=__THEME__ type=loop\n\
          hub Goals \"Goals → KPIs\"\n\
@@ -304,16 +349,12 @@ pub fn architecture() -> String {
      layout LR\n\
      database Local \"GitHub · chronis\"\n\
      service Connectors \"Calendar · Gmail · Jira · Notion\"\n\
-     service Tactician \"Left brain: tactician\"\n\
-     service Strategist \"Right brain: strategist\"\n\
+     service Tactician \"Daily brief: tactician\"\n\
      client You \"You\"\n\
      beat flow \"How the chief of staff works\":\n  \
      Local -> Tactician \"facts\"\n  \
-     Connectors -> Tactician \"today\"\n  \
-     Local -> Strategist \"history\"\n  \
-     Connectors -> Strategist \"goals\"\n  \
-     Tactician -> You \"brief + prompts\"\n  \
-     Strategist -> You \"review + bets\"\n"
+     Connectors -> Tactician \"goals · week · today\"\n  \
+     Tactician -> You \"brief + prompts\"\n"
         .to_owned()
 }
 

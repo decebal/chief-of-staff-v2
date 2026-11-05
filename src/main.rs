@@ -9,7 +9,8 @@ use cos::claude::Run;
 use cos::mcp::{self, Mode};
 use cos::pipeline::Config;
 
-/// Chief of staff: a tactical and a strategic brain over headless Claude Code.
+/// Chief of staff: one daily brief over headless Claude Code, from the goals
+/// down to today.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -26,7 +27,8 @@ struct Cli {
     /// Spending cap per Claude run, in USD.
     #[arg(long)]
     budget: Option<f64>,
-    /// Print the prompt instead of calling Claude.
+    /// Print the prompt instead of calling Claude; for `agents spawn`, the
+    /// hire's plan (repo, fit, contract) instead of starting it.
     #[arg(long)]
     dry_run: bool,
     /// Write the HTML report but do not open it.
@@ -44,11 +46,10 @@ impl Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Tactician: today's calendar, inbox, Jira, chronis and PRs → one brief.
+    /// Tactician: goals, this week's deliverables, then today's calendar,
+    /// inbox, Jira, chronis and PRs → one brief.
     Brief,
-    /// Strategist: this week against your goals and bets.
-    Review,
-    /// Ask the chief of staff; it routes to one or both brains and merges.
+    /// Ask the chief of staff a question; the tactician answers it.
     Ask { question: Vec<String> },
     /// Rebuild the HTML report from saved runs and open it. Free; calls nothing.
     Report,
@@ -59,6 +60,11 @@ enum Cmd {
     Dash {
         #[arg(long, default_value_t = 8790)]
         port: u16,
+    },
+    /// The documentation room: repo docs and Notion pages as a graph you organise.
+    Docs {
+        #[command(subcommand)]
+        cmd: Option<DocsCmd>,
     },
     /// MCP server on stdio, for Claude Desktop and Codex. All tools.
     Mcp,
@@ -79,7 +85,7 @@ enum Cmd {
         #[arg(long, default_value_t = 8787)]
         port: u16,
     },
-    /// Spin off coding agents on a brief's or review's prompts, and watch them.
+    /// Spin off coding agents on a brief's prompts, and watch them.
     Agents {
         #[command(subcommand)]
         cmd: AgentCmd,
@@ -124,9 +130,18 @@ enum StateCmd {
         #[arg(long)]
         reason: String,
     },
-    /// Write the latest review's proposed deliverables into
+    /// Write the latest brief's proposed deliverables for the week into
     /// `.chief-of-staff/candidate.json` for you to read and commit.
     Propose,
+}
+
+#[derive(Subcommand)]
+enum DocsCmd {
+    /// List the Notion pages about the monitored projects (a paid run with your
+    /// Notion connector) into out/docs/notion.json.
+    Notion,
+    /// Print the room's inventory as JSON: documents, Notion pages, your topics.
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -134,7 +149,7 @@ enum AgentCmd {
     /// Start an agent in the background; prints its id. `--budget` caps a
     /// Claude agent's spend (default $5; Codex has no budget flag).
     Spawn {
-        /// Take the prompt from the latest saved brief (actions) or review (goals).
+        /// Take the prompt from the latest saved brief: its actions, or its week's goals.
         #[arg(long, value_enum, conflicts_with_all = ["prompt", "deliverable"])]
         from: Option<agents::From>,
         /// Hand off a tracked deliverable from `.chief-of-staff/state.json`.
@@ -171,12 +186,28 @@ enum AgentCmd {
         /// Changes elsewhere make the verdict `needs_you`.
         #[arg(long)]
         scope: Vec<String>,
-        /// The finish line in words; a deliverable brings its own `done_when`.
+        /// The finish line in words; a deliverable brings its own `doneWhen`.
         #[arg(long)]
         done_when: Option<String>,
+        /// A staff role from `context/agents.json` (builder, reviewer, …): its
+        /// contract and mandate fill what the other flags leave empty.
+        #[arg(long)]
+        role: Option<String>,
     },
     /// Judge an ended agent again: its diff, its checks, its scope.
     Judge { id: String },
+    /// Record what you found when you ran what a judged agent drafted (a
+    /// tester's script). Stored on the run; nothing is sent.
+    Record {
+        id: String,
+        #[arg(long, value_enum)]
+        outcome: agents::Tested,
+        #[arg(long, default_value = "")]
+        notes: String,
+        /// A link or path that shows it; repeatable.
+        #[arg(long)]
+        evidence: Vec<String>,
+    },
     /// How agents did, by harness, model and repo, from every verdict.
     Scorecard,
     /// Every agent: status, tool calls, cost, latest activity.
@@ -214,21 +245,25 @@ enum AgentCmd {
     },
 }
 
+/// `EX_TEMPFAIL`: the run was put off (dark wake), not failed; nothing spent.
+const DEFERRED_EXIT: i32 = 75;
+
 fn main() -> Result<()> {
     let auth = cos::auth::load();
     let cli = Cli::parse();
     let result = run(&cli, auth);
+    if let Err(e) = &result
+        && e.is::<cos::pipeline::Deferred>()
+    {
+        eprintln!("{e}");
+        std::process::exit(DEFERRED_EXIT);
+    }
     // launchd runs with stderr redirected to a file; a failure there must
     // still reach the user the morning it happens.
     if let Err(e) = &result {
         use std::io::IsTerminal;
-        if !std::io::stderr().is_terminal() && matches!(cli.cmd, Cmd::Brief | Cmd::Review) {
-            let what = if matches!(cli.cmd, Cmd::Brief) {
-                "brief"
-            } else {
-                "review"
-            };
-            cos::auth::notify(&format!("cos {what} failed"), &format!("{e:#}"));
+        if !std::io::stderr().is_terminal() && matches!(cli.cmd, Cmd::Brief) {
+            cos::auth::notify("cos brief failed", &format!("{e:#}"));
         }
     }
     result
@@ -241,22 +276,16 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
         workspace: ws.clone(),
         projects: cli.projects.clone(),
         budget: cli.budget,
+        bins: Default::default(),
     };
     match &cli.cmd {
         Cmd::Brief if cli.dry_run => print_run(&cfg.brief_run(&cfg.gather()?)),
-        Cmd::Review if cli.dry_run => print_run(&cfg.review_run(&cfg.gather()?)),
-        Cmd::Ask { question } if cli.dry_run => print_run(&Config::route_run(&question.join(" "))),
+        Cmd::Ask { question } if cli.dry_run => print_run(&cfg.ask_run(&question.join(" "))),
         Cmd::Brief => {
             let done = cfg.brief()?;
             finish(&done.markdown, done.cost_usd, done.saved.as_deref())?;
             tracked(done.tracked.as_ref());
-            show_report(cli)
-        }
-        Cmd::Review => {
-            let done = cfg.review()?;
-            finish(&done.markdown, done.cost_usd, done.saved.as_deref())?;
-            tracked(done.tracked.as_ref());
-            if !done.value.proposed.is_empty() {
+            if !done.value.week.proposed.is_empty() {
                 eprintln!("proposals: `cos state propose` writes them as a candidate to review");
             }
             show_report(cli)
@@ -295,8 +324,40 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
                     let _ = cos::report::open(std::path::Path::new(&url));
                 });
             }
-            runtime()?.block_on(cos::dash::serve(cli.home.clone(), ws, *port))
+            runtime()?.block_on(cos::dash::serve(
+                cli.home.clone(),
+                ws,
+                cli.projects.clone(),
+                *port,
+            ))
         }
+        Cmd::Docs { cmd } => match cmd {
+            Some(DocsCmd::Notion) => {
+                let (list, cost) = cfg.notion_pages()?;
+                cos::docs::save_notion(&cli.home, &list)?;
+                eprintln!(
+                    "cost ${cost:.2}\nlisted {} Notion pages into {}",
+                    list.pages.len(),
+                    cos::docs::notion_path(&cli.home).display()
+                );
+                Ok(())
+            }
+            Some(DocsCmd::Json) => {
+                let data = cos::docs::library(&cli.home, &ws, &cli.projects)?;
+                println!("{}", serde_json::to_string_pretty(&data)?);
+                Ok(())
+            }
+            None => {
+                let url = "http://127.0.0.1:8790/docs";
+                eprintln!(
+                    "the room is served by `cos dash` at {url}, and in the desktop app's Docs tab"
+                );
+                if !cli.no_open {
+                    cos::report::open(std::path::Path::new(url))?;
+                }
+                Ok(())
+            }
+        },
         Cmd::Ask { question } => {
             let done = cfg.ask(&question.join(" "))?;
             finish(&done.markdown, done.cost_usd, None)
@@ -329,46 +390,23 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
             checks,
             scope,
             done_when,
+            role,
         } => {
-            let mut done_when = done_when.clone();
-            let picked: Vec<agents::Task> = match (from, prompt) {
+            use agents::hire::Ask;
+            let picked: Vec<Ask> = match (from, prompt) {
                 _ if deliverable.is_some() => {
-                    let id = deliverable.as_deref().unwrap_or_default();
-                    let (st, profile) = workspace(&cli.ws())?;
-                    let prompt = cos::handoff::deliverable(
-                        &st,
-                        profile.as_ref(),
-                        id,
-                        cos::handoff::Receiver::Agent,
-                    )?;
-                    let found = cos::state::find(&st, "deliverables", id);
-                    let title = found
-                        .and_then(|d| d["title"].as_str())
-                        .unwrap_or(id)
-                        .to_owned();
-                    if done_when.is_none() {
-                        done_when = found
-                            .and_then(|d| d["done_when"].as_str())
-                            .filter(|s| !s.trim().is_empty())
-                            .map(str::to_owned);
-                    }
-                    vec![agents::Task {
-                        n: 0,
-                        title,
-                        prompt,
-                        source: format!("deliverable {id}"),
-                    }]
+                    vec![Ask::Deliverable(deliverable.clone().unwrap_or_default())]
                 }
                 (Some(from), _) => {
                     let tasks = agents::tasks(home, *from)?;
                     match item {
-                        _ if *all => tasks,
-                        Some(n) => vec![
+                        _ if *all => tasks.into_iter().map(Ask::Task).collect(),
+                        Some(n) => vec![Ask::Task(
                             tasks
                                 .into_iter()
                                 .find(|t| t.n == *n)
                                 .with_context(|| format!("item {n} has no agent prompt"))?,
-                        ],
+                        )],
                         None => {
                             for t in &tasks {
                                 println!("{:>2}  {}", t.n, t.title);
@@ -377,53 +415,60 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
                         }
                     }
                 }
-                (None, Some(p)) => vec![agents::Task {
+                (None, Some(p)) => vec![Ask::Task(agents::Task {
                     n: 0,
                     title: p.lines().next().unwrap_or("").chars().take(80).collect(),
                     prompt: p.clone(),
                     source: "prompt".into(),
-                }],
+                })],
                 (None, None) => {
-                    anyhow::bail!("give --from brief|review, --deliverable <id> or --prompt")
+                    anyhow::bail!("give --from brief|goals, --deliverable <id> or --prompt")
                 }
             };
             let cos = std::env::current_exe().context("locate the cos binary")?;
             if let Some(note) = agents::policy::load(home).note {
                 eprintln!("{note}; hiring on the built-in defaults");
             }
-            for t in picked {
-                let repo = repo
-                    .clone()
-                    .or_else(|| agents::infer_repo(&t.prompt, &cli.projects));
-                let spec = agents::spawn(
-                    home,
-                    agents::Request {
-                        harness: *harness,
-                        program: None,
-                        model: model.clone(),
-                        worktree: !in_place,
-                        repo,
-                        title: t.title,
-                        source: t.source,
-                        prompt: t.prompt,
-                        deadline: Duration::from_secs(deadline.unwrap_or(1800)),
-                        budget_usd: cli.budget.unwrap_or(5.0),
-                        slots: None,
-                        contract: agents::Contract {
-                            done_when: done_when.clone(),
-                            checks: checks.clone(),
-                            scope: scope.clone(),
-                        },
-                        explicit: agents::policy::Explicit {
-                            deadline: deadline.is_some(),
-                            budget: cli.budget.is_some(),
-                        },
+            let ws = cli.ws();
+            let at = agents::hire::Where {
+                home,
+                workspace: &ws,
+                projects: &cli.projects,
+            };
+            let asked = agents::Contract {
+                done_when: done_when.clone(),
+                checks: checks.clone(),
+                scope: scope.clone(),
+                ..Default::default()
+            };
+            for ask in picked {
+                let plan = agents::hire::plan(&at, role.as_deref(), ask, repo.clone(), &asked)?;
+                if cli.dry_run {
+                    println!("{}", serde_json::to_string_pretty(&plan)?);
+                    continue;
+                }
+                for n in plan.fit.notes.iter().chain(&plan.warnings) {
+                    eprintln!("note: {n}");
+                }
+                let req = plan.request(agents::hire::Run {
+                    harness: *harness,
+                    program: None,
+                    model: model.clone(),
+                    worktree: !in_place,
+                    deadline: Duration::from_secs(deadline.unwrap_or(1800)),
+                    budget_usd: cli.budget.unwrap_or(5.0),
+                    slots: None,
+                    explicit: agents::policy::Explicit {
+                        deadline: deadline.is_some(),
+                        budget: cli.budget.is_some(),
                     },
-                    &cos,
-                )?;
+                })?;
+                let spec = agents::spawn(home, req, &cos)?;
                 println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
             }
-            eprintln!("watch: cos agents watch   ·   live page: cos dash → /agents");
+            if !cli.dry_run {
+                eprintln!("watch: cos agents watch   ·   live page: cos dash → /agents");
+            }
             Ok(())
         }
         AgentCmd::Ls => {
@@ -447,10 +492,19 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
             let (spec, _) = agents::read(home, id)?;
             let events = agents::events_path(home, id);
             let mut at = 0;
+            let mut calls = std::collections::HashMap::new();
             loop {
-                let (lines, next) = agents::view::activity(&events, spec.harness, at);
-                for l in lines {
-                    println!("{l}");
+                let (entries, next) = agents::view::feed(&events, spec.harness, at);
+                for e in &entries {
+                    let answering = match (e.kind, &e.call) {
+                        (agents::harness::EntryKind::Call, Some(id)) => {
+                            calls.insert(id.clone(), e.detail.clone());
+                            None
+                        }
+                        (_, Some(id)) => calls.get(id).map(String::as_str),
+                        _ => None,
+                    };
+                    println!("{}", agents::view::feed_line(e, answering));
                 }
                 at = next;
                 let (_, state) = agents::read(home, id)?;
@@ -466,6 +520,26 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
         AgentCmd::Scorecard => {
             let scores = agents::ledger::scorecard(&agents::ledger::read(home));
             print!("{}", agents::view::scorecard(&scores));
+            Ok(())
+        }
+        AgentCmd::Record {
+            id,
+            outcome,
+            notes,
+            evidence,
+        } => {
+            let state = agents::record(
+                home,
+                id,
+                agents::Recorded {
+                    outcome: *outcome,
+                    notes: notes.clone(),
+                    evidence: evidence.clone(),
+                    at: String::new(),
+                },
+            )?;
+            let (spec, _) = agents::read(home, id)?;
+            print!("{}", agents::view::show(&spec, &state));
             Ok(())
         }
         AgentCmd::Judge { id } => {
@@ -531,20 +605,19 @@ fn state_cmd(home: &std::path::Path, ws: &std::path::Path, cmd: &StateCmd) -> Re
                 reason,
             } => state::commit(&ws, &state::load(candidate)?, *expected_revision, reason),
             StateCmd::Propose => {
-                let r =
-                    cos::store::latest::<cos::reports::Review>(home, cos::store::Kind::Reviews)?
-                        .context("no saved review; run `cos review`")?;
+                let r = cos::store::latest::<cos::reports::Brief>(home, cos::store::Kind::Briefs)?
+                    .context("no saved brief; run `cos brief`")?;
                 let c = cos::track::proposal_candidate(
                     &ws,
-                    &r.value.proposed,
-                    &format!("cos review {}", r.day),
+                    &r.value.week.proposed,
+                    &format!("cos brief {}", r.day),
                 )?;
                 Ok(serde_json::json!({
                     "candidate": c.path,
                     "added": c.added,
                     "skippedNoTrackedGoal": c.skipped,
                     "commit": format!(
-                        "cos state commit --candidate {} --expected-revision {} --reason \"Proposed deliverables from the {} review\"",
+                        "cos state commit --candidate {} --expected-revision {} --reason \"Proposed deliverables from the {} brief\"",
                         c.path.display(), c.revision, r.day
                     ),
                 }))

@@ -71,6 +71,7 @@ fn request(repo: &Path, prompt: &str) -> Request {
         slots: None,
         contract: Contract::default(),
         explicit: Explicit::default(),
+        role: None,
     }
 }
 
@@ -217,4 +218,217 @@ fn the_ledger_outlives_clean_and_a_rejudge_replaces_its_row() {
         (2, 1, 1, 1)
     );
     assert_eq!(score.median_cost_usd, Some(0.12));
+}
+
+#[test]
+fn the_template_seeds_eight_roles_under_the_chief_of_staff() {
+    let seed: policy::Policy = serde_json::from_str(policy::SEED).expect("the template parses");
+    let ids: Vec<&str> = seed.roles.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "chief-of-staff",
+            "builder",
+            "reviewer",
+            "researcher",
+            "investigator",
+            "docs-keeper",
+            "release-clerk",
+            "tester"
+        ]
+    );
+    assert!(seed.roles[0].head && seed.roles[1..].iter().all(|r| !r.head));
+    let clerk = seed.role("release-clerk").unwrap();
+    assert!(
+        clerk.mandate.contains("Never tag, push, publish or deploy"),
+        "the release role drafts only"
+    );
+    assert!(
+        seed.hire("chief-of-staff")
+            .unwrap_err()
+            .to_string()
+            .contains("it is not hired")
+    );
+    assert!(
+        seed.hire("janitor")
+            .unwrap_err()
+            .to_string()
+            .contains("no role janitor")
+    );
+}
+
+#[test]
+fn a_home_whose_policy_predates_roles_gets_the_template_roles() {
+    let (home, _) = setup("old-policy", Some(POLICY));
+    let p = policy::load(&home);
+    assert!(p.note.is_none(), "{:?}", p.note);
+    assert_eq!(
+        p.repos["demo-repo"].deadline_secs,
+        Some(45),
+        "its own terms kept"
+    );
+    assert_eq!(p.roles.len(), 8);
+    let (bare, _) = setup("no-policy", None);
+    assert_eq!(policy::load(&bare).roles.len(), 8);
+}
+
+#[test]
+fn a_role_contract_wins_over_the_repo_and_the_repo_limits_win_over_the_role() {
+    let p: policy::Policy = serde_json::from_str(
+        r#"{
+          "defaults": { "deadline_secs": 900 },
+          "roles": [{ "id": "reviewer", "title": "Reviewer", "mandate": "Review.",
+                      "expects": "file", "output": "REVIEW.md",
+                      "checks": ["test -s REVIEW.md"], "scope": ["REVIEW.md"],
+                      "deadline_secs": 300, "budget_usd": 2 }],
+          "repos": { "demo-repo": { "checks": ["task test"], "scope": ["src/"], "deadline_secs": 45 } }
+        }"#,
+    )
+    .unwrap();
+    let t = p.terms_for(Some(Path::new("/x/demo-repo")), p.role("reviewer"));
+    assert_eq!(t.checks, ["test -s REVIEW.md"]);
+    assert_eq!(t.scope, ["REVIEW.md"]);
+    assert_eq!(t.deadline_secs, Some(45), "the repo knows its build cost");
+    assert_eq!(t.budget_usd, Some(2.0), "the repo sets none");
+    let elsewhere = p.terms_for(Some(Path::new("/x/other")), p.role("reviewer"));
+    assert_eq!(elsewhere.deadline_secs, Some(300));
+}
+
+#[test]
+fn a_reviewer_hired_by_role_is_judged_on_its_review_file() {
+    let (home, repo) = setup("role-reviewer", Some(POLICY));
+    let mut req = request(&repo, "REVIEW and READONLY");
+    req.role = Some("reviewer".into());
+    let (spec, st) = judged(&home, req);
+    assert_eq!(spec.role.as_deref(), Some("reviewer"));
+    assert_eq!(spec.contract.expects, agents::Expects::File);
+    assert_eq!(spec.contract.output.as_deref(), Some("REVIEW.md"));
+    assert_eq!(
+        spec.contract.checks,
+        ["test -s REVIEW.md"],
+        "the role's check, not the repo's"
+    );
+    assert!(
+        spec.prompt.starts_with("Role: Reviewer."),
+        "{}",
+        spec.prompt
+    );
+    assert_eq!(st.verdict.unwrap().outcome, Outcome::Accepted);
+    let rows = ledger::read(&home);
+    assert_eq!(rows[0].role.as_deref(), Some("reviewer"));
+    assert_eq!(
+        ledger::scorecard(&rows)[0].role.as_deref(),
+        Some("reviewer")
+    );
+}
+
+#[test]
+fn a_tester_drafts_the_plan_and_is_judged_on_it_then_you_record_the_result() {
+    let (home, repo) = setup("role-tester", None);
+    let mut req = request(&repo, "TESTPLAN and READONLY");
+    req.role = Some("tester".into());
+    let (spec, st) = judged(&home, req);
+    assert_eq!(spec.contract.expects, agents::Expects::File);
+    assert_eq!(spec.contract.output.as_deref(), Some("TEST-PLAN.md"));
+    assert_eq!(
+        spec.contract.checks,
+        ["test -s TEST-PLAN.md", "grep -qi evidence TEST-PLAN.md"]
+    );
+    assert!(spec.prompt.starts_with("Role: Tester."), "{}", spec.prompt);
+    let v = st.verdict.unwrap();
+    assert_eq!(v.outcome, Outcome::Accepted, "{v:?}");
+    assert_eq!(v.changed, ["TEST-PLAN.md"]);
+
+    let r = |notes: &str| agents::Recorded {
+        outcome: agents::Tested::Failed,
+        notes: notes.into(),
+        evidence: vec!["https://ci.example/run/1".into(), " ".into()],
+        at: String::new(),
+    };
+    assert!(
+        agents::record(&home, &spec.id, r("")).is_ok(),
+        "evidence alone is enough"
+    );
+    let st = agents::record(&home, &spec.id, r("step 3 timed out on staging")).unwrap();
+    let rec = st.recorded.unwrap();
+    assert_eq!(rec.outcome, agents::Tested::Failed);
+    assert_eq!(
+        rec.evidence,
+        ["https://ci.example/run/1"],
+        "blank lines dropped"
+    );
+    assert!(!rec.at.is_empty());
+    agents::rejudge(&home, &spec.id).unwrap();
+    let (_, again) = agents::read(&home, &spec.id).unwrap();
+    assert_eq!(
+        again.recorded.unwrap().notes,
+        "step 3 timed out on staging",
+        "a re-judge keeps what you recorded"
+    );
+}
+
+#[test]
+fn a_result_is_recorded_only_on_a_judged_run() {
+    let (home, repo) = setup("record-live", None);
+    let spec = agents::spawn(&home, request(&repo, "SLEEP"), Path::new(COS)).unwrap();
+    let err = agents::record(
+        &home,
+        &spec.id,
+        agents::Recorded {
+            outcome: agents::Tested::Passed,
+            notes: "too early".into(),
+            evidence: Vec::new(),
+            at: String::new(),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("once it is judged"), "{err}");
+    agents::stop(&home, &spec.id, Duration::from_secs(10)).unwrap();
+}
+
+#[test]
+fn hiring_the_head_or_an_unknown_role_starts_nothing() {
+    let (home, repo) = setup("role-refused", None);
+    for role in ["chief-of-staff", "janitor"] {
+        let mut req = request(&repo, "edit a file");
+        req.role = Some(role.into());
+        assert!(
+            agents::spawn(&home, req, Path::new(COS)).is_err(),
+            "{role} was hired"
+        );
+    }
+    assert!(agents::list(&home).unwrap().is_empty());
+}
+
+#[test]
+fn a_deliverable_hands_off_with_the_kits_done_when() {
+    let st: serde_json::Value = serde_json::from_str(cos::state::DEMO_STATE).unwrap();
+    let (task, done_when) = agents::deliverable_task(&st, None, "D-1").unwrap();
+    assert_eq!(task.title, "Give the workshop deck to the reviewer");
+    assert_eq!(task.source, "deliverable D-1");
+    assert_eq!(
+        done_when.as_deref(),
+        Some("Reviewer receives the correct draft and confirms review availability"),
+        "the kit writes doneWhen"
+    );
+    let mut old = st.clone();
+    let d = &mut old["deliverables"][0];
+    let finish = d["doneWhen"].take();
+    d["done_when"] = finish;
+    let (_, legacy) = agents::deliverable_task(&old, None, "D-1").unwrap();
+    assert_eq!(legacy, done_when, "older state with done_when still reads");
+}
+
+#[test]
+fn spawn_without_a_source_names_the_real_from_values() {
+    let root = scratch("from-msg");
+    let out = Command::new(COS)
+        .args(["--home"])
+        .arg(&root)
+        .args(["agents", "spawn"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--from brief|goals"), "{err}");
 }

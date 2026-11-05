@@ -86,6 +86,18 @@ pub fn show(spec: &Spec, st: &State) -> String {
     if let Some(d) = &c.done_when {
         let _ = writeln!(s, "done when {d}");
     }
+    if let Some(f) = &c.finish_line {
+        let _ = writeln!(s, "yours    {f}");
+    }
+    if let Some(r) = &st.recorded {
+        let _ = writeln!(s, "result   {} (recorded by you {})", r.outcome, r.at);
+        if !r.notes.trim().is_empty() {
+            let _ = writeln!(s, "         {}", r.notes.trim());
+        }
+        for e in &r.evidence {
+            let _ = writeln!(s, "         evidence: {e}");
+        }
+    }
     if !c.scope.is_empty() {
         let _ = writeln!(s, "scope    {}", c.scope.join(", "));
     }
@@ -144,9 +156,10 @@ pub fn show(spec: &Spec, st: &State) -> String {
     s
 }
 
-/// Activity lines from `events.jsonl` starting at byte `from`; returns them
-/// and the offset to continue from.
-pub fn activity(events: &Path, harness: Harness, from: u64) -> (Vec<String>, u64) {
+/// Feed entries from `events.jsonl` starting at byte `from`; returns them and
+/// the offset to continue from. Keys come from byte offsets, so a reader that
+/// asks for the same range twice can drop what it already has.
+pub fn feed(events: &Path, harness: Harness, from: u64) -> (Vec<harness::Entry>, u64) {
     let Ok(mut f) = std::fs::File::open(events) else {
         return (Vec::new(), from);
     };
@@ -160,17 +173,35 @@ pub fn activity(events: &Path, harness: Harness, from: u64) -> (Vec<String>, u64
         if n == 0 || !buf.ends_with('\n') {
             break;
         }
+        out.extend(harness::entries(harness, buf.trim_end(), &at.to_string()));
         at += n as u64;
-        let t = harness::read(harness, buf.trim_end());
-        if let Some(last) = t.last {
-            out.push(last);
-        }
-        if let Some(f) = t.failed {
-            out.push(format!("FAILED {f}"));
-        }
         buf.clear();
     }
     (out, at)
+}
+
+/// One feed entry as a terminal line (`cos agents tail`). `answering` is the
+/// call a result answers, as the terminal showed it, when known: parallel
+/// calls come back out of order.
+pub fn feed_line(e: &harness::Entry, answering: Option<&str>) -> String {
+    use harness::EntryKind as K;
+    let tool = e.tool.as_deref().unwrap_or("");
+    let to = answering
+        .map(|a| match a.char_indices().nth(40) {
+            Some((i, _)) => format!("[{}…] ", &a[..i]),
+            None => format!("[{a}] "),
+        })
+        .unwrap_or_default();
+    match e.kind {
+        K::Start => format!("--   {}", e.detail),
+        K::Call => format!("call {tool}  {}", e.detail),
+        K::Result if e.ok == Some(false) => format!("  ERR {to}{}", e.detail),
+        K::Result => format!("  ok  {to}{}", e.detail),
+        K::Say => format!("say  {}", e.detail),
+        K::Denied => format!("DENY {tool}  {}", e.detail),
+        K::Failed => format!("FAILED {}", e.detail),
+        K::End => format!("--   {}", e.detail),
+    }
 }
 
 /// `/agents` for `cos dash`: a self-refreshing table, nothing to install.
@@ -196,26 +227,12 @@ pub fn html(agents: &[(Spec, State)], scores: &[ledger::Score]) -> String {
         );
     }
     let live = agents.iter().filter(|(_, s)| !s.status.terminal()).count();
-    format!(
-        r#"<!doctype html><html lang=en><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<meta http-equiv=refresh content=3><title>cos agents</title>
-<style>
-:root{{--bg:#fbfaf7;--fg:#1d1c1a;--dim:#6b6862;--line:#e4e1da;--live:#0a7d4f}}
-@media (prefers-color-scheme:dark){{:root{{--bg:#151513;--fg:#ecebe6;--dim:#9a978f;--line:#2c2b28;--live:#4cc38a}}}}
-body{{margin:0;padding:24px 16px;background:var(--bg);color:var(--fg);font:14px/1.45 ui-sans-serif,system-ui,sans-serif}}
-main{{max-width:1100px;margin:0 auto}} h1{{font-size:20px;margin:0 0 4px}}
-p{{color:var(--dim);margin:0 0 16px}} .wrap{{overflow-x:auto}}
-table{{border-collapse:collapse;width:100%}} td,th{{padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}}
-th{{font-weight:600;color:var(--dim);font-size:12px}} .n{{text-align:right;font-variant-numeric:tabular-nums}}
-.dim{{color:var(--dim)}} tr.live td:nth-child(2){{color:var(--live);font-weight:600}} code{{font-size:12px}}
-</style>
-<main><h1>Agents</h1><p>{live} running · {total} total · refreshes every 3 s · <a href="/">report</a></p>
-<div class=wrap><table><tr><th>ID</th><th>Status</th><th>Verdict</th><th>Harness</th><th class=n>Tools</th><th class=n>Cost</th><th>Task / latest</th><th>Workdir</th></tr>
-{rows}</table></div>{score}</main>"#,
-        total = agents.len(),
-        score = scorecard_html(scores),
-    )
+    crate::design::inline(include_str!("view.html"))
+        .expect("view.html carries the token slot")
+        .replacen("<!--__LIVE__-->", &live.to_string(), 1)
+        .replacen("<!--__TOTAL__-->", &agents.len().to_string(), 1)
+        .replacen("<!--__ROWS__-->", &rows, 1)
+        .replacen("<!--__SCORE__-->", &scorecard_html(scores), 1)
 }
 
 /// The verdict once judged; while running, the trouble it shows, if any.
@@ -237,13 +254,24 @@ pub fn scorecard(scores: &[ledger::Score]) -> String {
         return "no judged agents yet\n".into();
     }
     let mut s = format!(
-        "{:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>7} {:>6}\n",
-        "HARN", "MODEL", "REPO", "RUNS", "ACCEPTED", "NEEDS", "REJECT", "OVER", "COST", "SECS"
+        "{:<13} {:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>7} {:>6}\n",
+        "ROLE",
+        "HARN",
+        "MODEL",
+        "REPO",
+        "RUNS",
+        "ACCEPTED",
+        "NEEDS",
+        "REJECT",
+        "OVER",
+        "COST",
+        "SECS"
     );
     for sc in scores {
         let _ = writeln!(
             s,
-            "{:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>7} {:>6}",
+            "{:<13} {:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>7} {:>6}",
+            sc.role.as_deref().unwrap_or("unassigned"),
             harness_name(sc.harness),
             sc.model.as_deref().unwrap_or("default"),
             sc.repo.as_deref().unwrap_or("(scratch)"),

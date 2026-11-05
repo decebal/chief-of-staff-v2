@@ -81,6 +81,26 @@ fn an_auth_failure_says_why_and_what_to_do() {
     assert!(!why.ends_with(": "), "{why}");
 }
 
+/// 2026-11-03: `claude run failed (success): API Error: Your computer went
+/// to sleep mid-response.` An error result's `success` subtype is not shown,
+/// and the failure is one worth a retry.
+#[test]
+fn a_sleep_mid_response_is_transient_and_not_called_success() {
+    let e = parse(
+        r#"{"type":"result","subtype":"success","is_error":true,"total_cost_usd":0.4,
+            "result":"API Error: Your computer went to sleep mid-response."}"#,
+    );
+    let Event::Result(o) = e else {
+        panic!("not result")
+    };
+    let why = error_reason(&o);
+    assert_eq!(
+        why,
+        "claude run failed: API Error: Your computer went to sleep mid-response."
+    );
+    assert!(cos::claude::transient(&o));
+}
+
 #[test]
 fn a_budget_stop_keeps_its_own_reason() {
     let e = parse(
@@ -92,6 +112,7 @@ fn a_budget_stop_keeps_its_own_reason() {
     let why = error_reason(&o);
     assert!(why.contains("Reached maximum budget"), "{why}");
     assert!(!why.contains("/login"), "{why}");
+    assert!(!cos::claude::transient(&o));
 }
 
 #[test]

@@ -10,17 +10,18 @@ use serde::de::DeserializeOwned;
 #[derive(Debug, Clone, Copy)]
 pub enum Kind {
     Briefs,
-    Reviews,
     /// The gathered local facts behind a run; JSON only.
     Facts,
+    /// What became of each day's brief run (`pipeline::RunReceipt`); JSON only.
+    Runs,
 }
 
 impl Kind {
     fn dir(self, home: &Path) -> PathBuf {
         home.join("out").join(match self {
             Self::Briefs => "briefs",
-            Self::Reviews => "reviews",
             Self::Facts => "facts",
+            Self::Runs => "runs",
         })
     }
 }

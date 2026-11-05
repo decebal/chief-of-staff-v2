@@ -1,6 +1,38 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect x="32" y="32" width="448" height="448" rx="100" fill="#1f2a44"/>
-  <circle cx="196" cy="236" r="64" fill="none" stroke="#7fb3ff" stroke-width="28"/>
-  <circle cx="316" cy="236" r="64" fill="none" stroke="#ffd27f" stroke-width="28"/>
-  <rect x="136" y="356" width="240" height="28" rx="14" fill="#e8edf7"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Chief of Staff</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2E2E2E"/>
+      <stop offset="1" stop-color="#111111"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS icon grid: an 824 px tile inside the 1024 canvas -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <!-- the cos mark: an open ring with the focus dot in its gap (ui/mark.svg) -->
+  <path d="M510.2 280.7A170 170 0 1 0 510.2 499.3" fill="none" stroke="#FFFFFF" stroke-width="64" stroke-linecap="round"/>
+  <circle cx="552" cy="390" r="44" fill="#FFB224"/>
+  <!-- the stamp; librsvg has no textPath, so the ring text is set letter by letter -->
+  <g transform="rotate(-10 700 700)">
+    <circle cx="700" cy="700" r="218" fill="#171717"/>
+    <circle cx="700" cy="700" r="208" fill="none" stroke="#EDEDED" stroke-width="18"/>
+    <circle cx="700" cy="700" r="112" fill="none" stroke="#EDEDED" stroke-width="7"/>
+    <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="800" font-size="50" fill="#EDEDED" text-anchor="middle">
+      <text transform="translate(552.6 728.0) rotate(-100.8)">C</text>
+      <text transform="translate(550.5 687.6) rotate(-85.2)">H</text>
+      <text transform="translate(559.3 648.1) rotate(-69.8)">I</text>
+      <text transform="translate(578.3 612.4) rotate(-54.2)">E</text>
+      <text transform="translate(606.1 583.0) rotate(-38.8)">F</text>
+      <text transform="translate(679.8 551.4) rotate(-7.8)">O</text>
+      <text transform="translate(720.2 551.4) rotate(7.8)">F</text>
+      <text transform="translate(793.9 583.0) rotate(38.8)">S</text>
+      <text transform="translate(821.7 612.4) rotate(54.2)">T</text>
+      <text transform="translate(840.7 648.1) rotate(69.8)">A</text>
+      <text transform="translate(849.5 687.6) rotate(85.2)">F</text>
+      <text transform="translate(847.4 728.0) rotate(100.8)">F</text>
+    </g>
+    <circle cx="610" cy="830" r="10" fill="#FFB224"/>
+    <circle cx="700" cy="862" r="10" fill="#FFB224"/>
+    <circle cx="790" cy="830" r="10" fill="#FFB224"/>
+    <text x="700" y="720" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="800" font-size="54" letter-spacing="1" fill="#EDEDED">AGENT</text>
+  </g>
 </svg>

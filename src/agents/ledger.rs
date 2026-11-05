@@ -33,6 +33,9 @@ pub struct Row {
     pub tool_calls: u32,
     #[serde(default)]
     pub flagged: Vec<Kind>,
+    /// The staff role; `None` for rows written before roles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 pub fn path(home: &Path) -> PathBuf {
@@ -65,6 +68,7 @@ pub fn row(spec: &Spec, state: &State) -> Option<Row> {
         secs: secs(state),
         tool_calls: state.tool_calls,
         flagged: state.flagged.clone(),
+        role: spec.role.clone(),
     })
 }
 
@@ -101,6 +105,7 @@ pub fn read(home: &Path) -> Vec<Row> {
 /// One line of the scorecard: how agents hired on the same terms did.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Score {
+    pub role: Option<String>,
     pub harness: Harness,
     pub model: Option<String>,
     pub repo: Option<String>,
@@ -114,13 +119,14 @@ pub struct Score {
     pub median_secs: Option<u64>,
 }
 
-/// Grouped by harness, model and repo; most runs first.
+/// Grouped by role, harness, model and repo; most runs first.
 pub fn scorecard(rows: &[Row]) -> Vec<Score> {
-    type Hire = (String, Option<String>, Option<String>);
+    type Hire = (Option<String>, String, Option<String>, Option<String>);
     let mut groups: BTreeMap<Hire, Vec<&Row>> = BTreeMap::new();
     for r in rows {
         groups
             .entry((
+                r.role.clone(),
                 r.harness.program().to_owned(),
                 r.model.clone(),
                 r.repo.clone(),
@@ -137,6 +143,7 @@ pub fn scorecard(rows: &[Row]) -> Vec<Score> {
             let mut secs: Vec<u64> = rs.iter().filter_map(|r| r.secs).collect();
             secs.sort_unstable();
             Score {
+                role: rs[0].role.clone(),
                 harness: rs[0].harness,
                 model: rs[0].model.clone(),
                 repo: rs[0].repo.clone(),
@@ -153,6 +160,50 @@ pub fn scorecard(rows: &[Row]) -> Vec<Score> {
         .collect();
     out.sort_by_key(|a| std::cmp::Reverse(a.runs));
     out
+}
+
+/// One role's record across every hire: the role card's numbers.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RoleScore {
+    /// `None` gathers the rows written before roles.
+    pub role: Option<String>,
+    pub runs: usize,
+    pub accepted: usize,
+    pub needs_you: usize,
+    pub rejected: usize,
+    pub overclaimed: usize,
+    pub flagged: usize,
+    pub median_cost_usd: Option<f64>,
+    pub median_secs: Option<u64>,
+}
+
+/// Grouped by role alone, medians over every row of the role.
+pub fn by_role(rows: &[Row]) -> Vec<RoleScore> {
+    let mut groups: BTreeMap<Option<String>, Vec<&Row>> = BTreeMap::new();
+    for r in rows {
+        groups.entry(r.role.clone()).or_default().push(r);
+    }
+    groups
+        .into_iter()
+        .map(|(role, rs)| {
+            let count = |o: Outcome| rs.iter().filter(|r| r.outcome == o).count();
+            let mut costs: Vec<f64> = rs.iter().filter_map(|r| r.cost_usd).collect();
+            costs.sort_by(f64::total_cmp);
+            let mut secs: Vec<u64> = rs.iter().filter_map(|r| r.secs).collect();
+            secs.sort_unstable();
+            RoleScore {
+                role,
+                runs: rs.len(),
+                accepted: count(Outcome::Accepted),
+                needs_you: count(Outcome::NeedsYou),
+                rejected: count(Outcome::Rejected),
+                overclaimed: rs.iter().filter(|r| r.overclaimed).count(),
+                flagged: rs.iter().filter(|r| !r.flagged.is_empty()).count(),
+                median_cost_usd: median(&costs).copied(),
+                median_secs: median(&secs).copied(),
+            }
+        })
+        .collect()
 }
 
 fn median<T>(sorted: &[T]) -> Option<&T> {

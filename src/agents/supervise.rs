@@ -98,7 +98,7 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
     write_state(home, id, &state)?;
 
     let rx = proc::lines(child.stdout.take().context("harness stdout not piped")?);
-    let until = Instant::now() + Duration::from_secs(spec.deadline_secs).min(CEILING);
+    let until = proc::Deadline::capped(Duration::from_secs(spec.deadline_secs), CEILING);
     let mut failed = None;
     let mut flushed = Instant::now();
     let mut watch = Watch::new(spec.limits, Instant::now());
@@ -108,13 +108,12 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
             proc::kill_and_reap(&mut child);
             break Status::Killed;
         }
-        let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
+        if until.expired() {
             proc::kill_and_reap(&mut child);
             break Status::TimedOut;
         }
         let mut dirty = false;
-        match rx.recv_timeout(left.min(TICK)) {
+        match rx.recv_timeout(until.slice().min(TICK)) {
             Ok(line) => {
                 writeln!(events, "{line}")?;
                 let tick = harness::read(spec.harness, &line);
@@ -124,7 +123,7 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                break exit(&mut child, &mut state, until, &stopped, failed.is_some());
+                break exit(&mut child, &mut state, &until, &stopped, failed.is_some());
             }
         }
         let flags = watch.flags(Instant::now());
@@ -173,7 +172,7 @@ fn prepare(home: &Path, id: &str, spec: &Spec, state: &mut State) -> Result<Comm
 fn exit(
     child: &mut Child,
     state: &mut State,
-    until: Instant,
+    until: &proc::Deadline,
     stopped: &dyn Fn() -> bool,
     failed: bool,
 ) -> Status {
@@ -197,7 +196,7 @@ fn exit(
             proc::kill_and_reap(child);
             return Status::Killed;
         }
-        if Instant::now() >= until {
+        if until.expired() {
             proc::kill_and_reap(child);
             return Status::TimedOut;
         }

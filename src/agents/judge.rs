@@ -21,15 +21,47 @@ const TAIL: usize = 20;
 /// What the agent was hired to do, fixed at spawn.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Contract {
-    /// The finish line, in words; a deliverable's `done_when`.
+    /// The finish line, in words; a deliverable's `done_when`, or the draft
+    /// the agent can return when that is outward-facing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_when: Option<String>,
+    /// The deliverable's own finish line when the agent's is a draft of it:
+    /// the step that stays with you.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_line: Option<String>,
     /// Shell commands run in the agent's workdir after it ends; each must exit 0.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<String>,
     /// Paths the agent may change, relative to the repo; empty allows any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope: Vec<String>,
+    /// What finished work looks like: a diff, a file, or no change at all.
+    #[serde(default, skip_serializing_if = "Expects::is_diff")]
+    pub expects: Expects,
+    /// The file it must leave (`file`) or the one file it may write
+    /// (`none`), relative to its workdir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+/// What a finished agent must have left behind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Expects {
+    /// Changes against its base commit (a builder).
+    #[default]
+    Diff,
+    /// `output`, present and not empty; no diff needed (a reviewer, a researcher).
+    File,
+    /// No change but `output` (an investigator).
+    #[serde(rename = "none")]
+    Nothing,
+}
+
+impl Expects {
+    pub fn is_diff(&self) -> bool {
+        *self == Self::Diff
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +145,11 @@ pub fn judge_within(spec: &Spec, state: &State, bin: Option<&Path>, budget: Dura
         Vec::new()
     };
     let failed: Vec<&Check> = checks.iter().filter(|k| !k.passed).collect();
+    let broken = if finished {
+        broken_contract(spec, &changed)
+    } else {
+        None
+    };
 
     let outcome = if !finished {
         reasons.push(format!(
@@ -125,12 +162,16 @@ pub fn judge_within(spec: &Spec, state: &State, bin: Option<&Path>, budget: Dura
                 .unwrap_or_default()
         ));
         Outcome::Rejected
-    } else if !failed.is_empty() {
+    } else if !failed.is_empty() || broken.is_some() {
         for k in &failed {
             reasons.push(format!("check failed: `{}` ({})", k.cmd, exit_note(k)));
         }
+        reasons.extend(broken.clone());
         Outcome::Rejected
     } else {
+        if c.expects == Expects::File && c.output.is_none() {
+            reasons.push("the contract expects a file but names none".into());
+        }
         if c.checks.is_empty() {
             reasons.push("no checks in the contract: nothing proves it is done".into());
         }
@@ -141,7 +182,7 @@ pub fn judge_within(spec: &Spec, state: &State, bin: Option<&Path>, budget: Dura
                 out_of_scope.join(", ")
             ));
         }
-        if changed.is_empty() && spec.base.is_some() {
+        if c.expects == Expects::Diff && changed.is_empty() && spec.base.is_some() {
             reasons.push("no changes against its base commit".into());
         }
         if reasons.is_empty() {
@@ -156,9 +197,48 @@ pub fn judge_within(spec: &Spec, state: &State, bin: Option<&Path>, budget: Dura
         reasons,
         changed,
         out_of_scope,
-        overclaimed: finished && !failed.is_empty(),
+        overclaimed: finished && (!failed.is_empty() || broken.is_some()),
         checks,
         judged: jiff::Timestamp::now().to_string(),
+    }
+}
+
+/// Why a finished agent did not leave what its contract `expects`, if so.
+fn broken_contract(spec: &Spec, changed: &[String]) -> Option<String> {
+    let c = &spec.contract;
+    let output = c.output.as_deref().filter(|o| !o.trim().is_empty());
+    match c.expects {
+        Expects::Diff => None,
+        Expects::File => {
+            let out = output?;
+            let inside = Path::new(out)
+                .components()
+                .all(|p| matches!(p, std::path::Component::Normal(_)));
+            if !inside {
+                return Some(format!(
+                    "its output `{out}` is not a path inside its workdir"
+                ));
+            }
+            let len = std::fs::metadata(spec.workdir.join(out)).map_or(0, |m| m.len());
+            (len == 0).then(|| format!("expected output `{out}` is missing or empty"))
+        }
+        Expects::Nothing => {
+            let extra: Vec<&String> = changed
+                .iter()
+                .filter(|f| Some(f.as_str()) != output)
+                .collect();
+            (!extra.is_empty()).then(|| {
+                format!(
+                    "hired to change nothing, changed {} file(s): {}",
+                    extra.len(),
+                    extra
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+        }
     }
 }
 

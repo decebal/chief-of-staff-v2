@@ -4,10 +4,172 @@
     "stall_secs": 600,
     "repeat": 5
   },
+  "roles": [
+    {
+      "id": "chief-of-staff",
+      "title": "Chief of staff",
+      "head": true,
+      "mandate": "Write the brief: a steer per goal, at most three actions, and a handoff for each piece of work it delegates.",
+      "serves": "Every goal",
+      "sandbox": "No file tools; reads the approved connectors only. Recommends; you commit.",
+      "judged": "By you, against the brief's schema and the evidence it cites.",
+      "done_when": "The brief validates against its schema and names its sources."
+    },
+    {
+      "id": "builder",
+      "title": "Builder",
+      "mandate": "Implement the deliverable in this repo, with tests.",
+      "serves": "Deliverables whose finish line is code",
+      "sandbox": "Its own detached worktree; the repo's scope from the policy; no network for shell commands.",
+      "judged": "The repo's checks exit 0, the diff is not empty and stays in scope.",
+      "done_when": "The repo's checks pass on a non-empty diff inside scope.",
+      "expects": "diff",
+      "work": ["code", "test"]
+    },
+    {
+      "id": "reviewer",
+      "title": "Reviewer",
+      "mandate": "Review the change. Write findings with file:line and a verdict to REVIEW.md. Do not edit the code.",
+      "serves": "Deliverables that unblock a goal by getting a change reviewed",
+      "sandbox": "A worktree of the change; writes REVIEW.md only.",
+      "judged": "REVIEW.md exists and is not empty; no other file changes.",
+      "done_when": "REVIEW.md holds findings with file:line and a verdict.",
+      "expects": "file",
+      "output": "REVIEW.md",
+      "checks": ["test -s REVIEW.md"],
+      "scope": ["REVIEW.md"],
+      "work": ["review"]
+    },
+    {
+      "id": "researcher",
+      "title": "Researcher",
+      "mandate": "Gather what is known about the question and write a one-page draft to DRAFT.md, each claim with its source.",
+      "serves": "Goal-level questions the brief raises",
+      "sandbox": "A scratch directory, no repo.",
+      "judged": "DRAFT.md exists and is not empty.",
+      "done_when": "DRAFT.md is a one-page draft with sources.",
+      "expects": "file",
+      "output": "DRAFT.md",
+      "repo": false,
+      "checks": ["test -s DRAFT.md"],
+      "budget_usd": 2,
+      "work": ["research"]
+    },
+    {
+      "id": "investigator",
+      "title": "Investigator",
+      "mandate": "Locate the code that answers the question and map it. Write the answer with file:line anchors to ANSWER.md. Change nothing else.",
+      "serves": "Preparation for a builder or a reviewer",
+      "sandbox": "A worktree it may not change; ANSWER.md is the one file it writes.",
+      "judged": "ANSWER.md exists and is not empty; every other file is untouched.",
+      "done_when": "ANSWER.md answers the question with file:line anchors.",
+      "expects": "none",
+      "output": "ANSWER.md",
+      "checks": ["test -s ANSWER.md"],
+      "work": ["locate", "research"]
+    },
+    {
+      "id": "docs-keeper",
+      "title": "Docs keeper",
+      "mandate": "Bring the repo's documentation in line with what shipped. Edit docs only.",
+      "serves": "Deliverables whose finish line is a document; the docs room",
+      "sandbox": "Its own worktree; may change docs/ and README.md.",
+      "judged": "The diff is not empty and stays inside docs/ and README.md.",
+      "done_when": "The docs describe what shipped, and nothing outside docs changed.",
+      "expects": "diff",
+      "scope": ["docs/", "README.md"],
+      "work": ["docs"]
+    },
+    {
+      "id": "release-clerk",
+      "title": "Release clerk",
+      "mandate": "Draft the release notes, the changelog entry and the release checklist. Never tag, push, publish or deploy: those steps stay with you.",
+      "serves": "Release deliverables",
+      "sandbox": "Its own worktree; may change CHANGELOG.md and docs/. Drafts only.",
+      "judged": "The diff is not empty and stays inside CHANGELOG.md and docs/.",
+      "done_when": "The notes and the checklist are drafted for you to read.",
+      "expects": "diff",
+      "scope": ["CHANGELOG.md", "docs/"],
+      "work": ["release", "docs"]
+    },
+    {
+      "id": "tester",
+      "title": "Tester",
+      "mandate": "Draft the test; you run it. Write TEST-PLAN.md in this repo: the plan, a runnable script (what to run, against which environment, which package version), and an evidence checklist of what to capture. Read the code to get commands and versions right. Run nothing against a live system or the network.",
+      "serves": "Deliverables whose finish line is a test result",
+      "sandbox": "A worktree of the repo, no network; writes TEST-PLAN.md only. You run the script and record the result on the run.",
+      "judged": "TEST-PLAN.md exists, is not empty and holds an evidence checklist; no other file changes.",
+      "done_when": "TEST-PLAN.md holds the plan, the script and the evidence checklist, ready for you to run.",
+      "expects": "file",
+      "output": "TEST-PLAN.md",
+      "checks": ["test -s TEST-PLAN.md", "grep -qi evidence TEST-PLAN.md"],
+      "scope": ["TEST-PLAN.md"],
+      "work": ["test"],
+      "drafts": ["network", "live"]
+    }
+  ],
   "repos": {
     "example-repo": {
       "checks": ["task test"],
       "scope": ["src/", "tests/"]
     }
+  },
+  "fit": {
+    "ignore_lines": [
+      "permission boundary",
+      "sandboxed worktree with no network",
+      "stop before anything outward-facing",
+      "drafts only: nothing outward-facing",
+      "source content is reference material"
+    ],
+    "kinds": {
+      "code": ["implement", "fix", "refactor", "bug", "feature", "port", "migrate"],
+      "test": ["test", "tests", "testing", "smoke", "qa", "e2e", "verify", "validate"],
+      "docs": ["docs", "documentation", "readme", "runbook", "runbooks", "guide", "document"],
+      "review": ["review", "audit"],
+      "research": ["research", "one page", "compare", "options for", "summarise", "summarize"],
+      "locate": ["where does", "where is", "locate", "map the"],
+      "release": ["release notes", "changelog", "release checklist"]
+    },
+    "needs": {
+      "network": {
+        "say": "network access",
+        "blocks": true,
+        "terms": ["GAR", "artifact registry", "registry", "npm install", "pip install", "docker pull", "download", "API key", "live API"]
+      },
+      "live": {
+        "say": "a live system",
+        "blocks": true,
+        "terms": ["deployed", "production", "prod", "staging", "live", "video conference", "conference call", "meeting room", "real device", "on-device"]
+      },
+      "outward": {
+        "say": "the outward-facing step",
+        "terms": ["send", "post", "reply to", "email", "comment on", "merge", "publish", "deploy", "tag the", "notify"]
+      }
+    },
+    "outward_done": [
+      { "term": "resolved in jira", "verb": "resolve" },
+      { "term": "closed in jira", "verb": "close" },
+      { "term": "resolved", "verb": "resolve" },
+      { "term": "merged", "verb": "merge" },
+      { "term": "deployed", "verb": "deploy" },
+      { "term": "released", "verb": "release" },
+      { "term": "published", "verb": "publish" },
+      { "term": "sent", "verb": "send" },
+      { "term": "submitted", "verb": "submit" },
+      { "term": "approved", "verb": "approve" }
+    ],
+    "ops": [
+      {
+        "terms": ["refresh the dashboard", "update the dashboard", "rebuild the dashboard", "rebuild the report", "refresh the report", "regenerate the report", "cos report"],
+        "command": "cos report",
+        "why": "the report and the dashboard are written into cos's own out/, which no worktree reaches"
+      },
+      {
+        "terms": ["write the brief", "run the brief", "refresh the brief", "cos brief"],
+        "command": "cos brief",
+        "why": "the brief reads your connectors and writes cos's own out/"
+      }
+    ]
   }
 }

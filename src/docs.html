@@ -1,0 +1,1715 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Documentation room</title>
+<style>
+/*__COS_TOKENS__*/
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0}
+a{color:var(--brand-text)}
+button,select,input{font-family:var(--font-sans);font-size:var(--text-sm);color:inherit;background:var(--card);border:1px solid var(--input);border-radius:var(--radius-md);padding:0.1875rem 0.5rem}
+button{cursor:pointer}
+button:hover{background:var(--accent)}
+button:disabled{opacity:.45;cursor:default}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.skip{position:absolute;left:-62rem}.skip:focus{left:0.5rem;top:0.5rem;background:var(--card);padding:0.375rem;z-index:9}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+header{display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;padding:0.75rem 1.125rem;border-bottom:1px solid var(--border)}
+header > svg{width:var(--icon-lg);height:var(--icon-lg);flex:none}
+header h1{font-size:var(--text-lg);line-height:var(--text-lg--line-height);font-weight:var(--font-weight-semibold);letter-spacing:var(--tracking-tight);margin:0}
+.dim{color:var(--muted-foreground);font-size:var(--text-xs)}
+.banner{margin:0.625rem 1.125rem 0;padding:0.5rem 0.75rem;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);font-size:var(--text-sm)}
+.banner.bad{border-color:var(--destructive);color:var(--destructive)}
+.room{display:grid;grid-template-columns:15.625rem minmax(0,1fr) minmax(0,21.25rem);gap:0.75rem;padding:0.75rem 1.125rem}
+@media (max-width:71.875rem){.room{grid-template-columns:1fr}}
+.side{display:grid;gap:0.75rem;align-content:start;min-width:0}
+.panel{background:var(--card);color:var(--card-foreground);border:1px solid var(--border);border-radius:var(--radius-xl);padding:0.75rem;min-width:0;box-shadow:var(--shadow-sm)}
+h2{font-size:var(--text-xs);line-height:var(--text-xs--line-height);font-weight:var(--font-weight-semibold);margin:0 0 0.5rem;color:var(--muted-foreground);text-transform:uppercase;letter-spacing:var(--tracking-wide)}
+h2.spaced{margin-top:0.875rem}
+#search{width:100%;margin-bottom:0.5rem}
+.groups{max-height:72vh;overflow:auto}
+.group>button{width:100%;display:flex;justify-content:space-between;border:0;background:none;padding:0.375rem 0.25rem;font-weight:var(--font-weight-semibold);text-align:left}
+.group>button.sel,.topics li.sel{background:var(--accent);color:var(--accent-foreground);border-radius:var(--radius-sm)}
+.topics{list-style:none;margin:0 0 0.375rem;padding:0 0 0 0.625rem}
+.topics li{display:flex;justify-content:space-between;gap:0.375rem;padding:0.1875rem 0.375rem;cursor:pointer;border-radius:var(--radius-sm);font-size:var(--text-sm)}
+.topics li:hover{background:var(--accent)}
+.topics li.drop{outline:2px dashed var(--ring)}
+.n{color:var(--muted-foreground);font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-weight:var(--font-weight-normal)}
+.new-topic{display:flex;gap:0.375rem;margin-top:0.5rem}
+.new-topic input{flex:1;min-width:0}
+.crumbs{display:flex;flex-wrap:wrap;gap:0.375rem;align-items:center;font-size:var(--text-sm)}
+.crumbs button{border:0;background:none;color:var(--brand-text);padding:0}
+.bar{display:flex;flex-wrap:wrap;gap:0.375rem;align-items:center;justify-content:space-between;margin-bottom:0.375rem}
+.results{display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:space-between;margin:0.25rem 0 0.375rem}
+.chips{display:flex;flex-wrap:wrap;gap:0.3125rem;align-items:center;font-size:var(--text-xs)}
+.chip{border-radius:var(--radius-full);padding:1px 0.5625rem;font-size:var(--text-xs);border:1px solid transparent;line-height:var(--text-xs--line-height)}
+.chip.rel{border-radius:var(--radius-sm);background:var(--secondary);color:var(--secondary-foreground)}
+.chip.rel[aria-pressed=false]{text-decoration:line-through;opacity:.55}
+.chip.lbl[aria-expanded=true]{outline:2px solid var(--ring);outline-offset:1px}
+.chip.total{background:none;border-color:var(--border);color:var(--muted-foreground)}
+.tabs{display:flex;gap:0}
+.tabs button{border-radius:0;margin-left:-1px;font-size:var(--text-xs)}
+.tabs button:first-child{border-radius:var(--radius-md) 0 0 var(--radius-md)}.tabs button:last-child{border-radius:0 var(--radius-md) var(--radius-md) 0}
+.tabs button[aria-selected=true]{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary)}
+.toolbar{display:flex;flex-wrap:wrap;gap:0.25rem;align-items:center;margin-bottom:0.375rem;font-size:var(--text-xs)}
+.toolbar button{font-size:var(--text-xs);padding:0.125rem 0.4375rem}
+.toolbar .sep{width:1px;height:1.125rem;background:var(--border);margin:0 0.25rem}
+#step{max-width:16.25rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details.filters{border:1px solid var(--border);border-radius:var(--radius-lg);padding:0.25rem 0.625rem;margin-bottom:0.375rem;font-size:var(--text-xs)}
+details.filters summary{cursor:pointer;color:var(--muted-foreground)}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(11.875rem,1fr));gap:0.625rem;padding:0.375rem 0}
+.fgrid fieldset{border:0;margin:0;padding:0;min-width:0}
+.fgrid legend{font-weight:var(--font-weight-semibold);color:var(--muted-foreground);margin-bottom:0.25rem}
+.fgrid label{display:flex;gap:0.375rem;align-items:center;padding:1px 0}
+.fgrid label i{display:inline-block;width:0.625rem;height:0.625rem;border-radius:var(--radius-full)}
+.stylebar{display:flex;flex-wrap:wrap;gap:0.625rem;align-items:center;border:1px solid var(--border);border-radius:var(--radius-lg);padding:0.375rem 0.625rem;margin-bottom:0.375rem;font-size:var(--text-xs)}
+.stylebar .sw{width:1.125rem;height:1.125rem;border-radius:var(--radius-full);padding:0;border:2px solid transparent}
+.stylebar .sw[aria-pressed=true]{border-color:var(--foreground)}
+.stylebar .sz[aria-pressed=true],.stylebar .cap[aria-pressed=true]{border-color:var(--ring);background:var(--accent)}
+.pathbar{font-size:var(--text-xs);margin-bottom:0.375rem;padding:0.25rem 0.625rem;border:1px dashed var(--ring);border-radius:var(--radius-lg)}
+#graph{position:relative;height:62vh;min-height:26.25rem;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:var(--background);touch-action:none;user-select:none;-webkit-user-select:none}
+#graph:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
+#graph svg{width:100%;height:100%;display:block;cursor:grab}
+#graph svg.panning{cursor:grabbing}
+.node{cursor:pointer}
+.node .body{stroke-width:2}
+.node .halo{fill:none;stroke:var(--ring);stroke-width:0;stroke-opacity:.45}
+.node.sel .halo{stroke-width:9}
+.node.match .halo{stroke:var(--brand-blue);stroke-width:5;stroke-opacity:.8}
+.node.path .halo{stroke:var(--success);stroke-width:7;stroke-opacity:.7}
+.node.pinned .body{stroke-dasharray:5 3}
+.node text{pointer-events:none;text-anchor:middle;dominant-baseline:central;font-family:var(--font-sans)}
+.rel .line{fill:none;stroke:var(--chart-axis);stroke-width:1.4}
+.rel .arrow{fill:var(--chart-axis)}
+.rel.mine .line{stroke:var(--brand-text)}.rel.mine .arrow{fill:var(--brand-text)}
+.rel.path .line{stroke:var(--success);stroke-width:3.5}.rel.path .arrow{fill:var(--success)}
+.rel text{font-family:var(--font-mono);fill:var(--muted-foreground);paint-order:stroke;stroke:var(--background);stroke-width:3;stroke-linejoin:round;text-anchor:middle;dominant-baseline:central;pointer-events:none;letter-spacing:.02em}
+svg.hl .node:not(.on),svg.hl .rel:not(.on){opacity:.14}
+svg.hl .rel.on .line{stroke-width:2.4}
+svg.far .rel text,svg.dense:not(.near) .rel text{display:none}
+#mini{position:absolute;right:0.5rem;bottom:0.5rem;width:10.625rem;height:7rem;border:1px solid var(--border);border-radius:var(--radius-md);background:color-mix(in srgb,var(--card) 88%,transparent);cursor:crosshair}
+.menu{position:absolute;z-index:5;min-width:13.125rem;max-height:70%;overflow:auto;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-md);padding:0.25rem;font-size:var(--text-sm)}
+.menu button{display:block;width:100%;text-align:left;border:0;background:none;padding:0.25rem 0.5rem;border-radius:var(--radius-sm)}
+.menu button:hover,.menu button:focus-visible{background:var(--accent);outline:none}
+.menu hr{border:0;border-top:1px solid var(--border);margin:0.25rem 0}
+.menu .mh{padding:0.125rem 0.5rem;color:var(--muted-foreground);font-size:var(--text-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#gnote{margin:0.25rem 0 0}
+.tview{max-height:62vh;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-lg)}
+.tview table{border-collapse:collapse;width:100%;font-size:var(--text-xs)}
+.tview th,.tview td{text-align:left;padding:0.1875rem 0.5rem;border-bottom:1px solid var(--border);vertical-align:top}
+.tview th{position:sticky;top:0;background:var(--card)}
+.tview th button{border:0;background:none;padding:0;font-weight:var(--font-weight-semibold);color:var(--muted-foreground)}
+.tview tr[data-id]{cursor:pointer}
+.tview tr.sel{background:var(--accent)}
+.tview h3{font-size:var(--text-xs);margin:0.5rem;color:var(--muted-foreground)}
+pre.tview{white-space:pre;font-family:var(--font-mono);font-size:var(--text-xs);line-height:var(--text-xs--line-height);padding:0.5rem;margin:0}
+.insp dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:1px 0.625rem;font-size:var(--text-xs);margin:0.5rem 0}
+.insp dt{color:var(--muted-foreground)}.insp dd{margin:0;overflow-wrap:anywhere}
+.insp .acts{display:flex;flex-wrap:wrap;gap:0.3125rem}
+.insp .acts button,.insp .acts select{font-size:var(--text-xs)}
+.insp .who{display:flex;gap:0.5rem;align-items:center}
+.insp .who i{width:0.75rem;height:0.75rem;border-radius:var(--radius-full);flex:none}
+.rows{margin-top:0.625rem}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 7.5rem 8rem 10.625rem auto;gap:0.375rem;align-items:center;padding:0.3125rem 0.25rem;border-bottom:1px solid var(--border);font-size:var(--text-sm)}
+.row.head{color:var(--muted-foreground);font-size:var(--text-xs);font-weight:var(--font-weight-semibold)}
+.row[draggable=true]{cursor:grab}
+.row .t{min-width:0}.row .t button{border:0;padding:0;background:none;color:var(--brand-text);text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+.row .p{color:var(--muted-foreground);font-family:var(--font-mono);font-size:var(--text-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row select{width:100%;padding:0.125rem 0.25rem;font-size:var(--text-xs)}
+.badge{display:inline-block;font-size:var(--text-xs);padding:0 0.375rem;border-radius:var(--radius-full);border:1px solid currentColor;white-space:nowrap}
+.repo{color:var(--muted-foreground)}.notion{color:var(--brand-text)}.both{color:var(--success)}.move{color:var(--warning)}.keep{color:var(--info)}
+.hint{font-size:var(--text-xs);color:var(--muted-foreground)}
+.link-form{display:grid;gap:0.375rem}
+.link-form select,.link-form input{width:100%}
+.empty{color:var(--muted-foreground)}
+.zoomctl{display:inline-flex;align-items:center;gap:0.25rem}
+#zslider{width:6.5rem;padding:0;border:0;background:none;accent-color:var(--primary)}
+#zpct{font-family:var(--font-mono);font-variant-numeric:tabular-nums;min-width:3.5rem}
+#zpct.limit{border-color:var(--warning);color:var(--warning)}
+.settings{position:relative}
+.settings summary{list-style:none;cursor:pointer;border:1px solid var(--input);border-radius:var(--radius-md);padding:0.125rem 0.4375rem;background:var(--card)}
+.settings summary::-webkit-details-marker{display:none}
+.settings .pop{position:absolute;right:0;top:calc(100% + 0.25rem);z-index:6;min-width:17rem;display:grid;gap:0.375rem;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-md);padding:0.5rem 0.625rem}
+.settings .pop label{display:flex;gap:0.375rem;align-items:center}
+.settings fieldset{border:0;margin:0;padding:0;display:grid;gap:0.125rem}
+.settings legend{font-weight:var(--font-weight-semibold);color:var(--muted-foreground);margin-bottom:0.125rem}
+.node.multi .halo{stroke:var(--brand-amber);stroke-width:6;stroke-opacity:.75}
+.node.lod text{display:none}
+.boxsel{fill:color-mix(in srgb,var(--ring) 14%,transparent);stroke:var(--ring);stroke-width:1;stroke-dasharray:4 3}
+#graph svg.spacepan,#graph svg.spacepan .node{cursor:grab}
+#hovercap{position:absolute;z-index:4;pointer-events:none;transform:translate(-50%,-100%);max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);border-radius:var(--radius-md);box-shadow:var(--shadow-md);padding:0.125rem 0.5rem;font-size:var(--text-sm);line-height:var(--text-sm--line-height)}
+.bulk{display:grid;gap:0.375rem}
+#split{display:none;cursor:col-resize;border-radius:var(--radius-full);background:var(--border);touch-action:none}
+#split:hover,#split:focus-visible,#split.drag{background:var(--ring)}
+.room.reading > nav,.room.reading > .side,.room.reading .rows,.room.reading #gnote{display:none}
+.room.reading #split{display:block}
+@media (max-width:71.875rem){.room.reading #split{display:none}}
+.room.reading.nograph > .gpanel,.room.reading.nograph #split{display:none}
+.room.reading > .gpanel{position:sticky;top:0.75rem;height:calc(100vh - 6.5rem);display:flex;flex-direction:column}
+.room.reading #graph,.room.reading .tview{flex:1;height:auto;min-height:12rem;max-height:none}
+.reader{display:flex;flex-direction:column;min-width:0;container-type:inline-size}
+.room.reading .reader{position:sticky;top:0.75rem;height:calc(100vh - 6.5rem)}
+.reader.focus{position:fixed;inset:0;z-index:20;height:auto;border-radius:0;border:0;padding:0.75rem 1.5rem}
+body.focusing{overflow:hidden}
+.rhead{display:flex;flex-wrap:wrap;gap:0.375rem 0.75rem;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:0.5rem}
+.rcrumb{display:flex;flex-wrap:wrap;gap:0.25rem;align-items:center;font-size:var(--text-sm);color:var(--muted-foreground);min-width:0}
+.rcrumb button{border:0;background:none;padding:0;color:var(--brand-text)}
+.rcrumb b{color:var(--foreground);font-weight:var(--font-weight-semibold)}
+.racts{display:flex;flex-wrap:wrap;gap:0.25rem;align-items:center}
+.racts button,.racts a{font-size:var(--text-xs)}
+.racts a{border:1px solid var(--input);border-radius:var(--radius-md);padding:0.1875rem 0.5rem;text-decoration:none}
+.racts button[aria-disabled="true"]{opacity:0.5;cursor:not-allowed}
+.racts .sep{width:1px;height:1.125rem;background:var(--border);margin:0 0.125rem}
+.rmeta{font-size:var(--text-xs);color:var(--muted-foreground);margin:0.375rem 0 0}
+.rbody{flex:1;min-height:0;overflow:auto;display:grid;grid-template-columns:13rem minmax(0,1fr);gap:1.5rem;padding-top:0.75rem;scroll-padding-top:0.75rem}
+.rbody.notoc{grid-template-columns:minmax(0,1fr)}
+.toc{position:sticky;top:0;align-self:start;max-height:100%;overflow:auto;font-size:var(--text-xs);line-height:var(--text-xs--line-height);border-right:1px solid var(--border);padding-right:0.75rem}
+.toc h3{font-size:var(--text-xs);margin:0 0 0.375rem;color:var(--muted-foreground);text-transform:uppercase;letter-spacing:var(--tracking-wide)}
+.toc a{display:block;color:var(--muted-foreground);text-decoration:none;padding:0.125rem 0;border-radius:var(--radius-sm)}
+.toc a:hover{color:var(--foreground)}
+.toc a.on{color:var(--foreground);font-weight:var(--font-weight-semibold)}
+.toc a.l3{padding-left:0.75rem}.toc a.l4{padding-left:1.5rem}
+@container (max-width:46rem){.rbody{display:block}.toc{position:static;max-height:8rem;border-right:0;border-bottom:1px solid var(--border);padding:0 0 0.5rem;margin-bottom:0.75rem}}
+.prose{max-width:70ch;min-width:0;font-size:var(--text-base);line-height:var(--text-base--line-height);color:var(--foreground);overflow-wrap:break-word;padding-bottom:3rem}
+@container (min-width:46.0625rem){.reader.focus .rbody:not(.notoc){font-size:var(--text-base);grid-template-columns:13rem minmax(0,70ch);justify-content:center}}
+.reader.focus .rbody.notoc{justify-items:center}
+.prose > :first-child{margin-top:0}
+.prose :is(h1,h2,h3,h4,h5,h6){margin:1.75em 0 0.5em;font-weight:var(--font-weight-semibold);letter-spacing:var(--tracking-tight);color:var(--foreground);text-transform:none;scroll-margin-top:0.75rem}
+.prose h1{font-size:var(--text-2xl);line-height:var(--text-2xl--line-height)}
+.prose h2{font-size:var(--text-xl);line-height:var(--text-xl--line-height);padding-bottom:0.25rem;border-bottom:1px solid var(--border)}
+.prose h3{font-size:var(--text-lg);line-height:var(--text-lg--line-height)}
+.prose :is(h4,h5,h6){font-size:var(--text-base);line-height:var(--text-base--line-height)}
+.prose .anchor{margin-left:0.375rem;color:var(--muted-foreground);text-decoration:none;opacity:0}
+.prose :is(h1,h2,h3,h4):hover .anchor,.prose .anchor:focus-visible{opacity:1}
+.prose :is(p,ul,ol,blockquote,pre,table,details,dl){margin:0 0 1em}
+.prose :is(ul,ol){padding-left:1.5em}
+.prose li + li{margin-top:0.25em}
+.prose li > :is(ul,ol){margin:0.25em 0 0}
+.prose li.task{list-style:none;margin-left:-1.25em}
+.prose li.task input{margin:0 0.5em 0 0;vertical-align:middle;accent-color:var(--primary)}
+.prose blockquote{margin-left:0;padding:0.125rem 0 0.125rem 1em;border-left:0.25rem solid var(--border);color:var(--muted-foreground)}
+.prose code{font-family:var(--font-mono);font-size:var(--text-sm);background:var(--muted);border-radius:var(--radius-sm);padding:0.0625rem 0.3125rem}
+.prose pre{position:relative;background:var(--muted);border:1px solid var(--border);border-radius:var(--radius-lg);padding:0.75rem 1rem;overflow:auto;font-size:var(--text-xs);line-height:var(--text-xs--line-height)}
+.prose pre code{background:none;padding:0;font-size:inherit;border-radius:0}
+.prose .fence{display:block;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted-foreground);margin-bottom:0.375rem}
+.prose table{border-collapse:collapse;display:block;max-width:100%;overflow:auto;font-size:var(--text-sm);line-height:var(--text-sm--line-height)}
+.prose :is(th,td){border:1px solid var(--border);padding:0.375rem 0.625rem;vertical-align:top}
+.prose :is(th,td):not([align]){text-align:left}
+.prose th{background:var(--muted);font-weight:var(--font-weight-semibold)}
+.prose tbody tr:nth-child(even){background:color-mix(in srgb,var(--muted) 45%,transparent)}
+.prose hr{border:0;border-top:1px solid var(--border);margin:2em 0}
+.prose img{max-width:100%;height:auto;border-radius:var(--radius-md)}
+.prose a.ext::after{content:" ↗";font-size:var(--text-xs)}
+.prose a.doc{text-decoration-style:dotted;text-underline-offset:0.2em}
+.prose a.unknown{color:var(--muted-foreground);text-decoration:underline dotted;cursor:help}
+.prose .imgph{display:inline-block;border:1px dashed var(--border);border-radius:var(--radius-md);padding:0.25rem 0.5rem;color:var(--muted-foreground);font-size:var(--text-xs)}
+.prose details.front{font-size:var(--text-xs);color:var(--muted-foreground)}
+.prose details.front pre{margin-top:0.375rem}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<a class="skip" href="#rows">Skip to documents</a>
+<header><!--__COS_MARK__--><h1>Documentation room</h1><span class="dim" id="meta"></span></header>
+<div class="banner" id="banner" hidden></div>
+<main class="room">
+  <nav class="panel" aria-labelledby="h-nav">
+    <h2 id="h-nav">Bets and topics</h2>
+    <label class="sr" for="search">Search documents and topics</label>
+    <input id="search" type="search" placeholder="Search titles, paths, topics" aria-describedby="search-hint">
+    <p class="hint" id="search-hint">Matches join the graph; Enter focuses the first.</p>
+    <div class="groups" id="groups"></div>
+    <form id="new-topic" class="new-topic">
+      <label class="sr" for="topic-name">New topic</label>
+      <input id="topic-name" placeholder="New topic of yours"><button type="submit">Add</button>
+    </form>
+    <p class="hint">Drag a document row onto a topic to place it there.</p>
+  </nav>
+  <section class="panel gpanel" aria-labelledby="h-graph">
+    <div class="bar">
+      <div class="crumbs" id="crumbs"></div>
+      <button type="button" id="accept" hidden></button>
+    </div>
+    <h2 id="h-graph" class="sr">Graph</h2>
+    <div class="results">
+      <div class="chips" id="chips" role="toolbar" aria-label="Labels and relationship types in view"></div>
+      <div class="tabs" role="tablist" aria-label="Result view">
+        <button type="button" role="tab" id="tab-graph" aria-selected="true" aria-controls="graph">Graph</button>
+        <button type="button" role="tab" id="tab-table" aria-selected="false" aria-controls="gtable">Table</button>
+        <button type="button" role="tab" id="tab-text" aria-selected="false" aria-controls="gtext">Text</button>
+      </div>
+    </div>
+    <div class="stylebar" id="stylebar" hidden></div>
+    <div class="toolbar" role="toolbar" aria-label="Graph tools">
+      <button type="button" id="back" title="Back: undo the last step (Ctrl+Z)" aria-label="Back">&#8592;</button>
+      <button type="button" id="fwd" title="Forward (Ctrl+Shift+Z)" aria-label="Forward">&#8594;</button>
+      <span class="dim" id="step"></span>
+      <button type="button" id="reset" title="Back to this view's starting graph">Reset</button>
+      <span class="sep"></span>
+      <span class="zoomctl" role="group" aria-label="Zoom">
+        <button type="button" id="zout" title="Zoom out (-)" aria-label="Zoom out">&#8722;</button>
+        <label class="sr" for="zslider">Zoom level</label>
+        <input id="zslider" type="range" min="0" max="1000" step="1" value="500">
+        <button type="button" id="zin" title="Zoom in (+)" aria-label="Zoom in">+</button>
+        <button type="button" id="zpct" title="Zoom level; click for 100% (0)">100%</button>
+      </span>
+      <button type="button" id="fit" title="Fit to screen, captions kept readable (F); Shift+F fits everything">Fit</button>
+      <button type="button" id="zsel" title="Zoom to the selection (S)" disabled>Zoom to selection</button>
+      <button type="button" id="release" title="Unpin every node (or double-click the canvas)">Release pins</button>
+      <details class="settings" id="settings">
+        <summary title="Mouse and trackpad settings">Mouse</summary>
+        <div class="pop">
+          <fieldset><legend>Mouse wheel</legend>
+            <label><input type="radio" name="wheel" value="zoom"> Wheel zooms (trackpad: two fingers zoom too)</label>
+            <label><input type="radio" name="wheel" value="pan"> Wheel pans; Ctrl/&#8984; + wheel or pinch zooms</label>
+          </fieldset>
+          <label><input type="checkbox" id="set-readable"> Fit keeps captions readable</label>
+          <label><input type="checkbox" id="set-inertia"> Glide after a pan (off with reduced motion)</label>
+          <p class="hint">Pinch always zooms. Pan: drag the background, hold Space and drag, or drag with the middle button. Shift + drag draws a box to select; Shift + click adds a node.</p>
+        </div>
+      </details>
+      <span class="sep"></span>
+      <button type="button" id="exp-svg">SVG</button>
+      <button type="button" id="exp-png">PNG</button>
+      <button type="button" id="copy">Copy nodes</button>
+    </div>
+    <details class="filters" id="filters">
+      <summary>Filters</summary>
+      <div class="fgrid">
+        <fieldset id="f-labels"><legend>Node labels</legend></fieldset>
+        <fieldset id="f-types"><legend>Relationship types</legend></fieldset>
+        <fieldset><legend>Neighbourhood</legend>
+          <label for="depth">Depth <input id="depth" type="range" min="1" max="3" value="1"> <output id="depth-out" for="depth">1</output></label>
+          <button type="button" id="hood" disabled>Show selected + neighbours</button>
+          <p class="hint">Applies to the selected node.</p>
+        </fieldset>
+      </div>
+    </details>
+    <div class="pathbar" id="pathbar" hidden></div>
+    <div id="graph" tabindex="0" role="application" aria-roledescription="graph" aria-label="Graph of the current view" aria-describedby="gkeys"></div>
+    <div id="gtable" class="tview" role="tabpanel" aria-labelledby="tab-table" hidden></div>
+    <pre id="gtext" class="tview" role="tabpanel" aria-labelledby="tab-text" tabindex="0" hidden></pre>
+    <p class="hint" id="gnote"></p>
+    <p class="sr" id="gkeys">Arrow keys move the selection to a neighbour, Enter expands it, Delete hides it, Escape clears, plus and minus zoom, 0 is 100%, F fits, S zooms to the selection, R reads it. Shift+F10 opens the node menu. The document list below holds the same documents.</p>
+    <p class="sr" id="live" aria-live="polite"></p>
+    <div id="rows" class="rows"></div>
+  </section>
+  <div id="split" role="separator" aria-orientation="vertical" aria-label="Resize graph and reader" tabindex="0" aria-valuemin="15" aria-valuemax="70" aria-valuenow="36"></div>
+  <section class="panel reader" id="reader" aria-labelledby="h-reader" hidden></section>
+  <div class="side">
+    <section class="panel insp" id="inspector" aria-labelledby="h-insp"></section>
+    <section class="panel" id="linkpanel" aria-labelledby="h-link" hidden></section>
+  </div>
+</main>
+<script>
+/*__COS_MARKDOWN__*/
+const DATA = "__DOCS_DATA__";
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const http = (u) => /^https?:\/\/[^\s"'<>]+$/.test(String(u || "").trim());
+  const docs = DATA.docs || [];
+  const byId = Object.fromEntries(docs.map((d) => [d.id, d]));
+  const inNotion = DATA.in_notion || {};
+  // Each checkout's GitHub home ({ base, branch }), or why it has none.
+  const GH = Object.fromEntries((DATA.repos || []).map((r) => [r.name, r.github && http(r.github.base) ? r.github : { why: r.github_why || "no GitHub remote" }]));
+  const ghUrl = (repo, path) => {
+    const g = GH[repo]; if (!g || g.why) return null;
+    const dir = path.endsWith("/"), p = dir ? path.slice(0, -1) : path;
+    return `${g.base}/${dir ? "tree" : "blob"}/${g.branch.split("/").map(encodeURIComponent).join("/")}/${p.split("/").map(encodeURIComponent).join("/")}`;
+  };
+  const org = structuredClone(DATA.organize || {});
+  org.topics ||= {}; org.links ||= []; org.marks ||= {};
+  const MINE = "Your topics";
+  let view = { level: "all" }, query = "", current = null;
+
+  const repoCount = docs.filter((d) => d.place === "repo").length, pageCount = docs.length - repoCount;
+  $("meta").textContent = `${repoCount} repo documents · ${pageCount} Notion pages` +
+    (DATA.notion_listed_at ? ` (listed ${DATA.notion_listed_at})` : "") + ` · generated ${DATA.generated_at}`;
+  const notice = (html, bad) => { $("banner").hidden = false; $("banner").className = "banner" + (bad ? " bad" : ""); $("banner").innerHTML = html; };
+  const notes = [];
+  if (!DATA.notion_listed_at) notes.push("Notion pages appear after <code>cos docs notion</code> lists them.");
+  if ((DATA.missing || []).length) notes.push(`No local checkout for ${DATA.missing.map(esc).join(", ")}.`);
+  if (notes.length) notice(notes.join(" "));
+
+  // ---- where documents sit
+  const placedMap = () => new Map(Object.entries(org.topics).flatMap(([t, ids]) => ids.map((id) => [id, t])));
+  let placed = placedMap();
+  const topicOf = (d) => placed.get(d.id) || d.folder;
+  const groupOf = (topic) => org.topics[topic] ? MINE : topic.split(" · ")[0];
+  const groups = () => [...(Object.keys(org.topics).length ? [MINE] : []), ...(DATA.groups || [])];
+  const topicsIn = (g) => {
+    const counts = {};
+    docs.forEach((d) => { const t = topicOf(d); if (groupOf(t) === g) counts[t] = (counts[t] || 0) + 1; });
+    if (g === MINE) Object.keys(org.topics).forEach((t) => { counts[t] ||= 0; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  };
+  const docsIn = (pred) => docs.filter(pred);
+  const status = (d) => org.marks[d.id] === "move_to_notion" ? "move" : org.marks[d.id] === "keep_in_repo" ? "keep"
+    : d.place === "notion" ? "notion" : inNotion[d.id] ? "both" : "repo";
+  const LABEL = { repo: "repo only", both: "repo + Notion", notion: "Notion page", move: "move to Notion", keep: "keep in repo" };
+  const shortTopic = (t) => groupOf(t) === MINE ? t : t.split(" · ").slice(1).join(" · ") || t;
+
+  // ---- saving: through the desktop app when embedded, else to cos dash
+  let seq = 0, saveTimer = null;
+  const embedded = window.parent !== window;
+  const pending = new Map();
+  window.addEventListener("message", (ev) => {
+    if (ev.source !== window.parent || ev.data?.type !== "cos-docs-saved") return;
+    const done = pending.get(ev.data.seq); if (done) { pending.delete(ev.data.seq); done(ev.data); }
+  });
+  const send = () => new Promise((resolve, reject) => {
+    if (!embedded) {
+      fetch("/docs/organize", { method: "POST", headers: { "Content-Type": "application/json", "X-Cos": "docs" }, body: JSON.stringify(org) })
+        .then(async (r) => r.ok ? resolve() : reject(new Error(await r.text()))).catch(reject);
+      return;
+    }
+    const n = ++seq;
+    const timer = setTimeout(() => { pending.delete(n); reject(new Error("the app did not answer")); }, 8000);
+    pending.set(n, (m) => { clearTimeout(timer); m.ok ? resolve() : reject(new Error(m.error || "save failed")); });
+    window.parent.postMessage({ type: "cos-docs-save", seq: n, organize: org }, "*");
+  });
+  const save = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => send().then(() => { if ($("banner").classList.contains("bad")) $("banner").hidden = true; })
+      .catch((e) => notice(`Not saved: ${esc(e.message)}`, true)), 300);
+  };
+  const changed = () => { placed = placedMap(); save(); render(); refreshModel(); };
+
+  // ---- left: bets, their topics, search
+  const drawNav = () => {
+    const sel = (t) => view.level === "topic" && view.topic === t;
+    $("groups").innerHTML = groups().map((g) => {
+      const ts = topicsIn(g), total = ts.reduce((s, [, n]) => s + n, 0);
+      const open = view.group === g || g === MINE || query;
+      const shown = query ? ts.filter(([t]) => t.toLowerCase().includes(query)) : ts;
+      if (query && !shown.length && !g.toLowerCase().includes(query)) return "";
+      return `<div class="group"><button type="button" data-group="${esc(g)}" class="${view.level === "group" && view.group === g ? "sel" : ""}" aria-expanded="${open}">
+        <span>${esc(g)}</span><span class="n">${total}</span></button>
+        ${open ? `<ul class="topics">${shown.map(([t, n]) => `<li tabindex="0" data-topic="${esc(t)}" class="${sel(t) ? "sel" : ""}"><span>${esc(g === MINE ? t : t.split(" · ").slice(1).join(" · ") || t)}</span><span class="n">${n}</span></li>`).join("")}</ul>` : ""}</div>`;
+    }).join("");
+  };
+  $("groups").addEventListener("click", (e) => {
+    const g = e.target.closest("[data-group]"); if (g) return go({ level: "group", group: g.dataset.group });
+    const t = e.target.closest("[data-topic]"); if (t) go({ level: "topic", topic: t.dataset.topic, group: groupOf(t.dataset.topic) });
+  });
+  $("groups").addEventListener("keydown", (e) => { const t = e.target.closest("[data-topic]");
+    if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); go({ level: "topic", topic: t.dataset.topic, group: groupOf(t.dataset.topic) }); } });
+  $("groups").addEventListener("dragover", (e) => { const li = e.target.closest("[data-topic]"); if (li) { e.preventDefault(); li.classList.add("drop"); } });
+  $("groups").addEventListener("dragleave", (e) => e.target.closest("[data-topic]")?.classList.remove("drop"));
+  $("groups").addEventListener("drop", (e) => { const li = e.target.closest("[data-topic]"); if (!li) return; e.preventDefault(); place(e.dataTransfer.getData("text/plain"), li.dataset.topic); });
+  let searchTimer = null;
+  $("search").addEventListener("input", () => { query = $("search").value.trim().toLowerCase(); drawNav(); drawCrumbs(); drawRows();
+    clearTimeout(searchTimer); searchTimer = setTimeout(graphSearch, 220); });
+  $("search").addEventListener("keydown", (e) => { if (e.key !== "Enter") return; e.preventDefault(); clearTimeout(searchTimer); graphSearch();
+    const first = [...matches].find((id) => onScreen.has(id)); if (first) { select(first, { center: true }); $("graph").focus(); } });
+  $("new-topic").addEventListener("submit", (e) => { e.preventDefault(); const name = $("topic-name").value.trim();
+    if (!name || name.includes(" · ")) return; org.topics[name] ||= []; $("topic-name").value = ""; changed(); go({ level: "topic", topic: name, group: MINE }); });
+
+  const place = (id, topic) => {
+    const d = byId[id]; if (!d) return;
+    Object.values(org.topics).forEach((ids) => { const i = ids.indexOf(id); if (i >= 0) ids.splice(i, 1); });
+    // Back to its own default topic means unplaced; any other is a topic of yours.
+    if (topic !== d.folder || org.topics[topic]) (org.topics[topic] ||= []).push(id);
+    changed();
+  };
+
+  // ---- the graph model: bets, topics, documents and pages, and their relationships
+  const NS = "http://www.w3.org/2000/svg";
+  const svgEl = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag);
+    for (const k in attrs || {}) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const h = (tag, attrs, text, parent) => { const e = document.createElement(tag);
+    for (const k in attrs || {}) { if (k === "class") e.className = attrs[k]; else e.setAttribute(k, attrs[k]); }
+    if (text != null) e.textContent = text; if (parent) parent.appendChild(e); return e; };
+  const KINDS = ["bet", "topic", "repo", "both", "move", "keep", "notion"];
+  const NAME = { bet: "Bet", topic: "Topic", repo: "Repo only", both: "Repo + Notion", move: "Move to Notion", keep: "Keep in repo", notion: "Notion page" };
+  const DOCCAP = ["title", "path", "topic", "repo"];
+  const CAPTIONS = { bet: ["name"], topic: ["name", "bet"], repo: DOCCAP, both: DOCCAP, move: DOCCAP, keep: DOCCAP, notion: ["title", "topic", "url"] };
+  const SIZES = [13, 18, 24, 31, 40], DEFAULT_SIZE = { bet: 3, topic: 2, repo: 1, both: 1, move: 1, keep: 1, notion: 1 };
+  // A label's colour is a design token, light and dark; a swatch picks another token, never a raw colour.
+  const LABEL_TOKEN = { bet: "brand-amber", topic: "chart-4", repo: "chart-5", both: "success", move: "brand-blue", keep: "ramp-2", notion: "info" };
+  const SWATCHES = ["chart-1", "chart-2", "chart-3", "chart-4", "chart-5", "brand-amber", "brand-blue", "success", "info", "destructive", "ramp-2", "ramp-3"];
+  const STYLE_KEY = "cos.docs.graph.style.v2";
+  let style = {};
+  try { style = JSON.parse(localStorage.getItem(STYLE_KEY) || "{}") || {}; } catch { style = {}; }
+  const saveStyle = () => { try { localStorage.setItem(STYLE_KEY, JSON.stringify(style)); } catch { /* storage blocked: style lasts this visit */ } };
+  // A token holds light-dark(light, dark); only a styled element resolves it to the side in use.
+  const probe = document.createElement("i"); probe.hidden = true; document.body.appendChild(probe);
+  const resolved = new Map();
+  const cssVar = (k) => {
+    if (!resolved.has(k)) {
+      probe.style.color = `var(--${k})`;
+      const c = getComputedStyle(probe).color.match(/[\d.]+/g) || ["136", "136", "136"];
+      resolved.set(k, "#" + c.slice(0, 3).map((x) => Math.round(+x).toString(16).padStart(2, "0")).join(""));
+    }
+    return resolved.get(k);
+  };
+  const tokenOf = (label) => SWATCHES.includes(style[label]?.color) ? style[label].color : LABEL_TOKEN[label];
+  const colorOf = (label) => cssVar(tokenOf(label));
+  const channels = (c) => { const m = /^#?([0-9a-f]{6})$/i.exec(c); const v = m ? parseInt(m[1], 16) : 0x888888; return [v >> 16 & 255, v >> 8 & 255, v & 255]; };
+  const darker = (c) => "#" + channels(c).map((x) => Math.round(x * 0.72).toString(16).padStart(2, "0")).join("");
+  const inkOn = (c) => { const [r, g, b] = channels(c).map((x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.32 ? cssVar("brand-ink") : cssVar("brand-white"); };
+  const snake = (k) => String(k || "").trim().toUpperCase().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "") || "LINKS_TO";
+  const BET = (g) => `#bet:${g}`, TOPIC = (t) => `#topic:${t}`;
+
+  let N = new Map(), R = [], ADJ = new Map();
+  const docProps = (d) => {
+    const p = { title: d.title };
+    if (d.repo) { p.repo = d.repo; p.path = d.path; } else if (d.url) p.url = d.url;
+    p.status = LABEL[status(d)]; p.topic = topicOf(d); if (d.kind) p.kind = d.kind;
+    if (d.place === "repo" && d.suggest && !org.marks[d.id]) p.suggest = d.suggest === "move_to_notion" ? "move to Notion" : "keep in repo";
+    if (inNotion[d.id]) p.notion = byId[inNotion[d.id]]?.title || inNotion[d.id];
+    return p;
+  };
+  const buildModel = () => {
+    N = new Map(); R = []; ADJ = new Map();
+    const seen = new Set();
+    const add = (n) => { if (N.has(n.id)) return; N.set(n.id, n); ADJ.set(n.id, []); };
+    const rel = (from, to, type, mine) => { const key = `${from}\u0000${to}\u0000${type}`;
+      if (from === to || seen.has(key) || !N.has(from) || !N.has(to)) return;
+      seen.add(key); const r = { i: R.length, key, from, to, type, mine: !!mine }; R.push(r); ADJ.get(from).push(r); ADJ.get(to).push(r); };
+    const gs = groups();
+    gs.forEach((g) => { const ts = topicsIn(g); add({ id: BET(g), label: "bet", props: { name: g, topics: ts.length, documents: ts.reduce((s, [, n]) => s + n, 0) } }); });
+    gs.forEach((g) => topicsIn(g).forEach(([t, n]) => add({ id: TOPIC(t), label: "topic", topic: t, props: { name: shortTopic(t), bet: g, documents: n } })));
+    docs.forEach((d) => add({ id: d.id, label: status(d), doc: d, props: docProps(d) }));
+    gs.forEach((g) => topicsIn(g).forEach(([t]) => rel(TOPIC(t), BET(g), "IN_BET")));
+    docs.forEach((d) => rel(d.id, TOPIC(topicOf(d)), "IN_TOPIC"));
+    docs.forEach((d) => (d.links || []).forEach((to) => rel(d.id, to, "LINKS_TO")));
+    org.links.forEach((l) => rel(l.from, l.to, snake(l.kind), true));
+    Object.entries(inNotion).forEach(([id, page]) => rel(id, page, "IN_NOTION"));
+  };
+  const other = (r, id) => r.from === id ? r.to : r.from;
+  const caption = (n) => { const want = style[n.label]?.caption; const key = CAPTIONS[n.label].includes(want) ? want : CAPTIONS[n.label][0];
+    return String(n.props[key] ?? n.props.title ?? n.props.name ?? n.id); };
+  const radius = (n) => { const base = SIZES[style[n.label]?.size ?? DEFAULT_SIZE[n.label]] || 18, d = ADJ.get(n.id)?.length || 0;
+    return Math.round(base * (0.85 + 0.45 * Math.min(1, Math.log2(1 + d) / 5))); };
+  const byDeg = (a, b) => (ADJ.get(b.id)?.length || 0) - (ADJ.get(a.id)?.length || 0);
+
+  // ---- what is on the canvas
+  const CAP = 300, HARD = 1000;
+  let vis = new Set(), exps = new Map(), labelsOff = new Set(), typesOff = new Set();
+  let sel = null, hover = null, pathStart = null, pathHit = null, matches = new Set(), depth = 1, wanted = new Set(), capped = false;
+  let shown = [], shownRels = [], onScreen = new Set(), VADJ = new Map();
+  const multi = new Set();
+  const P = new Map();
+  const relOk = (r) => !typesOff.has(r.type);
+  const nodeOk = (id) => N.has(id) && !labelsOff.has(N.get(id).label);
+
+  const initialIds = () => {
+    const out = new Set(), push = (id) => { if (N.has(id)) out.add(id); };
+    if (view.level === "all") {
+      groups().forEach((g) => push(BET(g)));
+      groups().forEach((g) => topicsIn(g).forEach(([t]) => push(TOPIC(t))));
+    } else if (view.level === "group") {
+      push(BET(view.group));
+      topicsIn(view.group).forEach(([t]) => push(TOPIC(t)));
+      docsIn((d) => groupOf(topicOf(d)) === view.group).sort(byDeg).forEach((d) => push(d.id));
+    } else {
+      push(TOPIC(view.topic)); push(BET(groupOf(view.topic)));
+      const ds = docsIn((d) => topicOf(d) === view.topic).sort(byDeg);
+      ds.forEach((d) => push(d.id));
+      ds.forEach((d) => (ADJ.get(d.id) || []).forEach((r) => { if (r.type !== "IN_TOPIC") push(other(r, d.id)); }));
+    }
+    return [...out];
+  };
+
+  // ---- history: every exploration step can be gone back over
+  let hist = [], hi = -1;
+  const snap = (what) => ({ what, vis: [...vis], exps: [...exps].map(([k, v]) => [k, [...v]]), labelsOff: [...labelsOff], typesOff: [...typesOff], sel,
+    path: pathHit && { nodes: [...pathHit.nodes], rels: [...pathHit.rels] } });
+  const push = (what, replaceSame) => {
+    hist = hist.slice(0, hi + 1);
+    if (replaceSame && hist.length > 1 && hist[hist.length - 1].what.startsWith(replaceSame)) hist.pop();
+    hist.push(snap(what)); if (hist.length > 120) hist.shift(); hi = hist.length - 1; drawHistory();
+  };
+  const restore = (s) => { vis = new Set(s.vis.filter((id) => N.has(id))); exps = new Map(s.exps); labelsOff = new Set(s.labelsOff); typesOff = new Set(s.typesOff);
+    sel = N.has(s.sel) ? s.sel : null; pathHit = s.path && { nodes: new Set(s.path.nodes), rels: new Set(s.path.rels) }; sync({ reheat: 0.25 }); drawHistory(); };
+  const drawHistory = () => { $("back").disabled = hi <= 0; $("fwd").disabled = hi >= hist.length - 1;
+    $("step").textContent = hist[hi] ? `step ${hi + 1}/${hist.length}: ${hist[hi].what}` : ""; $("step").title = $("step").textContent; };
+  const back = () => { if (hi > 0) { restore(hist[--hi]); say(`Back: ${hist[hi].what}`); } };
+  const forward = () => { if (hi < hist.length - 1) { restore(hist[++hi]); say(`Forward: ${hist[hi].what}`); } };
+  $("back").addEventListener("click", back);
+  $("fwd").addEventListener("click", forward);
+  $("reset").addEventListener("click", () => resetGraph(false));
+
+  const resetGraph = (fresh) => {
+    const ids = initialIds();
+    wanted = new Set(ids); capped = ids.length > CAP;
+    vis = new Set(ids.slice(0, CAP)); exps = new Map(); pathHit = null; pathStart = null; matches = new Set();
+    if (!vis.has(sel)) sel = null;
+    if (fresh) { for (const id of [...P.keys()]) if (!vis.has(id) && P.get(id).fx == null) P.delete(id); hist = []; hi = -1; }
+    if (query) addMatches();
+    fitTarget = null; fitOnCool = true;
+    sync({ reheat: 1 });
+    push(fresh ? "start of this view" : "reset");
+  };
+  const refreshModel = () => {
+    buildModel();
+    if (view.level !== "all") [...vis].forEach((id) => { const d = byId[id]; if (d) vis.add(TOPIC(topicOf(d))); });
+    vis = new Set([...vis].filter((id) => N.has(id)));
+    if (sel && !N.has(sel)) sel = null;
+    sync({ reheat: 0.15, repaint: true });
+  };
+
+  // ---- exploring
+  const hiddenNeighbours = (id, type) => (ADJ.get(id) || [])
+    .filter((r) => relOk(r) && (!type || r.type === type)).map((r) => other(r, id))
+    .filter((x, i, a) => !vis.has(x) && nodeOk(x) && a.indexOf(x) === i)
+    .map((x) => N.get(x)).sort(byDeg).map((n) => n.id);
+  const near = (id) => { const p = P.get(id); if (!p) return null; const a = Math.random() * Math.PI * 2, d = 60 + Math.random() * 40;
+    return { x: p.x + Math.cos(a) * d, y: p.y + Math.sin(a) * d, vx: 0, vy: 0, fx: null, fy: null }; };
+  const expand = (id, type) => {
+    const add = hiddenNeighbours(id, type);
+    if (!add.length) { say(`${caption(N.get(id))}: nothing more to expand${type ? ` over ${type}` : ""}.`); return; }
+    const room = Math.max(0, HARD - vis.size), take = add.slice(0, room);
+    take.forEach((x) => { vis.add(x); if (!P.has(x)) { const p = near(id); if (p) P.set(x, p); } });
+    exps.set(id, [...(exps.get(id) || []), ...take]);
+    sync({ reheat: 0.5 });
+    push(`expanded ${caption(N.get(id))}${type ? ` (${type})` : ""}`);
+    say(`Added ${take.length} node${take.length === 1 ? "" : "s"}${take.length < add.length ? `; ${add.length - take.length} left out at the ${HARD} cap` : ""}.`);
+  };
+  const collapse = (id) => {
+    const drop = new Set(), walk = (x) => (exps.get(x) || []).forEach((y) => { if (y !== id && !drop.has(y)) { drop.add(y); walk(y); } });
+    walk(id);
+    if (!drop.size) { say("Nothing to collapse: this node added no neighbours."); return; }
+    drop.forEach((y) => { vis.delete(y); exps.delete(y); }); exps.delete(id);
+    if (drop.has(sel)) sel = null;
+    sync({ reheat: 0.2 }); push(`collapsed ${caption(N.get(id))}`); say(`Removed ${drop.size} node${drop.size === 1 ? "" : "s"}.`);
+  };
+  const hide = (id) => { if (!vis.has(id)) return; const name = caption(N.get(id)); vis.delete(id); if (sel === id) sel = null; if (hover === id) hover = null;
+    sync({ reheat: 0.1 }); push(`hid ${name}`); say(`Hid ${name}. Back undoes it.`); };
+  const expandMany = (ids) => {
+    let added = 0;
+    for (const id of ids) {
+      const take = hiddenNeighbours(id).slice(0, Math.max(0, HARD - vis.size));
+      take.forEach((x) => { vis.add(x); if (!P.has(x)) { const p = near(id); if (p) P.set(x, p); } });
+      if (take.length) { exps.set(id, [...(exps.get(id) || []), ...take]); added += take.length; }
+    }
+    if (!added) { say("Nothing more to expand."); return; }
+    sync({ reheat: 0.5 }); push(`expanded ${ids.length} nodes`); say(`Added ${added} node${added === 1 ? "" : "s"}.`);
+  };
+  const hideMany = (ids) => { ids.forEach((id) => vis.delete(id)); multi.clear(); if (ids.includes(sel)) sel = null; if (ids.includes(hover)) hover = null;
+    sync({ reheat: 0.1 }); push(`hid ${ids.length} nodes`); say(`Hid ${ids.length} nodes. Back undoes it.`); };
+  const pinMany = (ids, on) => { ids.forEach((id) => { const p = P.get(id); if (!p) return; if (on) { p.fx = p.x; p.fy = p.y; } else p.fx = p.fy = null; });
+    if (!on) heat(0.2); paintClasses(); drawInspector(); say(`${on ? "Pinned" : "Unpinned"} ${ids.length} nodes.`); };
+  const pin = (id, on) => { const p = P.get(id); if (!p) return; if (on) { p.fx = p.x; p.fy = p.y; } else { p.fx = p.fy = null; heat(0.2); } paintClasses(); drawInspector(); };
+  const releaseAll = () => { let n = 0; P.forEach((p) => { if (p.fx != null) { p.fx = p.fy = null; n++; } }); paintClasses(); drawInspector(); heat(0.3); say(`Released ${n} pinned node${n === 1 ? "" : "s"}.`); };
+  $("release").addEventListener("click", releaseAll);
+  const neighbourhood = (id, d) => {
+    const out = new Set([id]); let edge = [id];
+    for (let k = 0; k < d && edge.length; k++) {
+      const next = [];
+      edge.forEach((x) => (ADJ.get(x) || []).forEach((r) => { const y = other(r, x); if (relOk(r) && nodeOk(y) && !out.has(y) && out.size < HARD) { out.add(y); next.push(y); } }));
+      edge = next;
+    }
+    return out;
+  };
+  const showOnly = (id, d = depth) => {
+    vis = neighbourhood(id, d); exps = new Map(); pathHit = null; sel = id;
+    fitTarget = null; fitOnCool = true; sync({ reheat: 0.8 }); push(`only ${caption(N.get(id))} + ${d}-hop`);
+  };
+  const shortest = (a, b) => {
+    const prev = new Map([[a, null]]); let edge = [a];
+    while (edge.length && !prev.has(b)) {
+      const next = [];
+      for (const x of edge) for (const r of ADJ.get(x) || []) { const y = other(r, x); if (prev.has(y) || !relOk(r) || !nodeOk(y)) continue; prev.set(y, { x, r }); next.push(y); }
+      edge = next;
+    }
+    if (!prev.has(b)) return null;
+    const nodes = new Set([b]), rels = new Set(); let at = b;
+    while (prev.get(at)) { const { x, r } = prev.get(at); rels.add(r.key); nodes.add(x); at = x; }
+    return { nodes, rels };
+  };
+  const findPath = (a, b) => {
+    const hit = shortest(a, b); pathStart = null; drawPathbar();
+    if (!hit) { say(`No path between ${caption(N.get(a))} and ${caption(N.get(b))} with the current filters.`); return; }
+    hit.nodes.forEach((x) => { vis.add(x); if (!P.has(x)) { const p = near(a) || near(b); if (p) P.set(x, p); } });
+    pathHit = hit; sel = b; fitTarget = hit.nodes; fitOnCool = true;
+    sync({ reheat: 0.4 }); push(`path ${caption(N.get(a))} → ${caption(N.get(b))}`);
+    say(`Shortest path: ${hit.rels.size} hop${hit.rels.size === 1 ? "" : "s"}.`);
+  };
+  const drawPathbar = () => {
+    const bar = $("pathbar"); bar.replaceChildren(); bar.hidden = !pathStart; if (!pathStart) return;
+    bar.append("Path from ", h("b", {}, caption(N.get(pathStart))), " — pick the other end: right-click a node, ‘Shortest path to here’. ");
+    h("button", { type: "button" }, "Cancel", bar).addEventListener("click", () => { pathStart = null; drawPathbar(); drawInspector(); });
+  };
+  const searchText = (n) => (n.doc ? `${n.doc.title} ${n.doc.path || ""} ${topicOf(n.doc)}` : `${n.props.name} ${n.topic || ""}`).toLowerCase();
+  const addMatches = () => {
+    matches = new Set(); if (!query) return 0;
+    for (const n of N.values()) if (searchText(n).includes(query)) { matches.add(n.id); if (matches.size >= 120) break; }
+    let added = 0;
+    for (const id of matches) { if (vis.has(id)) continue; if (vis.size >= HARD) break; vis.add(id); added++; }
+    return added;
+  };
+  const graphSearch = () => {
+    const added = addMatches();
+    fitTarget = matches.size ? new Set(matches) : null; fitOnCool = !!matches.size;
+    sync({ reheat: added ? 0.5 : 0.05 });
+    if (query) push(`search “${query}”`, "search"); else drawHistory();
+    say(query ? `${matches.size} match${matches.size === 1 ? "" : "es"}${added ? `, ${added} added to the graph` : ""}.` : "Search cleared.");
+  };
+
+  // ---- the canvas
+  const box = $("graph");
+  const svg = svgEl("svg", { "aria-hidden": "true" }, box);
+  const vp = svgEl("g", { class: "vp" }, svg), gRels = svgEl("g", {}, vp), gNodes = svgEl("g", {}, vp);
+  const mini = h("canvas", { id: "mini", "aria-hidden": "true" }, null, box);
+  let menu = null;
+  const nodeEls = new Map(), relEls = new Map();
+  const REDUCED = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  const wrap = (s, r) => {
+    const fs = clamp(r / 2.9, 7, 12), per = Math.max(4, Math.floor((r * 1.9) / (fs * 0.55))), max = r >= 22 ? 3 : 2;
+    const words = String(s).replace(/\s+/g, " ").trim().split(" ").flatMap((w) => { const c = [...w], out = []; for (let i = 0; i < c.length; i += per) out.push(c.slice(i, i + per).join("")); return out; });
+    const lines = [];
+    let i = 0;
+    while (i < words.length && lines.length < max) {
+      let line = words[i++];
+      while (i < words.length && [...line].length + 1 + [...words[i]].length <= per) line += " " + words[i++];
+      lines.push(line);
+    }
+    if (i < words.length) { const last = [...lines[lines.length - 1]]; lines[lines.length - 1] = last.slice(0, Math.max(1, per - 1)).join("").replace(/\s+$/, "") + "…"; }
+    return { fs, lines };
+  };
+  const paintNode = (n, rec) => {
+    const r = radius(n), c = colorOf(n.label), cap = caption(n);
+    rec.r = r; rec.label = n.label;
+    rec.body.setAttribute("r", r); rec.halo.setAttribute("r", r + 4);
+    rec.body.setAttribute("fill", c); rec.body.setAttribute("stroke", darker(c));
+    rec.title.textContent = `${NAME[n.label]}: ${cap}`;
+    const { fs, lines } = wrap(cap, r);
+    rec.fs = fs; rec.cut = lines.join(" ") !== String(cap).replace(/\s+/g, " ").trim(); rec.lod = undefined;
+    rec.text.replaceChildren(); rec.text.setAttribute("font-size", fs.toFixed(1)); rec.text.setAttribute("fill", inkOn(c));
+    lines.forEach((l, k) => { const t = svgEl("tspan", { x: 0, dy: k ? "1.15em" : `${(-(lines.length - 1) * 0.575).toFixed(3)}em` }, rec.text); t.textContent = l; });
+  };
+  const makeNode = (n) => {
+    const g = svgEl("g", { class: "node" }); g.dataset.id = n.id;
+    const rec = { g, halo: svgEl("circle", { class: "halo" }, g), body: svgEl("circle", { class: "body" }, g), text: svgEl("text", {}, g), title: svgEl("title", {}, g) };
+    paintNode(n, rec); gNodes.appendChild(g); return rec;
+  };
+  const makeRel = (r) => {
+    const g = svgEl("g", { class: r.mine ? "rel mine" : "rel" });
+    const rec = { g, line: svgEl("path", { class: "line" }, g), arrow: svgEl("path", { class: "arrow" }, g), text: svgEl("text", { "font-size": 8.5 }, g) };
+    rec.text.textContent = r.type; gRels.appendChild(g); return rec;
+  };
+  let spiral = 0;
+  const sync = ({ reheat = 0.3, repaint = false } = {}) => {
+    shown = [...vis].map((id) => N.get(id)).filter((n) => n && !labelsOff.has(n.label));
+    onScreen = new Set(shown.map((n) => n.id));
+    shownRels = R.filter((r) => onScreen.has(r.from) && onScreen.has(r.to) && relOk(r));
+    VADJ = new Map(shown.map((n) => [n.id, []]));
+    shownRels.forEach((r) => { VADJ.get(r.from).push(r); VADJ.get(r.to).push(r); });
+    // Positions: beside a placed neighbour, else on a sunflower spiral.
+    for (const n of shown) if (!P.has(n.id)) {
+      const nb = VADJ.get(n.id).map((r) => other(r, n.id)).find((x) => P.has(x));
+      let p = nb && near(nb);
+      if (!p) { const k = spiral++, rr = 30 * Math.sqrt(k + 0.5), a = k * 2.39996; p = { x: rr * Math.cos(a), y: rr * Math.sin(a), vx: 0, vy: 0, fx: null, fy: null }; }
+      P.set(n.id, p);
+    }
+    for (const [id, rec] of nodeEls) if (!onScreen.has(id)) { rec.g.remove(); nodeEls.delete(id); }
+    for (const n of shown) { const rec = nodeEls.get(n.id); if (!rec) nodeEls.set(n.id, makeNode(n)); else if (repaint || rec.label !== n.label) paintNode(n, rec); }
+    const relKeys = new Set(shownRels.map((r) => r.key));
+    for (const [k, rec] of relEls) if (!relKeys.has(k)) { rec.g.remove(); relEls.delete(k); }
+    // Two nodes joined more than once (both ways, or two kinds) get curves.
+    const pairs = new Map();
+    shownRels.forEach((r) => { const k = r.from < r.to ? `${r.from}\u0000${r.to}` : `${r.to}\u0000${r.from}`; (pairs.get(k) || pairs.set(k, []).get(k)).push(r); });
+    pairs.forEach((rs) => rs.forEach((r, i) => { const off = rs.length === 1 ? 0 : (i - (rs.length - 1) / 2) * 30; r.off = r.from < r.to ? off : -off; }));
+    for (const r of shownRels) if (!relEls.has(r.key)) relEls.set(r.key, makeRel(r));
+    svg.classList.toggle("dense", shownRels.length > 500);
+    if (sel && !onScreen.has(sel)) sel = null;
+    if (hover && !onScreen.has(hover)) hover = null;
+    for (const id of [...multi]) if (!onScreen.has(id)) multi.delete(id);
+    if (multi.size === 1) multi.clear();
+    lod(); paintClasses(); highlight(); drawChips(); drawFilters(); drawInspector(); drawNote(); drawStylebar(); drawTabs();
+    box.setAttribute("aria-label", `Graph of the current view: ${shown.length} nodes, ${shownRels.length} relationships${sel ? `; selected ${caption(N.get(sel))}` : ""}`);
+    heat(reheat);
+  };
+  const paintClasses = () => {
+    for (const [id, rec] of nodeEls) {
+      const c = rec.g.classList, p = P.get(id);
+      c.toggle("sel", id === sel); c.toggle("multi", multi.has(id)); c.toggle("match", matches.has(id)); c.toggle("path", !!pathHit?.nodes.has(id)); c.toggle("pinned", p?.fx != null);
+    }
+    for (const [k, rec] of relEls) rec.g.classList.toggle("path", !!pathHit?.rels.has(k));
+  };
+  let lit = [];
+  const highlight = () => {
+    lit.forEach((e) => e.classList.remove("on")); lit = [];
+    const id = hover;
+    svg.classList.toggle("hl", !!id && onScreen.has(id));
+    if (!id || !onScreen.has(id)) return;
+    const on = (e) => { if (e) { e.classList.add("on"); lit.push(e); } };
+    on(nodeEls.get(id)?.g);
+    (VADJ.get(id) || []).forEach((r) => { on(relEls.get(r.key)?.g); on(nodeEls.get(other(r, id))?.g); });
+  };
+  const setHover = (id) => { if (id === hover) return; hover = id; highlight(); placeHovercap(); };
+
+  // ---- drawing positions
+  const draw = () => {
+    for (const n of shown) { const p = P.get(n.id), rec = nodeEls.get(n.id); if (p && rec) rec.g.setAttribute("transform", `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`); }
+    for (const r of shownRels) {
+      const a = P.get(r.from), b = P.get(r.to), rec = relEls.get(r.key); if (!a || !b || !rec) continue;
+      const ra = nodeEls.get(r.from)?.r || 18, rb = nodeEls.get(r.to)?.r || 18;
+      let dx = b.x - a.x, dy = b.y - a.y; const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
+      let s, e, dir, mx, my;
+      if (!r.off) {
+        s = [a.x + dx * ra, a.y + dy * ra]; e = [b.x - dx * (rb + 1.5), b.y - dy * (rb + 1.5)]; dir = [dx, dy];
+        mx = (s[0] + e[0]) / 2; my = (s[1] + e[1]) / 2;
+      } else {
+        const cx = (a.x + b.x) / 2 - dy * r.off * 2, cy = (a.y + b.y) / 2 + dx * r.off * 2;
+        const u = (x, y) => { const l = Math.hypot(x, y) || 1; return [x / l, y / l]; };
+        const ua = u(cx - a.x, cy - a.y), ub = u(cx - b.x, cy - b.y);
+        s = [a.x + ua[0] * ra, a.y + ua[1] * ra]; e = [b.x + ub[0] * (rb + 1.5), b.y + ub[1] * (rb + 1.5)]; dir = [-ub[0], -ub[1]];
+        rec.c = [cx, cy];
+        mx = 0.25 * s[0] + 0.5 * cx + 0.25 * e[0]; my = 0.25 * s[1] + 0.5 * cy + 0.25 * e[1];
+      }
+      const AL = 8, AW = 3.6, base = [e[0] - dir[0] * AL, e[1] - dir[1] * AL];
+      rec.line.setAttribute("d", r.off ? `M${s[0].toFixed(1)},${s[1].toFixed(1)}Q${rec.c[0].toFixed(1)},${rec.c[1].toFixed(1)} ${base[0].toFixed(1)},${base[1].toFixed(1)}`
+        : `M${s[0].toFixed(1)},${s[1].toFixed(1)}L${base[0].toFixed(1)},${base[1].toFixed(1)}`);
+      rec.arrow.setAttribute("d", `M${e[0].toFixed(1)},${e[1].toFixed(1)}L${(base[0] - dir[1] * AW).toFixed(1)},${(base[1] + dir[0] * AW).toFixed(1)}L${(base[0] + dir[1] * AW).toFixed(1)},${(base[1] - dir[0] * AW).toFixed(1)}Z`);
+      let ang = Math.atan2(dir[1], dir[0]) * 180 / Math.PI; if (ang > 90) ang -= 180; else if (ang < -90) ang += 180;
+      rec.text.setAttribute("transform", `translate(${mx.toFixed(1)},${my.toFixed(1)}) rotate(${ang.toFixed(1)})`);
+    }
+    if (hover) placeHovercap();
+  };
+
+  // ---- the force simulation: Barnes–Hut charge, link springs, gravity, collision
+  let alpha = 0, alphaTarget = 0, raf = 0, frames = 0, fitOnCool = false, fitTarget = null;
+  const ALPHA_MIN = 0.004, DECAY = 1 - Math.pow(ALPHA_MIN, 1 / 300), THETA2 = 0.81, KEEP = 0.6;
+  const quad = (bs, x0, y0, s, depth) => {
+    const t = { s, x: 0, y: 0, q: 0, bs: null, kids: null };
+    for (const b of bs) { t.x += b.p.x * b.c; t.y += b.p.y * b.c; t.q += b.c; }
+    t.x /= t.q; t.y /= t.q;
+    if (bs.length === 1 || depth > 20) { t.bs = bs; return t; }
+    const hs = s / 2, parts = [[], [], [], []];
+    for (const b of bs) parts[(b.p.x >= x0 + hs ? 1 : 0) + (b.p.y >= y0 + hs ? 2 : 0)].push(b);
+    t.kids = parts.map((ps, i) => ps.length ? quad(ps, x0 + (i & 1) * hs, y0 + (i >> 1) * hs, hs, depth + 1) : null);
+    return t;
+  };
+  const push2 = (b, dx, dy, l, q, a) => { if (l > 2.5e6) return; if (l < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; l = dx * dx + dy * dy + 1; }
+    l = Math.max(l, 64); const f = -q * a / l; b.p.vx += dx * f; b.p.vy += dy * f; };
+  const charge = (t, b, a) => {
+    const dx = t.x - b.p.x, dy = t.y - b.p.y, l = dx * dx + dy * dy;
+    if (t.kids) { if (t.s * t.s / THETA2 < l) { push2(b, dx, dy, l, t.q, a); return; } for (const k of t.kids) if (k) charge(k, b, a); return; }
+    for (const o of t.bs) if (o !== b) { const ex = o.p.x - b.p.x, ey = o.p.y - b.p.y; push2(b, ex, ey, ex * ex + ey * ey, o.c, a); }
+  };
+  const tick = () => {
+    alpha += (alphaTarget - alpha) * DECAY;
+    const a = alpha, bs = shown.map((n) => { const r = nodeEls.get(n.id)?.r || 18; return { id: n.id, p: P.get(n.id), r, c: 180 + r * r * 0.9 }; });
+    if (!bs.length) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, maxR = 0;
+    for (const b of bs) { x0 = Math.min(x0, b.p.x); y0 = Math.min(y0, b.p.y); x1 = Math.max(x1, b.p.x); y1 = Math.max(y1, b.p.y); maxR = Math.max(maxR, b.r); }
+    const root = quad(bs, x0, y0, Math.max(x1 - x0, y1 - y0) + 1, 0);
+    for (const b of bs) charge(root, b, a);
+    const idx = new Map(bs.map((b) => [b.id, b]));
+    for (const r of shownRels) {
+      const s = idx.get(r.from), t = idx.get(r.to); if (!s || !t) continue;
+      const ds = VADJ.get(r.from).length, dt = VADJ.get(r.to).length;
+      let x = t.p.x + t.p.vx - s.p.x - s.p.vx, y = t.p.y + t.p.vy - s.p.y - s.p.vy;
+      let l = Math.hypot(x, y) || 1e-3; const want = s.r + t.r + 55 + Math.min(60, 6 * Math.sqrt(ds + dt));
+      l = (l - want) / l * a / Math.min(ds, dt); x *= l; y *= l; const bias = ds / (ds + dt);
+      t.p.vx -= x * bias; t.p.vy -= y * bias; s.p.vx += x * (1 - bias); s.p.vy += y * (1 - bias);
+    }
+    for (const b of bs) { b.p.vx -= b.p.x * 0.07 * a; b.p.vy -= b.p.y * 0.07 * a; }
+    // Collision on a grid, so it stays linear in the node count.
+    const cell = 2 * maxR + 12, grid = new Map(), key = (i, j) => i * 73856093 ^ j * 19349663;
+    for (const b of bs) { b.i = Math.floor(b.p.x / cell); b.j = Math.floor(b.p.y / cell); const k = key(b.i, b.j); (grid.get(k) || grid.set(k, []).get(k)).push(b); }
+    for (const b of bs) for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+      for (const o of grid.get(key(b.i + di, b.j + dj)) || []) {
+        if (o === b || o.id < b.id) continue;
+        let x = (o.p.x + o.p.vx) - (b.p.x + b.p.vx), y = (o.p.y + o.p.vy) - (b.p.y + b.p.vy); const min = b.r + o.r + 8;
+        let l = x * x + y * y; if (l >= min * min) continue;
+        if (l < 1e-6) { x = Math.random() - 0.5; y = Math.random() - 0.5; l = x * x + y * y; }
+        l = Math.sqrt(l); const m = (min - l) / l * 0.7, wb = o.r * o.r / (b.r * b.r + o.r * o.r);
+        b.p.vx -= x * m * wb; b.p.vy -= y * m * wb; o.p.vx += x * m * (1 - wb); o.p.vy += y * m * (1 - wb);
+      }
+    }
+    for (const b of bs) {
+      if (b.p.fx != null) { b.p.x = b.p.fx; b.p.y = b.p.fy; b.p.vx = b.p.vy = 0; continue; }
+      b.p.vx *= KEEP; b.p.vy *= KEEP; b.p.x += b.p.vx; b.p.y += b.p.vy;
+    }
+  };
+  const frame = () => {
+    raf = 0; const t0 = performance.now();
+    let n = 0; do { tick(); n++; } while (n < 3 && performance.now() - t0 < 9 && (alpha >= ALPHA_MIN || alphaTarget > 0));
+    draw(); if (++frames % 4 === 0) drawMini();
+    if (alpha >= ALPHA_MIN || alphaTarget > 0) raf = requestAnimationFrame(frame); else cooled();
+  };
+  const cooled = () => { if (fitOnCool) { fitOnCool = false; fit(fitTarget); fitTarget = null; } drawMini(); };
+  // Reduced motion: lay out off-screen, then draw once.
+  const settle = () => { const t0 = performance.now(); while (alpha >= ALPHA_MIN && performance.now() - t0 < 1500) tick(); alpha = 0; draw(); cooled(); };
+  const heat = (a) => {
+    if (!shown.length) { draw(); cooled(); return; }
+    alpha = Math.max(alpha, a || 0);
+    if (REDUCED()) { if (alpha >= ALPHA_MIN) settle(); else { draw(); cooled(); } return; }
+    if (alpha < ALPHA_MIN) { draw(); cooled(); return; }
+    if (!raf) raf = requestAnimationFrame(frame);
+  };
+
+  // ---- zoom, pan, fit. The graph point under the pointer stays under it while zooming.
+  // The smallest caption is 7 graph units: READABLE keeps it at 5.25 screen px, LOD_PX hides below 5.
+  const K_MIN = 0.05, K_MAX = 4, READABLE = 0.75, LOD_PX = 5;
+  const MOUSE_KEY = "cos.docs.graph.mouse.v1";
+  let mouse = { wheel: "zoom", readable: true, inertia: false };
+  try { mouse = { ...mouse, ...(JSON.parse(localStorage.getItem(MOUSE_KEY) || "{}") || {}) }; } catch { /* storage blocked: defaults */ }
+  const saveMouse = () => { try { localStorage.setItem(MOUSE_KEY, JSON.stringify(mouse)); } catch { /* storage blocked: lasts this visit */ } };
+  let T = { k: 1, x: 0, y: 0 }, goal = null, camRaf = 0;
+  const hcap = h("div", { id: "hovercap", hidden: "" }, null, box);
+  // A caption smaller than LOD_PX on screen is hidden; hovering shows it full size.
+  const lod = () => { for (const rec of nodeEls.values()) { const off = rec.fs * T.k < LOD_PX; if (off !== rec.lod) { rec.lod = off; rec.g.classList.toggle("lod", off); } } };
+  const placeHovercap = () => {
+    const rec = hover && nodeEls.get(hover), p = hover && P.get(hover);
+    hcap.hidden = !(rec && p && (rec.lod || rec.cut) && tab === "graph");
+    if (hcap.hidden) return;
+    hcap.textContent = caption(N.get(hover));
+    hcap.style.left = `${(p.x * T.k + T.x).toFixed(1)}px`; hcap.style.top = `${((p.y - rec.r) * T.k + T.y - 4).toFixed(1)}px`;
+  };
+  const LOGMIN = Math.log(K_MIN), LOGMAX = Math.log(K_MAX);
+  const toSlider = (k) => Math.round((Math.log(k) - LOGMIN) / (LOGMAX - LOGMIN) * 1000);
+  const fromSlider = (v) => Math.exp(LOGMIN + (v / 1000) * (LOGMAX - LOGMIN));
+  const drawZoom = () => {
+    const k = goal ? goal.k : T.k, lo = k <= K_MIN * 1.001, hi = k >= K_MAX * 0.999, pct = `${Math.round(k * 100)}%`;
+    $("zslider").value = String(toSlider(k)); $("zslider").setAttribute("aria-valuetext", pct);
+    $("zpct").textContent = pct; $("zpct").classList.toggle("limit", lo || hi);
+    $("zpct").title = lo ? `Zoomed out as far as it goes (${Math.round(K_MIN * 100)}%); click for 100%` : hi ? `Zoomed in as far as it goes (${K_MAX * 100}%); click for 100%` : "Zoom level; click for 100% (0)";
+    $("zout").disabled = lo; $("zin").disabled = hi;
+  };
+  const applyT = () => { vp.setAttribute("transform", `translate(${T.x.toFixed(1)},${T.y.toFixed(1)}) scale(${T.k.toFixed(4)})`);
+    svg.classList.toggle("far", T.k < 0.55); svg.classList.toggle("near", T.k >= 1.1); lod(); drawZoom(); placeHovercap(); drawMini(); };
+  const toGraph = (cx, cy) => { const b = svg.getBoundingClientRect(); return { x: (cx - b.left - T.x) / T.k, y: (cy - b.top - T.y) / T.k }; };
+  const stopCam = () => { cancelAnimationFrame(camRaf); camRaf = 0; goal = null; };
+  // Eases the zoom toward goal.k, re-anchoring every frame so the point stays put.
+  const camStep = () => {
+    camRaf = 0; if (!goal) return;
+    const d = Math.log(goal.k) - Math.log(T.k), k = Math.abs(d) < 0.003 ? goal.k : Math.exp(Math.log(T.k) + d * 0.32);
+    T = { k, x: goal.sx - goal.gx * k, y: goal.sy - goal.gy * k };
+    if (k === goal.k) goal = null; else camRaf = requestAnimationFrame(camStep);
+    applyT();
+  };
+  // Zoom to k with the graph point at canvas point (sx, sy) kept there; the centre when none is given.
+  const zoomTo = (k, sx, sy, smooth = true) => {
+    const b = svg.getBoundingClientRect(); if (sx == null) { sx = b.width / 2; sy = b.height / 2; }
+    k = clamp(k, K_MIN, K_MAX);
+    const gx = (sx - T.x) / T.k, gy = (sy - T.y) / T.k;
+    if (!smooth || REDUCED()) { stopCam(); T = { k, x: sx - gx * k, y: sy - gy * k }; applyT(); return; }
+    cancelAnimationFrame(camRaf); goal = { k, gx, gy, sx, sy }; camRaf = requestAnimationFrame(camStep); drawZoom();
+  };
+  const zoomAt = (f, cx, cy) => { const b = svg.getBoundingClientRect(); zoomTo((goal ? goal.k : T.k) * f, cx == null ? null : cx - b.left, cy == null ? null : cy - b.top); };
+  const flyTo = (to, dur = 280) => {
+    stopCam();
+    if (REDUCED()) { T = to; applyT(); return; }
+    const from = { ...T }, t0 = performance.now();
+    const step = (now) => { const u = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - u, 3);
+      T = { k: from.k * Math.pow(to.k / from.k, e), x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e }; applyT();
+      camRaf = u < 1 ? requestAnimationFrame(step) : 0; };
+    camRaf = requestAnimationFrame(step);
+  };
+  const bounds = (ids) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const id of ids) { const p = P.get(id), r = nodeEls.get(id)?.r || 18; if (!p || !onScreen.has(id)) continue;
+      x0 = Math.min(x0, p.x - r); y0 = Math.min(y0, p.y - r); x1 = Math.max(x1, p.x + r); y1 = Math.max(y1, p.y + r); }
+    return x0 === Infinity ? null : { x0, y0, w: x1 - x0, h: y1 - y0 };
+  };
+  // Fit stops at READABLE (unless `all`) so captions stay legible; the mini-map shows the rest.
+  const fit = (ids, all) => {
+    const bb = bounds(ids && ids.size ? ids : onScreen), b = svg.getBoundingClientRect(); if (!bb || !b.width) return;
+    let k = clamp(Math.min(b.width / (bb.w + 80), b.height / (bb.h + 80)), K_MIN, 1.6), cx = bb.x0 + bb.w / 2, cy = bb.y0 + bb.h / 2;
+    const floored = !all && mouse.readable && k < READABLE;
+    if (floored) { k = READABLE; const p = sel && (!ids || ids.has?.(sel)) && P.get(sel); if (p) { cx = p.x; cy = p.y; } }
+    flyTo({ k, x: b.width / 2 - cx * k, y: b.height / 2 - cy * k });
+    if (floored && all !== false) say(`Fit stopped at ${Math.round(READABLE * 100)}% so captions stay readable; Shift+F fits everything.`);
+  };
+  const centerOn = (id, force) => { const p = P.get(id), b = svg.getBoundingClientRect(); if (!p || !b.width) return;
+    const sx = p.x * T.k + T.x, sy = p.y * T.k + T.y;
+    if (force || sx < 40 || sy < 40 || sx > b.width - 40 || sy > b.height - 40) flyTo({ k: T.k, x: b.width / 2 - p.x * T.k, y: b.height / 2 - p.y * T.k }, 200); };
+  const selection = () => multi.size ? new Set(multi) : sel ? new Set([sel, ...(VADJ.get(sel) || []).map((r) => other(r, sel))]) : null;
+  const zoomSel = () => { const s = selection(); if (s) fit(s, true); };
+  $("fit").addEventListener("click", (e) => fit(null, e.shiftKey));
+  $("zsel").addEventListener("click", zoomSel);
+  $("zin").addEventListener("click", () => zoomAt(1.25));
+  $("zout").addEventListener("click", () => zoomAt(0.8));
+  $("zpct").addEventListener("click", () => zoomTo(1));
+  $("zslider").addEventListener("input", () => zoomTo(fromSlider(+$("zslider").value), null, null, false));
+  // Wheel: deltaMode 1 is lines, 2 pages. A pinch arrives as a ctrl+wheel with small deltas,
+  // so those zoom faster (as d3-zoom does); a notched wheel eases, a trackpad follows directly.
+  svg.addEventListener("wheel", (e) => {
+    e.preventDefault(); closeMenu(); stopGlide();
+    const b = svg.getBoundingClientRect(), unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? b.height : 1;
+    const dx = e.deltaX * unit, dy = e.deltaY * unit, notch = e.deltaMode !== 0 || Math.abs(dy) >= 40;
+    if (e.ctrlKey || e.metaKey || mouse.wheel === "zoom") {
+      const rate = e.ctrlKey && !notch ? 0.012 : 0.002, f = clamp(Math.exp(-dy * rate), 0.5, 2);
+      zoomTo((goal ? goal.k : T.k) * f, e.clientX - b.left, e.clientY - b.top, notch);
+    } else {
+      stopCam(); const sideways = e.shiftKey && !dx;
+      T.x -= sideways ? dy : dx; T.y -= sideways ? 0 : dy; applyT();
+    }
+  }, { passive: false });
+  document.querySelectorAll('input[name="wheel"]').forEach((r) => { r.checked = r.value === mouse.wheel;
+    r.addEventListener("change", () => { if (!r.checked) return; mouse.wheel = r.value; saveMouse(); say(r.value === "zoom" ? "The wheel zooms." : "The wheel pans; Ctrl or Command with the wheel, or a pinch, zooms."); }); });
+  $("set-readable").checked = !!mouse.readable;
+  $("set-readable").addEventListener("change", () => { mouse.readable = $("set-readable").checked; saveMouse(); });
+  $("set-inertia").checked = !!mouse.inertia;
+  $("set-inertia").addEventListener("change", () => { mouse.inertia = $("set-inertia").checked; saveMouse(); });
+  document.addEventListener("pointerdown", (e) => { if ($("settings").open && !$("settings").contains(e.target)) $("settings").open = false; });
+
+  // ---- pointer: drag pins a node; background, Space+drag or middle-drag pans; Shift+drag
+  // box-selects; two touch points pinch; long-press opens the menu
+  let drag = null, space = false, pinch = null, boxEl = null, glideRaf = 0;
+  const pts = new Map();
+  const nodeAt = (e) => e.target.closest?.(".node")?.dataset.id;
+  const local = (e) => { const b = svg.getBoundingClientRect(); return { x: e.clientX - b.left, y: e.clientY - b.top }; };
+  const stopGlide = () => { cancelAnimationFrame(glideRaf); glideRaf = 0; };
+  const glide = (trail) => {
+    if (!mouse.inertia || REDUCED() || trail.length < 2) return;
+    const a = trail[0], z = trail[trail.length - 1], dt = z.t - a.t;
+    if (dt <= 0 || performance.now() - z.t > 80) return;
+    let vx = (z.x - a.x) / dt * 16, vy = (z.y - a.y) / dt * 16;
+    const step = () => { vx *= 0.9; vy *= 0.9; if (Math.hypot(vx, vy) < 0.4) { glideRaf = 0; return; } T.x += vx; T.y += vy; applyT(); glideRaf = requestAnimationFrame(step); };
+    glideRaf = requestAnimationFrame(step);
+  };
+  const drawBox = (a, b) => {
+    if (!boxEl) boxEl = svgEl("rect", { class: "boxsel" }, svg);
+    boxEl.setAttribute("x", Math.min(a.x, b.x)); boxEl.setAttribute("y", Math.min(a.y, b.y));
+    boxEl.setAttribute("width", Math.abs(a.x - b.x)); boxEl.setAttribute("height", Math.abs(a.y - b.y));
+  };
+  const boxSelect = (a, b) => {
+    const x0 = (Math.min(a.x, b.x) - T.x) / T.k, x1 = (Math.max(a.x, b.x) - T.x) / T.k, y0 = (Math.min(a.y, b.y) - T.y) / T.k, y1 = (Math.max(a.y, b.y) - T.y) / T.k;
+    const hit = shown.filter((n) => { const p = P.get(n.id); return p && p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1; }).map((n) => n.id);
+    if (!hit.length) { say("No nodes inside the box."); return; }
+    if (sel && !multi.size) multi.add(sel);
+    hit.forEach((id) => multi.add(id));
+    if (multi.size === 1) { const [only] = multi; multi.clear(); select(only); return; }
+    sel = hit[0]; paintClasses(); drawInspector(); drawTable();
+    say(`${multi.size} nodes selected. Enter expands them, Delete hides them.`);
+  };
+  const toggleMulti = (id) => {
+    if (sel && !multi.size && sel !== id) multi.add(sel);
+    if (multi.has(id)) multi.delete(id); else multi.add(id);
+    if (multi.size === 1) { const [only] = multi; multi.clear(); select(only); return; }
+    sel = multi.has(id) ? id : [...multi][0] || null; paintClasses(); drawInspector(); drawTable();
+    say(multi.size ? `${multi.size} nodes selected.` : "Selection cleared.");
+  };
+  svg.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
+  svg.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    closeMenu(); box.focus({ preventScroll: true }); stopCam(); stopGlide();
+    try { svg.setPointerCapture(e.pointerId); } catch { /* the pointer already left */ }
+    pts.set(e.pointerId, local(e));
+    if (pts.size === 2) {
+      if (drag) { clearTimeout(drag.long); if (drag.id && drag.moved) alphaTarget = 0; }
+      drag = null; removeBox();
+      const [a, c] = [...pts.values()], mx = (a.x + c.x) / 2, my = (a.y + c.y) / 2;
+      pinch = { d: Math.hypot(a.x - c.x, a.y - c.y) || 1, k: T.k, gx: (mx - T.x) / T.k, gy: (my - T.y) / T.k };
+      return;
+    }
+    if (pts.size > 2) return;
+    const id = nodeAt(e), at = local(e);
+    if (e.shiftKey && e.button === 0 && !space) {
+      if (id) { toggleMulti(id); return; }
+      drag = { box: true, sx: e.clientX, sy: e.clientY, start: at, moved: false };
+      return;
+    }
+    const panning = e.button === 1 || space || !id;
+    drag = panning ? { pan: true, click: !id && e.button === 0 && !space, sx: e.clientX, sy: e.clientY, tx: T.x, ty: T.y, moved: false, trail: [] } : { id, sx: e.clientX, sy: e.clientY, moved: false };
+    if (!panning && e.pointerType !== "mouse") drag.long = setTimeout(() => { const d = drag; drag = null; if (d) { select(d.id); openMenu(d.id, d.sx, d.sy); } }, 550);
+  });
+  svg.addEventListener("pointermove", (e) => {
+    if (pts.has(e.pointerId)) pts.set(e.pointerId, local(e));
+    if (pinch) {
+      if (pts.size < 2) return;
+      const [a, c] = [...pts.values()], d = Math.hypot(a.x - c.x, a.y - c.y) || 1, k = clamp(pinch.k * d / pinch.d, K_MIN, K_MAX);
+      const mx = (a.x + c.x) / 2, my = (a.y + c.y) / 2; T = { k, x: mx - pinch.gx * k, y: my - pinch.gy * k }; applyT();
+      return;
+    }
+    if (!drag) return;
+    if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 4) { drag.moved = true; clearTimeout(drag.long); }
+    if (!drag.moved) return;
+    if (drag.box) { drawBox(drag.start, local(e)); return; }
+    if (drag.pan) {
+      T.x = drag.tx + e.clientX - drag.sx; T.y = drag.ty + e.clientY - drag.sy; svg.classList.add("panning"); applyT();
+      drag.trail.push({ x: e.clientX, y: e.clientY, t: performance.now() }); if (drag.trail.length > 6) drag.trail.shift();
+      return;
+    }
+    const g = toGraph(e.clientX, e.clientY), p = P.get(drag.id); if (!p) return;
+    p.fx = g.x; p.fy = g.y; p.x = g.x; p.y = g.y;
+    if (REDUCED()) draw(); else { alphaTarget = 0.3; heat(0.3); }
+  });
+  const removeBox = () => { boxEl?.remove(); boxEl = null; };
+  const endDrag = (e) => {
+    pts.delete(e.pointerId);
+    if (pinch) { if (pts.size < 2) pinch = null; drag = null; return; }
+    if (!drag) return; clearTimeout(drag.long);
+    const d = drag; drag = null; svg.classList.remove("panning");
+    if (e.type === "pointercancel") { alphaTarget = 0; removeBox(); return; }
+    if (d.box) { removeBox(); if (d.moved) boxSelect(d.start, local(e)); return; }
+    if (d.pan) { if (!d.moved) { if (d.click) select(null); } else glide(d.trail); return; }
+    if (!d.moved) { select(d.id); return; }
+    alphaTarget = 0; paintClasses(); drawInspector();
+    if (REDUCED()) { alpha = 0.3; settle(); }
+  };
+  const typing = (t) => !!t?.closest?.("input,textarea,select,[contenteditable]");
+  window.addEventListener("keydown", (e) => {
+    if (e.code !== "Space" || typing(e.target)) return;
+    const a = document.activeElement;
+    if (a !== box && !((a === document.body || !a) && box.matches(":hover"))) return;
+    space = true; svg.classList.add("spacepan"); e.preventDefault();
+  });
+  const spaceUp = () => { space = false; svg.classList.remove("spacepan"); };
+  window.addEventListener("keyup", (e) => { if (e.code === "Space") spaceUp(); });
+  window.addEventListener("blur", spaceUp);
+  svg.addEventListener("pointerup", endDrag);
+  svg.addEventListener("pointercancel", endDrag);
+  svg.addEventListener("dblclick", (e) => { const id = nodeAt(e); if (id) expand(id); else releaseAll(); });
+  svg.addEventListener("contextmenu", (e) => { e.preventDefault(); const id = nodeAt(e); if (id) select(id); openMenu(id || null, e.clientX, e.clientY); });
+  svg.addEventListener("pointerover", (e) => { if (!drag && !pinch) setHover(nodeAt(e) || null); });
+  svg.addEventListener("pointerleave", () => { if (!drag) setHover(null); });
+  new ResizeObserver(() => { drawMini(); placeHovercap(); }).observe(box);
+
+  // ---- the node menu
+  const closeMenu = () => { if (menu) { menu.remove(); menu = null; } };
+  const openMenu = (id, cx, cy) => {
+    closeMenu();
+    const m = h("div", { class: "menu", role: "menu", "aria-label": id ? `Actions for ${caption(N.get(id))}` : "Graph actions" }, null, box);
+    menu = m;
+    const item = (label, fn, dis) => { const b = h("button", { type: "button", role: "menuitem" }, label, m); if (dis) b.disabled = true;
+      b.addEventListener("click", () => { closeMenu(); box.focus({ preventScroll: true }); fn(); }); return b; };
+    const sep = () => h("hr", {}, null, m);
+    if (id) {
+      const n = N.get(id), hidden = hiddenNeighbours(id), p = P.get(id);
+      h("div", { class: "mh" }, `${NAME[n.label]} · ${caption(n)}`, m);
+      item(`Expand (${hidden.length})`, () => expand(id), !hidden.length);
+      const types = {}; (ADJ.get(id) || []).forEach((r) => { const x = other(r, id); if (!vis.has(x) && relOk(r) && nodeOk(x)) types[r.type] = (types[r.type] || 0) + 1; });
+      Object.entries(types).sort((a, b) => b[1] - a[1]).forEach(([t, c]) => item(`  Expand ${t} (${c})`, () => expand(id, t)));
+      item("Collapse", () => collapse(id), !exps.get(id)?.length);
+      item("Hide node", () => hide(id));
+      item(p?.fx != null ? "Unpin" : "Pin", () => pin(id, p?.fx == null));
+      item(`Show only this + neighbours (depth ${depth})`, () => showOnly(id));
+      sep();
+      if (pathStart && pathStart !== id) item(`Shortest path to here from ${caption(N.get(pathStart))}`, () => findPath(pathStart, id));
+      item("Shortest path from here…", () => { pathStart = id; drawPathbar(); drawInspector(); say("Now pick the other end."); });
+      if (n.doc) { sep(); if (n.doc.place === "repo") item("Read", () => read(id)); else if (http(n.doc.url)) item("Open in Notion", () => window.open(n.doc.url, "_blank", "noopener,noreferrer")); item("Link…", () => linkFrom(id)); }
+      if (n.label === "topic") { sep(); item("Open this topic", () => go({ level: "topic", topic: n.topic, group: groupOf(n.topic) })); }
+      if (n.label === "bet") { sep(); item("Open this bet", () => go({ level: "group", group: n.props.name })); }
+    } else {
+      item("Fit to screen", () => fit());
+      item("Release all pins", releaseAll);
+      item("Reset this view", () => resetGraph(false));
+    }
+    const b = box.getBoundingClientRect();
+    m.style.left = `${clamp(cx - b.left, 4, Math.max(4, b.width - 230))}px`;
+    m.style.top = `${clamp(cy - b.top, 4, Math.max(4, b.height - Math.min(m.offsetHeight, b.height * 0.7) - 4))}px`;
+    m.querySelector("button:not(:disabled)")?.focus();
+    m.addEventListener("keydown", (e) => {
+      const items = [...m.querySelectorAll("button:not(:disabled)")], i = items.indexOf(document.activeElement);
+      if (e.key === "ArrowDown") items[(i + 1) % items.length]?.focus();
+      else if (e.key === "ArrowUp") items[(i - 1 + items.length) % items.length]?.focus();
+      else if (e.key === "Escape" || e.key === "Tab") { closeMenu(); box.focus({ preventScroll: true }); }
+      else return;
+      e.preventDefault(); e.stopPropagation();
+    });
+  };
+  document.addEventListener("pointerdown", (e) => { if (menu && !menu.contains(e.target)) closeMenu(); });
+
+  // ---- selection, the inspector, the live region
+  const say = (s) => { $("live").textContent = ""; requestAnimationFrame(() => { $("live").textContent = s; }); };
+  const select = (id, { center = false } = {}) => {
+    sel = id && onScreen.has(id) ? id : null; multi.clear();
+    paintClasses(); drawInspector(); drawTable();
+    $("hood").disabled = !sel;
+    if (sel) { if (center) centerOn(sel, true); else centerOn(sel); const n = N.get(sel);
+      say(`${NAME[n.label]} ${caption(n)}, ${VADJ.get(sel).length} relationship${VADJ.get(sel).length === 1 ? "" : "s"} in view.`); }
+  };
+  const drawInspector = () => {
+    const box2 = $("inspector"); box2.replaceChildren();
+    h("h2", { id: "h-insp" }, "Inspector", box2);
+    $("hood").disabled = !sel; $("zsel").disabled = !sel && !multi.size;
+    if (multi.size > 1) {
+      const ids = [...multi], counts = {};
+      ids.forEach((id) => { const l = N.get(id)?.label; if (l) counts[l] = (counts[l] || 0) + 1; });
+      const bulkBox = h("div", { class: "bulk" }, null, box2);
+      h("b", {}, `${ids.length} nodes selected`, bulkBox);
+      h("div", { class: "hint" }, KINDS.filter((k) => counts[k]).map((k) => `${NAME[k]} ${counts[k]}`).join(" · "), bulkBox);
+      const acts = h("div", { class: "acts" }, null, bulkBox), act = (label, fn, dis) => { const b = h("button", { type: "button" }, label, acts); b.disabled = !!dis; b.addEventListener("click", fn); };
+      const hiddenAll = new Set(ids.flatMap((id) => hiddenNeighbours(id))).size;
+      act(`Expand all (${hiddenAll})`, () => expandMany(ids), !hiddenAll);
+      act("Hide all", () => hideMany(ids));
+      act("Pin all", () => pinMany(ids, true));
+      act("Unpin all", () => pinMany(ids, false), !ids.some((id) => P.get(id)?.fx != null));
+      act("Zoom to selection", zoomSel);
+      act("Clear", () => select(null));
+      h("p", { class: "hint" }, "Shift + click adds or removes a node; Shift + drag adds a box of them.", bulkBox);
+      return;
+    }
+    if (!sel) {
+      h("p", { class: "empty" }, `${shown.length} nodes and ${shownRels.length} relationships in view. Select a node to inspect it.`, box2);
+      h("p", { class: "hint" }, "Drag a node to pin it · double-click to expand · right-click for more · the wheel zooms at the pointer (Mouse settings) · drag the canvas, Space + drag or middle-drag to pan · Shift + drag selects a box · keys: arrows, Enter, Delete, Esc, + − 0 F S R.", box2);
+      return;
+    }
+    const n = N.get(sel), p = P.get(sel), who = h("div", { class: "who" }, null, box2);
+    h("i", { style: `background:${colorOf(n.label)}` }, null, who); h("b", {}, caption(n), who);
+    h("div", { class: "hint" }, NAME[n.label] + (n.doc ? " · Document" : ""), box2);
+    const dl = h("dl", {}, null, box2);
+    const row = (k, v) => { h("dt", {}, k, dl); const dd = h("dd", {}, null, dl); if (k === "url" && http(v)) h("a", { href: v, target: "_blank", rel: "noreferrer noopener" }, v, dd); else dd.textContent = String(v); };
+    Object.entries(n.props).forEach(([k, v]) => row(k, v));
+    row("degree", `${ADJ.get(sel).length} (${VADJ.get(sel).length} in view)`);
+    if (p?.fx != null) row("pinned", "yes");
+    const acts = h("div", { class: "acts" }, null, box2), act = (label, fn, dis) => { const b = h("button", { type: "button" }, label, acts); b.disabled = !!dis; b.addEventListener("click", fn); };
+    if (n.doc?.place === "repo") act("Read", () => read(sel));
+    if (n.doc?.place === "notion" && http(n.doc.url)) act("Open in Notion", () => window.open(n.doc.url, "_blank", "noopener,noreferrer"));
+    if (n.doc) act("Link…", () => linkFrom(sel));
+    if (n.doc?.place === "repo") {
+      const s = h("select", { "aria-label": "Mark" }, null, acts);
+      [["", "unmarked"], ["move_to_notion", "move to Notion"], ["keep_in_repo", "keep in repo"]].forEach(([v, t]) => { const o = h("option", { value: v }, t, s); if ((org.marks[n.id] || "") === v) o.selected = true; });
+      s.addEventListener("change", () => { if (s.value) org.marks[n.id] = s.value; else delete org.marks[n.id]; changed(); });
+    }
+    const hidden = hiddenNeighbours(sel).length;
+    act(`Expand (${hidden})`, () => expand(sel), !hidden);
+    act("Collapse", () => collapse(sel), !exps.get(sel)?.length);
+    act("Hide", () => hide(sel));
+    act(p?.fx != null ? "Unpin" : "Pin", () => pin(sel, p?.fx == null));
+    act(`Only + ${depth}-hop`, () => showOnly(sel));
+    if (pathStart && pathStart !== sel) act("Path to here", () => findPath(pathStart, sel)); else act("Path from here…", () => { pathStart = sel; drawPathbar(); drawInspector(); });
+    if (n.label === "topic") act("Open topic", () => go({ level: "topic", topic: n.topic, group: groupOf(n.topic) }));
+    if (n.label === "bet") act("Open bet", () => go({ level: "group", group: n.props.name }));
+  };
+
+  // ---- results bar: label chips (style), relationship chips (show/hide)
+  let styling = null;
+  const drawChips = () => {
+    const c = $("chips"); c.replaceChildren();
+    const inVis = {}; [...vis].forEach((id) => { const n = N.get(id); if (n) inVis[n.label] = (inVis[n.label] || 0) + 1; });
+    h("span", { class: "chip total" }, `Nodes (${shown.length})`, c);
+    KINDS.filter((k) => inVis[k]).forEach((k) => {
+      const col = colorOf(k), b = h("button", { type: "button", class: "chip lbl", "aria-expanded": String(styling === k), title: `Style ${NAME[k]}` }, `${NAME[k]} (${inVis[k]})`, c);
+      b.style.background = col; b.style.color = inkOn(col); if (labelsOff.has(k)) b.style.opacity = ".45";
+      b.addEventListener("click", () => { styling = styling === k ? null : k; drawChips(); drawStylebar(); });
+    });
+    const types = {}; R.forEach((r) => { if (vis.has(r.from) && vis.has(r.to) && nodeOk(r.from) && nodeOk(r.to)) types[r.type] = (types[r.type] || 0) + 1; });
+    h("span", { class: "chip total" }, `Relationships (${shownRels.length})`, c);
+    Object.entries(types).sort((a, b) => b[1] - a[1]).forEach(([t, n]) => {
+      const b = h("button", { type: "button", class: "chip rel", "aria-pressed": String(!typesOff.has(t)), title: `Show or hide ${t}` }, `${t} (${n})`, c);
+      b.addEventListener("click", () => { if (typesOff.has(t)) typesOff.delete(t); else typesOff.add(t); sync({ reheat: 0.3 }); push(`${typesOff.has(t) ? "hid" : "showed"} ${t}`); });
+    });
+  };
+  const drawStylebar = () => {
+    const bar = $("stylebar"); bar.replaceChildren(); bar.hidden = !styling; if (!styling) return;
+    const k = styling, st = style[k] || {}, set = (patch) => { style[k] = { ...(style[k] || {}), ...patch }; saveStyle(); restyle(); };
+    h("b", {}, NAME[k], bar);
+    const cols = h("span", { role: "group", "aria-label": "Colour" }, "Colour ", bar);
+    SWATCHES.forEach((s) => { const b = h("button", { type: "button", class: "sw", "aria-label": s.replace("-", " "), title: s, "aria-pressed": String(tokenOf(k) === s) }, null, cols); b.style.background = cssVar(s); b.addEventListener("click", () => set({ color: s })); });
+    const sizes = h("span", { role: "group", "aria-label": "Size" }, "Size ", bar), cur = st.size ?? DEFAULT_SIZE[k];
+    ["XS", "S", "M", "L", "XL"].forEach((t, i) => { const b = h("button", { type: "button", class: "sz", "aria-pressed": String(cur === i) }, t, sizes); b.addEventListener("click", () => set({ size: i })); });
+    const caps = h("span", { role: "group", "aria-label": "Caption" }, "Caption ", bar), want = CAPTIONS[k].includes(st.caption) ? st.caption : CAPTIONS[k][0];
+    CAPTIONS[k].forEach((p) => { const b = h("button", { type: "button", class: "cap", "aria-pressed": String(want === p) }, p, caps); b.addEventListener("click", () => set({ caption: p })); });
+    const r = h("button", { type: "button" }, "Default", bar); r.addEventListener("click", () => { delete style[k]; saveStyle(); restyle(); });
+    const x = h("button", { type: "button", "aria-label": "Close style" }, "×", bar); x.addEventListener("click", () => { styling = null; drawChips(); drawStylebar(); });
+  };
+  const restyle = () => { resolved.clear(); for (const n of shown) { const rec = nodeEls.get(n.id); if (rec) paintNode(n, rec); } drawChips(); drawStylebar(); drawFilters(); drawInspector(); heat(0.15); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", restyle);
+
+  // ---- filters panel
+  const drawFilters = () => {
+    const fl = $("f-labels"), ft = $("f-types");
+    [...fl.querySelectorAll("label")].forEach((e) => e.remove()); [...ft.querySelectorAll("label,p")].forEach((e) => e.remove());
+    const total = {}, inVis = {}; N.forEach((n) => { total[n.label] = (total[n.label] || 0) + 1; }); vis.forEach((id) => { const n = N.get(id); if (n) inVis[n.label] = (inVis[n.label] || 0) + 1; });
+    KINDS.filter((k) => total[k]).forEach((k) => {
+      const l = h("label", {}, null, fl), cb = h("input", { type: "checkbox" }, null, l); cb.checked = !labelsOff.has(k);
+      h("i", { style: `background:${colorOf(k)}` }, null, l); l.append(`${NAME[k]} `, h("span", { class: "n" }, `${inVis[k] || 0} / ${total[k]}`));
+      cb.addEventListener("change", () => { if (cb.checked) labelsOff.delete(k); else labelsOff.add(k); sync({ reheat: 0.3 }); push(`${cb.checked ? "showed" : "hid"} ${NAME[k]}`); });
+    });
+    const tt = {}, tv = {}; R.forEach((r) => { tt[r.type] = (tt[r.type] || 0) + 1; }); shownRels.forEach((r) => { tv[r.type] = (tv[r.type] || 0) + 1; });
+    Object.keys(tt).sort().forEach((t) => {
+      const l = h("label", {}, null, ft), cb = h("input", { type: "checkbox" }, null, l); cb.checked = !typesOff.has(t);
+      l.append(`${t} `, h("span", { class: "n" }, `${tv[t] || 0} / ${tt[t]}`));
+      cb.addEventListener("change", () => { if (cb.checked) typesOff.delete(t); else typesOff.add(t); sync({ reheat: 0.3 }); push(`${cb.checked ? "showed" : "hid"} ${t}`); });
+    });
+  };
+  $("depth").addEventListener("input", () => { depth = +$("depth").value; $("depth-out").textContent = String(depth); drawInspector(); });
+  $("hood").addEventListener("click", () => { if (sel) showOnly(sel); });
+
+  const drawNote = () => {
+    const bits = [];
+    // Counted from what is drawn now, so an expansion past the opening cap reads true.
+    const left = capped ? [...wanted].filter((id) => !vis.has(id)).length : 0;
+    if (left) bits.push(`Showing ${shown.length} nodes; ${left} of this view's ${wanted.size} are not drawn yet (it opens on the ${CAP} with the most links). Expand nodes or search to bring them in.`);
+    if (vis.size >= HARD) bits.push(`At the ${HARD}-node limit: hide or collapse nodes to explore further.`);
+    if (labelsOff.size || typesOff.size) bits.push(`Filtered: ${[...labelsOff].map((k) => NAME[k]).concat([...typesOff]).join(", ")} hidden.`);
+    if (!shown.length) bits.push(view.level === "all" && !docs.length ? "No documents yet: set monitoredRepos in the profile." : "Nothing in view. Reset, or pick a bet or topic.");
+    $("gnote").textContent = bits.join(" ");
+  };
+
+  // ---- result views: Graph | Table | Text
+  let tab = "graph", sortBy = { key: "degree", dir: -1 };
+  const tabs = { graph: $("tab-graph"), table: $("tab-table"), text: $("tab-text") };
+  Object.entries(tabs).forEach(([k, b]) => b.addEventListener("click", () => { tab = k; drawTabs(); }));
+  const drawTabs = () => {
+    Object.entries(tabs).forEach(([k, b]) => { b.setAttribute("aria-selected", String(tab === k)); b.tabIndex = tab === k ? 0 : -1; });
+    box.hidden = tab !== "graph"; $("gtable").hidden = tab !== "table"; $("gtext").hidden = tab !== "text";
+    if (tab === "table") drawTable(); if (tab === "text") $("gtext").textContent = viewJson();
+    if (tab === "graph") requestAnimationFrame(drawMini);
+  };
+  $("graph").parentElement.querySelector(".tabs").addEventListener("keydown", (e) => {
+    const order = ["graph", "table", "text"], i = order.indexOf(tab);
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") { tab = order[(i + (e.key === "ArrowRight" ? 1 : 2)) % 3]; drawTabs(); tabs[tab].focus(); e.preventDefault(); }
+  });
+  const nodeRow = (n) => ({ id: n.id, label: NAME[n.label], caption: caption(n), where: n.props.path ? `${n.props.repo} · ${n.props.path}` : n.props.url || n.props.bet || "", topic: n.props.topic || "", degree: ADJ.get(n.id).length, inView: VADJ.get(n.id)?.length || 0 });
+  const drawTable = () => {
+    if (tab !== "table") return;
+    const t = $("gtable"); t.replaceChildren();
+    const cols = [["label", "Label"], ["caption", "Caption"], ["where", "Where"], ["topic", "Topic"], ["degree", "Degree"], ["inView", "In view"]];
+    const rows = shown.map(nodeRow).sort((a, b) => { const x = a[sortBy.key], y = b[sortBy.key]; return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * sortBy.dir; });
+    h("h3", {}, `Nodes (${rows.length})`, t);
+    const tbl = h("table", {}, null, t), hr = h("tr", {}, null, h("thead", {}, null, tbl));
+    cols.forEach(([k, name]) => { const th = h("th", { scope: "col", "aria-sort": sortBy.key === k ? (sortBy.dir > 0 ? "ascending" : "descending") : "none" }, null, hr);
+      h("button", { type: "button" }, name + (sortBy.key === k ? (sortBy.dir > 0 ? " ▲" : " ▼") : ""), th).addEventListener("click", () => { sortBy = { key: k, dir: sortBy.key === k ? -sortBy.dir : (k === "degree" || k === "inView" ? -1 : 1) }; drawTable(); }); });
+    const tb = h("tbody", {}, null, tbl);
+    rows.forEach((r) => { const tr = h("tr", { class: r.id === sel ? "sel" : "" }, null, tb); tr.dataset.id = r.id; cols.forEach(([k]) => h("td", {}, String(r[k]), tr)); });
+    tb.addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) select(tr.dataset.id); });
+    h("h3", {}, `Relationships (${shownRels.length})`, t);
+    const rt = h("table", {}, null, t), rh = h("tr", {}, null, h("thead", {}, null, rt));
+    ["Type", "From", "To"].forEach((c) => h("th", { scope: "col" }, c, rh));
+    const rb = h("tbody", {}, null, rt);
+    shownRels.slice().sort((a, b) => a.type.localeCompare(b.type)).forEach((r) => { const tr = h("tr", {}, null, rb);
+      h("td", {}, r.type, tr); h("td", {}, caption(N.get(r.from)), tr); h("td", {}, caption(N.get(r.to)), tr); });
+  };
+  const viewJson = () => JSON.stringify({
+    nodes: shown.map((n) => ({ id: n.id, labels: n.doc ? ["Document", NAME[n.label]] : [NAME[n.label]], properties: n.props })),
+    relationships: shownRels.map((r) => ({ type: r.type, from: r.from, to: r.to })),
+  }, null, 2);
+
+  // ---- export: SVG, PNG, the node list
+  const exportSvg = () => {
+    const bb = bounds(onScreen); if (!bb) return null;
+    const pad = 30, x = bb.x0 - pad, y = bb.y0 - pad, w = Math.ceil(bb.w + 2 * pad), hh = Math.ceil(bb.h + 2 * pad);
+    const c = svg.cloneNode(true);
+    c.removeAttribute("class"); c.removeAttribute("aria-hidden");
+    c.setAttribute("xmlns", NS); c.setAttribute("viewBox", `${x} ${y} ${w} ${hh}`); c.setAttribute("width", w); c.setAttribute("height", hh);
+    c.querySelector(".vp").removeAttribute("transform");
+    c.querySelectorAll(".on").forEach((e) => e.classList.remove("on"));
+    c.querySelectorAll("title").forEach((e) => e.remove());
+    // A file outside the page has no tokens: write their resolved values in.
+    const v = (k) => cssVar(k);
+    c.setAttribute("font-family", getComputedStyle(document.body).fontFamily);
+    const st = svgEl("style"); st.textContent = `.node text{text-anchor:middle;dominant-baseline:central}.node .body{stroke-width:2}.halo{fill:none;stroke:none}.node.sel .halo{stroke:${v("ring")};stroke-width:9;stroke-opacity:.45}.node.path .halo{stroke:${v("success")};stroke-width:7;stroke-opacity:.7}.rel .line{fill:none;stroke:${v("chart-axis")};stroke-width:1.4}.rel .arrow{fill:${v("chart-axis")}}.rel.mine .line{stroke:${v("brand-text")}}.rel.mine .arrow{fill:${v("brand-text")}}.rel.path .line{stroke:${v("success")};stroke-width:3.5}.rel.path .arrow{fill:${v("success")}}.rel text{fill:${v("muted-foreground")};paint-order:stroke;stroke:${v("background")};stroke-width:3;stroke-linejoin:round;text-anchor:middle;dominant-baseline:central}`;
+    c.insertBefore(st, c.firstChild);
+    c.insertBefore(svgEl("rect", { x, y, width: w, height: hh, fill: v("background") }), st.nextSibling);
+    return { text: new XMLSerializer().serializeToString(c), w, h: hh };
+  };
+  const download = (blob, name) => { const url = URL.createObjectURL(blob), a = h("a", { href: url, download: name }, null, document.body); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000); };
+  $("exp-svg").addEventListener("click", () => { const s = exportSvg(); if (!s) return say("Nothing to export."); download(new Blob([s.text], { type: "image/svg+xml" }), "docs-graph.svg"); say("Exported the view as SVG."); });
+  $("exp-png").addEventListener("click", () => {
+    const s = exportSvg(); if (!s) return say("Nothing to export.");
+    const scale = Math.min(2, 8000 / Math.max(s.w, s.h)), img = new Image();
+    img.onload = () => { const cv = h("canvas"); cv.width = Math.round(s.w * scale); cv.height = Math.round(s.h * scale);
+      cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+      cv.toBlob((b) => { if (b) { download(b, "docs-graph.png"); say("Exported the view as PNG."); } else say("PNG export failed."); }, "image/png"); };
+    img.onerror = () => say("PNG export failed.");
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(s.text);
+  });
+  $("copy").addEventListener("click", () => {
+    const text = JSON.stringify(shown.map((n) => ({ id: n.id, label: NAME[n.label], ...n.props })), null, 2);
+    const fallback = () => { tab = "text"; drawTabs(); $("gtext").textContent = text; const r = document.createRange(); r.selectNodeContents($("gtext")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); $("gtext").focus(); say("Copy was blocked; the node list is selected in the Text view, copy it from there."); };
+    if (!navigator.clipboard?.writeText) return fallback();
+    navigator.clipboard.writeText(text).then(() => say(`Copied ${shown.length} nodes as JSON.`), fallback);
+  });
+
+  // ---- keyboard
+  const DIRS = { ArrowRight: [1, 0], ArrowLeft: [-1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  const stepTo = (key) => {
+    if (!shown.length) return;
+    if (!sel) { const top = shown.slice().sort(byDeg)[0]; select(top.id); setHover(top.id); return; }
+    const [ux, uy] = DIRS[key], p = P.get(sel);
+    const pick = (ids) => { let best = null, score = Infinity;
+      for (const id of ids) { const q = P.get(id); if (!q || id === sel) continue; const dx = q.x - p.x, dy = q.y - p.y, l = Math.hypot(dx, dy) || 1, dot = (dx * ux + dy * uy) / l;
+        if (dot < 0.35) continue; const s = l * (2.2 - dot); if (s < score) { score = s; best = id; } }
+      return best; };
+    const next = pick((VADJ.get(sel) || []).map((r) => other(r, sel))) || pick(onScreen);
+    if (next) { select(next); setHover(next); }
+  };
+  box.addEventListener("keydown", (e) => {
+    if (menu && menu.contains(e.target)) return;
+    const k = e.key;
+    if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "z") { if (e.shiftKey) forward(); else back(); }
+    else if (k === "Escape") { closeMenu(); pathStart = null; drawPathbar(); setHover(null); select(null); }
+    else if (k === "+" || k === "=") zoomAt(1.25);
+    else if (k === "-" || k === "_") zoomAt(0.8);
+    else if (k === "0" && !e.ctrlKey && !e.metaKey) zoomTo(1);
+    else if (k === "f" || k === "F") fit(null, e.shiftKey);
+    else if ((k === "s" || k === "S") && !e.ctrlKey && !e.metaKey && (sel || multi.size)) zoomSel();
+    else if ((k === "r" || k === "R") && !e.ctrlKey && !e.metaKey && sel && byId[sel]) read(sel);
+    else if ((k === "[" || k === "]") && !e.ctrlKey && !e.metaKey && readMode) { if (!stepDoc(k)) return; }
+    else if (DIRS[k]) stepTo(k);
+    else if (k === "Enter" && multi.size) expandMany([...multi]);
+    else if ((k === "Delete" || k === "Backspace") && multi.size) hideMany([...multi]);
+    else if (k === "Enter" && sel) expand(sel);
+    else if ((k === "Delete" || k === "Backspace") && sel) hide(sel);
+    else if ((k === "ContextMenu" || (k === "F10" && e.shiftKey)) && sel) { const p = P.get(sel), b = svg.getBoundingClientRect(); openMenu(sel, b.left + p.x * T.k + T.x, b.top + p.y * T.k + T.y); }
+    else return;
+    e.preventDefault();
+  });
+
+  // ---- mini-map
+  const drawMini = () => {
+    const b = svg.getBoundingClientRect(), bb = bounds(onScreen);
+    const big = bb && b.width && (bb.w * T.k > b.width + 2 || bb.h * T.k > b.height + 2 || bb.x0 * T.k + T.x < 0 || bb.y0 * T.k + T.y < 0 || (bb.x0 + bb.w) * T.k + T.x > b.width || (bb.y0 + bb.h) * T.k + T.y > b.height);
+    mini.hidden = !big || tab !== "graph"; if (mini.hidden) return;
+    const W = 170, H = 112, dpr = window.devicePixelRatio || 1;
+    if (mini.width !== W * dpr) { mini.width = W * dpr; mini.height = H * dpr; }
+    const ctx = mini.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    const vx = -T.x / T.k, vy = -T.y / T.k, vw = b.width / T.k, vh = b.height / T.k;
+    const x0 = Math.min(bb.x0, vx), y0 = Math.min(bb.y0, vy), x1 = Math.max(bb.x0 + bb.w, vx + vw), y1 = Math.max(bb.y0 + bb.h, vy + vh);
+    const s = Math.min((W - 8) / (x1 - x0), (H - 8) / (y1 - y0)), ox = 4 - x0 * s + ((W - 8) - (x1 - x0) * s) / 2, oy = 4 - y0 * s + ((H - 8) - (y1 - y0) * s) / 2;
+    mini.dataset.s = s; mini.dataset.ox = ox; mini.dataset.oy = oy;
+    for (const n of shown) { const p = P.get(n.id), r = nodeEls.get(n.id)?.r || 18; ctx.fillStyle = colorOf(n.label); ctx.beginPath(); ctx.arc(p.x * s + ox, p.y * s + oy, Math.max(1.2, r * s), 0, 7); ctx.fill(); }
+    ctx.strokeStyle = cssVar("ring"); ctx.lineWidth = 1.5; ctx.strokeRect(vx * s + ox, vy * s + oy, vw * s, vh * s);
+  };
+  const miniPan = (e) => { const s = +mini.dataset.s, ox = +mini.dataset.ox, oy = +mini.dataset.oy; if (!s) return; const r = mini.getBoundingClientRect(), b = svg.getBoundingClientRect();
+    const gx = (e.clientX - r.left - ox) / s, gy = (e.clientY - r.top - oy) / s; T.x = b.width / 2 - gx * T.k; T.y = b.height / 2 - gy * T.k; applyT(); };
+  mini.addEventListener("pointerdown", (e) => { e.stopPropagation(); mini.setPointerCapture(e.pointerId); miniPan(e); mini.onpointermove = miniPan; });
+  mini.addEventListener("pointerup", () => { mini.onpointermove = null; });
+  window.addEventListener("resize", () => drawMini());
+
+  // ---- breadcrumbs and the suggestion button
+  const drawCrumbs = () => {
+    const parts = [`<button type="button" data-go="all">All bets</button>`];
+    if (view.group) parts.push(`› <button type="button" data-go="group">${esc(view.group)}</button>`);
+    if (view.level === "topic") parts.push(`› <b>${esc(view.group === MINE ? view.topic : view.topic.split(" · ").slice(1).join(" · ") || view.topic)}</b>`);
+    if (query) parts.push(`· search “${esc(query)}”`);
+    $("crumbs").innerHTML = parts.join(" ");
+    const pool = viewDocs().filter((d) => d.place === "repo" && d.suggest && !org.marks[d.id]);
+    $("accept").hidden = !pool.length;
+    $("accept").textContent = `Accept ${pool.length} suggestion${pool.length > 1 ? "s" : ""}`;
+  };
+  $("crumbs").addEventListener("click", (e) => { const b = e.target.closest("[data-go]"); if (!b) return;
+    if (b.dataset.go === "all") go({ level: "all" }); else go({ level: "group", group: view.group }); });
+  $("accept").addEventListener("click", () => {
+    viewDocs().filter((d) => d.place === "repo" && d.suggest && !org.marks[d.id]).forEach((d) => { org.marks[d.id] = d.suggest; });
+    changed();
+  });
+
+  // ---- the documents in view, one line each
+  const viewDocs = () => query
+    ? docs.filter((d) => `${d.title} ${d.path || ""} ${topicOf(d)}`.toLowerCase().includes(query))
+    : view.level === "topic" ? docsIn((d) => topicOf(d) === view.topic)
+    : view.level === "group" ? docsIn((d) => groupOf(topicOf(d)) === view.group) : [];
+  const allTopics = () => groups().flatMap((g) => topicsIn(g).map(([t]) => t));
+  const linkCount = (d) => (d.links || []).length + docs.filter((x) => (x.links || []).includes(d.id)).length;
+  const drawRows = () => {
+    const ds = viewDocs().map((d) => [d, linkCount(d)]).sort((a, b) => b[1] - a[1]).slice(0, 200).map(([d]) => d);
+    if (!ds.length) { $("rows").innerHTML = `<p class="empty">${query ? "Nothing matches." : view.level === "all" ? "Pick a bet or a topic on the left, or search." : "No documents here yet. Drag one in."}</p>`; return; }
+    const names = allTopics();
+    $("rows").innerHTML = `<div class="row head"><span>Document</span><span>Where</span><span>Mark</span><span>Topic</span><span></span></div>` + ds.map((d) => {
+      const st = status(d), hint = !org.marks[d.id] && d.suggest ? `<div class="hint">suggest: ${d.suggest === "move_to_notion" ? "move" : "keep"}</div>` : "";
+      return `<div class="row" draggable="true" data-id="${esc(d.id)}">
+        <div class="t"><button type="button" data-read="${esc(d.id)}" title="${esc(d.title)}">${esc(d.title)}</button><div class="p" title="${esc(d.path || d.url || "")}">${esc(d.repo ? `${d.repo} · ${d.path}` : d.url || "")}</div></div>
+        <div><span class="badge ${st}">${esc(LABEL[st])}</span>${hint}</div>
+        <div>${d.place === "repo" ? `<label class="sr" for="m-${esc(d.id)}">Mark</label><select id="m-${esc(d.id)}" data-mark="${esc(d.id)}">
+          <option value="">unmarked</option><option value="move_to_notion" ${org.marks[d.id] === "move_to_notion" ? "selected" : ""}>move to Notion</option>
+          <option value="keep_in_repo" ${org.marks[d.id] === "keep_in_repo" ? "selected" : ""}>keep in repo</option></select>` : ""}</div>
+        <div><label class="sr" for="t-${esc(d.id)}">Topic</label><select id="t-${esc(d.id)}" data-move="${esc(d.id)}">${names.map((n) => `<option value="${esc(n)}" ${n === topicOf(d) ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></div>
+        <div><button type="button" data-link="${esc(d.id)}">Link…</button></div></div>`; }).join("");
+  };
+  $("rows").addEventListener("dragstart", (e) => { const r = e.target.closest("[data-id]"); if (r) e.dataTransfer.setData("text/plain", r.dataset.id); });
+  $("rows").addEventListener("change", (e) => { const t = e.target;
+    if (t.dataset.mark !== undefined) { if (t.value) org.marks[t.dataset.mark] = t.value; else delete org.marks[t.dataset.mark]; changed(); }
+    if (t.dataset.move !== undefined) place(t.dataset.move, t.value); });
+  $("rows").addEventListener("click", (e) => { const r = e.target.closest("[data-read]"); if (r) return read(r.dataset.read);
+    const l = e.target.closest("[data-link]"); if (l) linkFrom(l.dataset.link); });
+
+  // ---- your own links
+  const linkFrom = (from) => {
+    const others = docs.filter((d) => d.id !== from).sort((a, b) => a.title.localeCompare(b.title));
+    const mine = org.links.filter((l) => l.from === from), lp = $("linkpanel");
+    if (readMode) closeReader();
+    lp.hidden = false;
+    lp.innerHTML = `<div class="bar"><h2 id="h-link">Link from</h2><button type="button" id="link-close" aria-label="Close the link form">×</button></div><p><b>${esc(byId[from].title)}</b></p>
+      <form id="link-form" class="link-form">
+        <label>to <select id="link-to">${others.map((d) => `<option value="${esc(d.id)}">${esc(d.title)} · ${esc(d.group)}</option>`).join("")}</select></label>
+        <label>as <input id="link-kind" value="depends on" list="link-kinds"></label>
+        <datalist id="link-kinds"><option>depends on</option><option>supersedes</option><option>explains</option><option>same topic</option></datalist>
+        <button type="submit">Add link</button></form>
+      <h2 class="spaced">Its links</h2><ul>${mine.map((l, i) => `<li>${esc(l.kind)} → ${esc(byId[l.to]?.title || l.to)} <button type="button" data-unlink="${i}">remove</button></li>`).join("") || `<li class="empty">None of yours yet.</li>`}</ul>`;
+    $("link-close").addEventListener("click", () => { lp.hidden = true; lp.replaceChildren(); });
+    $("link-form").addEventListener("submit", (e) => { e.preventDefault(); org.links.push({ from, to: $("link-to").value, kind: $("link-kind").value.trim() || "links" }); changed(); linkFrom(from); });
+    lp.querySelectorAll("[data-unlink]").forEach((b) => b.addEventListener("click", () => { org.links.splice(org.links.indexOf(mine[+b.dataset.unlink]), 1); changed(); linkFrom(from); }));
+  };
+
+  // ---- reader: the document rendered (marked, then DOMPurify), wide beside the graph or full screen
+  const READ_KEY = "cos.docs.reader.v1";
+  let rs = { mode: "wide", split: 36, graph: true };
+  try { rs = { ...rs, ...(JSON.parse(localStorage.getItem(READ_KEY) || "{}") || {}) }; } catch { /* storage blocked: defaults */ }
+  if (!["wide", "focus"].includes(rs.mode)) rs.mode = "wide";
+  rs.split = clamp(+rs.split || 36, 15, 70);
+  const saveRs = () => { try { localStorage.setItem(READ_KEY, JSON.stringify(rs)); } catch { /* storage blocked: lasts this visit */ } };
+  let readingId = null, readMode = null, focusFromWide = false, io = null;
+  const texts = new Map(), room = document.querySelector(".room"), reader = $("reader"), split = $("split");
+  const WIDE = matchMedia("(min-width: 71.9rem)");
+  const MD = window.marked && new window.marked.Marked({ gfm: true, breaks: false, async: false });
+  const decodeSafe = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+  const slugify = (s) => String(s).toLowerCase().trim().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s+/g, "-") || "section";
+  const dirOf = (p) => p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "";
+  // A link or image path inside the repo, from the document's folder; null once it climbs out.
+  const joinPath = (base, rel) => {
+    const out = [];
+    for (const s of (rel.startsWith("/") ? rel.slice(1) : base + rel).split("/")) {
+      if (s === "" || s === ".") continue;
+      if (s === "..") { if (!out.length) return null; out.pop(); } else out.push(s);
+    }
+    return out.join("/");
+  };
+  const docHash = (id, sec) => `#doc=${encodeURIComponent(id)}${sec ? `&sec=${encodeURIComponent(sec)}` : ""}`;
+  const siblings = (d) => docs.filter((x) => topicOf(x) === topicOf(d)).sort((a, b) => (a.path || a.title).localeCompare(b.path || b.title));
+  // Untrusted text: no scripts, styles, forms, frames or embedded SVG; ids, names and classes
+  // the page could collide with are dropped (a code block keeps its language class).
+  const PURIFY = { RETURN_DOM_FRAGMENT: true, ALLOW_DATA_ATTR: false,
+    FORBID_TAGS: ["style", "form", "button", "textarea", "select", "option", "iframe", "frame", "frameset", "object", "embed", "link", "meta", "base", "video", "audio", "source", "track", "picture", "svg", "math", "dialog"],
+    FORBID_ATTR: ["style", "id", "name", "srcset", "formaction", "ping", "target", "autofocus", "tabindex"] };
+  const renderMd = (text, d) => {
+    let src = String(text).replace(/^\uFEFF/, ""), front = null;
+    const fm = /^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)\r?\n/.exec(src);
+    if (fm) { front = fm[1]; src = src.slice(fm[0].length); }
+    const frag = window.DOMPurify.sanitize(MD.parse(src), PURIFY);
+    frag.querySelectorAll("[class]").forEach((el) => {
+      const keep = el.tagName === "CODE" ? [...el.classList].filter((c) => /^language-[\w+#.-]+$/.test(c)) : [];
+      if (keep.length) el.className = keep.join(" "); else el.removeAttribute("class");
+    });
+    frag.querySelectorAll("input").forEach((el) => {
+      if (el.type !== "checkbox") { el.remove(); return; }
+      el.disabled = true; el.setAttribute("aria-label", el.checked ? "done" : "not done"); el.closest("li")?.classList.add("task");
+    });
+    frag.querySelectorAll("pre > code").forEach((c) => {
+      const lang = (/language-([\w+#.-]+)/.exec(c.className) || [])[1]; if (!lang) return;
+      c.parentElement.insertBefore(h("span", { class: "fence" }, lang === "mermaid" ? "mermaid · diagram source, not drawn here" : lang), c);
+    });
+    const heads = [], used = new Map();
+    frag.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((el) => {
+      let s = slugify(el.textContent); const n = used.get(s) || 0; used.set(s, n + 1); if (n) s += `-${n}`;
+      const lvl = +el.tagName[1], label = el.textContent.trim();
+      el.id = `sec-${s}`; el.dataset.sec = s;
+      if (lvl <= 4) { heads.push({ s, lvl, text: label }); const a = h("a", { class: "anchor", href: docHash(d.id, s), "aria-label": `Link to ${label}` }, "#", el); a.dataset.sec = s; }
+    });
+    const unlink = (a, why) => { a.removeAttribute("href"); a.classList.add("unknown"); a.title = why; };
+    frag.querySelectorAll("a:not([href])").forEach((a) => unlink(a, "Link removed: its address is not safe to open"));
+    frag.querySelectorAll("a[href]").forEach((a) => {
+      if (a.classList.contains("anchor")) return;
+      const raw = a.getAttribute("href").trim();
+      if (raw.startsWith("#")) { const s = slugify(decodeSafe(raw.slice(1))); a.dataset.sec = s; a.href = docHash(d.id, s); return; }
+      if (/^(https?:|mailto:)/i.test(raw) || raw.startsWith("//")) {
+        if (raw.startsWith("//")) a.href = `https:${raw}`;
+        if (!/^mailto:/i.test(raw)) { a.target = "_blank"; a.classList.add("ext"); }
+        a.rel = "noreferrer noopener"; return;
+      }
+      if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) { unlink(a, `Not opened here: a ${raw.split(":")[0]} link`); return; }
+      const cut = raw.indexOf("#"), pathPart = (cut < 0 ? raw : raw.slice(0, cut)).split("?")[0], sec = cut < 0 ? "" : raw.slice(cut + 1);
+      const target = d.repo && pathPart ? joinPath(dirOf(d.path), decodeSafe(pathPart)) : null, base = target && `${d.repo}:${target.replace(/\/$/, "")}`;
+      const hit = base && [base, `${base}.md`, `${base}/README.md`, `${base}/readme.md`].find((x) => byId[x]);
+      if (!hit) {
+        const out = target != null && (d.outside || []).find((x) => x === target || x === `${target.replace(/\/$/, "")}/`);
+        const url = out && ghUrl(d.repo, out);
+        if (url) { a.href = url; a.target = "_blank"; a.rel = "noreferrer noopener"; a.classList.add("ext"); a.title = `Not a document in the room; opens ${d.repo}/${out} on GitHub`; return; }
+        if (out) { unlink(a, `${d.repo}/${out} is in the repo, not in the room, and cannot open on GitHub: ${GH[d.repo]?.why || "no GitHub remote"}`); return; }
+        unlink(a, target ? `Not in the documentation room: ${d.repo}/${target}` : `Outside the repo: ${raw}`); return;
+      }
+      a.classList.add("doc"); a.dataset.doc = hit; if (sec) a.dataset.sec = slugify(decodeSafe(sec));
+      a.href = docHash(hit, a.dataset.sec); a.title = `Open “${byId[hit].title}” here and select it in the graph`;
+    });
+    frag.querySelectorAll("img").forEach((img) => {
+      const raw = (img.getAttribute("src") || "").trim(), alt = (img.getAttribute("alt") || "").trim();
+      const ph = (why) => img.replaceWith(h("span", { class: "imgph", title: raw }, `${alt || "image"} (${why})`));
+      if (/^data:image\/(png|jpe?g|gif|webp|avif)[;,]/i.test(raw)) return;
+      if (/^(https?:)?\/\//i.test(raw)) { ph("an external image, not loaded"); return; }
+      if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || !d.repo || !raw) { ph("not shown"); return; }
+      const p = joinPath(dirOf(d.path), decodeSafe(raw.split(/[?#]/)[0]));
+      if (!p) { ph("outside the repo"); return; }
+      if (!/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(p)) { ph("not an image the reader shows"); return; }
+      img.addEventListener("error", () => ph(`could not load ${p}`), { once: true });
+      img.loading = "lazy"; img.decoding = "async"; img.src = `/docs/asset?id=${encodeURIComponent(`${d.repo}:${p}`)}`;
+    });
+    if (front) { const det = h("details", { class: "front" }); h("summary", {}, "Front matter", det); h("pre", {}, front, det); frag.insertBefore(det, frag.firstChild); }
+    return { frag, heads };
+  };
+  const scrollToSec = (s) => {
+    const body = reader.querySelector(".rbody"), el = s && reader.querySelector(`#sec-${CSS.escape(s)}`); if (!body || !el) return;
+    body.scrollTo({ top: body.scrollTop + el.getBoundingClientRect().top - body.getBoundingClientRect().top - 8, behavior: REDUCED() ? "auto" : "smooth" });
+  };
+  const drawToc = (toc, heads, body, art) => {
+    io?.disconnect(); io = null;
+    const show = heads.filter((x) => x.lvl <= 3); if (show.length < 2) return false;
+    const top = Math.min(...show.map((x) => x.lvl));
+    h("h3", {}, "On this page", toc);
+    const links = new Map();
+    show.forEach((x) => { const a = h("a", { href: docHash(readingId, x.s), class: `l${x.lvl - top + 2}` }, x.text, toc); a.dataset.sec = x.s; links.set(x.s, a); });
+    io = new IntersectionObserver((ents) => {
+      const on = ents.find((en) => en.isIntersecting); if (!on) return;
+      links.forEach((a) => a.classList.remove("on")); links.get(on.target.dataset.sec)?.classList.add("on");
+    }, { root: body, rootMargin: "0px 0px -75% 0px" });
+    art.querySelectorAll("h1[data-sec],h2[data-sec],h3[data-sec]").forEach((el) => io.observe(el));
+    return true;
+  };
+  const layout = () => {
+    const wide = readMode === "wide";
+    room.classList.toggle("reading", wide); room.classList.toggle("nograph", wide && !rs.graph);
+    reader.hidden = !readMode; reader.classList.toggle("focus", readMode === "focus");
+    document.body.classList.toggle("focusing", readMode === "focus");
+    room.style.gridTemplateColumns = wide && WIDE.matches
+      ? (rs.graph ? `minmax(0,${rs.split.toFixed(1)}fr) 0.5rem minmax(0,${(100 - rs.split).toFixed(1)}fr)` : "minmax(0,1fr)") : "";
+    split.setAttribute("aria-valuenow", String(Math.round(rs.split)));
+    requestAnimationFrame(drawMini);
+  };
+  WIDE.addEventListener("change", layout);
+  split.addEventListener("pointerdown", (e) => {
+    e.preventDefault(); try { split.setPointerCapture(e.pointerId); } catch { /* the pointer already left */ }
+    split.classList.add("drag");
+    split.onpointermove = (ev) => { const r = room.getBoundingClientRect(); rs.split = clamp((ev.clientX - r.left) / r.width * 100, 15, 70); layout(); };
+    split.onpointerup = split.onpointercancel = () => { split.onpointermove = null; split.classList.remove("drag"); saveRs(); };
+  });
+  split.addEventListener("keydown", (e) => { const d = e.key === "ArrowLeft" ? -5 : e.key === "ArrowRight" ? 5 : 0; if (!d) return;
+    e.preventDefault(); rs.split = clamp(rs.split + d, 15, 70); layout(); saveRs(); });
+  split.addEventListener("dblclick", () => { rs.split = 36; layout(); saveRs(); });
+  // Brings a document into the graph (with its topic) if it is not drawn, then selects it.
+  const showInGraph = (id) => {
+    const n = N.get(id); if (!n) return;
+    if (labelsOff.has(n.label)) { say(`${caption(n)} is hidden by the ${NAME[n.label]} filter.`); return; }
+    if (!vis.has(id) && vis.size < HARD) {
+      const t = TOPIC(topicOf(byId[id]));
+      if (N.has(t)) vis.add(t);
+      vis.add(id); if (!P.has(id)) { const p = near(t); if (p) P.set(id, p); }
+      sync({ reheat: 0.2 }); push(`read ${caption(n)}`);
+    }
+    select(id, { center: true });
+  };
+  const setMode = (m) => {
+    if (m === "focus" && readMode !== "focus") focusFromWide = readMode === "wide";
+    const top = reader.querySelector(".rbody")?.scrollTop || 0;
+    readMode = m; rs.mode = m; saveRs(); layout();
+    if (readingId) { drawReader(byId[readingId]); const b = reader.querySelector(".rbody"); if (b) b.scrollTop = top; }
+    if (m === "focus") reader.focus({ preventScroll: true });
+  };
+  const closeReader = () => {
+    readMode = null; readingId = null; io?.disconnect(); io = null; layout(); reader.replaceChildren();
+    history.replaceState(null, "", location.pathname + location.search);
+  };
+  const openReader = (id, { mode, sec } = {}) => {
+    const d = byId[id]; if (!d) return;
+    current = readingId = id;
+    const m = mode || readMode || rs.mode;
+    if (m === "focus" && readMode !== "focus") focusFromWide = readMode === "wide";
+    readMode = m; layout();
+    showInGraph(id);
+    drawReader(d, sec);
+    history.replaceState(null, "", docHash(id, sec));
+    if (m === "focus") reader.focus({ preventScroll: true });
+  };
+  const drawReader = async (d, sec) => {
+    reader.replaceChildren();
+    const head = h("div", { class: "rhead" }, null, reader);
+    const crumb = h("nav", { class: "rcrumb", "aria-label": "Where this document sits" }, null, head);
+    const t = topicOf(d), g = groupOf(t);
+    h("button", { type: "button", title: `Open the bet ${g} in the graph` }, g, crumb).addEventListener("click", () => go({ level: "group", group: g }));
+    crumb.append("›");
+    h("button", { type: "button", title: "Open this topic in the graph" }, shortTopic(t), crumb).addEventListener("click", () => go({ level: "topic", topic: t, group: g }));
+    crumb.append("›");
+    h("h2", { id: "h-reader", class: "sr" }, `Reader: ${d.title}`, crumb); h("b", { "aria-hidden": "true" }, d.title, crumb);
+    const acts = h("div", { class: "racts", role: "toolbar", "aria-label": "Reader" }, null, head);
+    const act = (label, title, fn, dis) => { const b = h("button", { type: "button", title }, label, acts); b.disabled = !!dis; b.addEventListener("click", fn); return b; };
+    const sib = siblings(d), i = sib.indexOf(d), prev = sib[i - 1], next = sib[i + 1];
+    act("← Prev", prev ? `Previous in ${shortTopic(t)}: ${prev.title} ([)` : "The first document in this topic", () => openReader(prev.id), !prev);
+    h("span", { class: "dim" }, `${i + 1} of ${sib.length}`, acts);
+    act("Next →", next ? `Next in ${shortTopic(t)}: ${next.title} (])` : "The last document in this topic", () => openReader(next.id), !next);
+    h("span", { class: "sep" }, null, acts);
+    act("Show in graph", "Select this document in the graph", () => {
+      if (readMode === "focus") setMode("wide");
+      if (!rs.graph) { rs.graph = true; saveRs(); setMode("wide"); }
+      showInGraph(d.id); box.focus({ preventScroll: true });
+    });
+    const page = d.place === "notion" ? d.url : inNotion[d.id]?.replace(/^notion:/, "");
+    if (page && http(page)) h("a", { href: page, target: "_blank", rel: "noreferrer noopener" }, "Open in Notion", acts);
+    if (d.repo && d.path) {
+      const gh = ghUrl(d.repo, d.path);
+      if (gh) h("a", { href: gh, target: "_blank", rel: "noreferrer noopener", title: `${d.repo}/${d.path} at ${GH[d.repo].branch}` }, "Open on GitHub", acts);
+      else {
+        // aria-disabled, not disabled: a disabled button shows no tooltip, and the reason is the point.
+        const why = `Cannot open on GitHub: ${GH[d.repo]?.why || "no GitHub remote"}`;
+        act("Open on GitHub", why, () => say(why)).setAttribute("aria-disabled", "true");
+      }
+    }
+    h("span", { class: "sep" }, null, acts);
+    if (readMode === "wide") act(rs.graph ? "Hide graph" : "Show graph", rs.graph ? "Give the whole width to the text" : "Put the graph back beside the text", () => { rs.graph = !rs.graph; saveRs(); setMode("wide"); });
+    act(readMode === "focus" ? "Exit full screen" : "Full screen", readMode === "focus" ? "Back to the graph beside the text (Esc)" : "Read full screen; Esc comes back", () => setMode(readMode === "focus" ? "wide" : "focus"));
+    act("×", "Close the reader (Esc)", closeReader).setAttribute("aria-label", "Close the reader");
+    const meta = h("p", { class: "rmeta" }, null, reader);
+    meta.append(h("span", { class: `badge ${status(d)}` }, LABEL[status(d)]), ` ${d.repo ? `${d.repo} · ${d.path}` : d.url || ""}`);
+    const body = h("div", { class: "rbody" }, null, reader), toc = h("nav", { class: "toc", "aria-label": "Contents" }, null, body);
+    const art = h("article", { class: "prose", "aria-labelledby": "h-reader" }, null, body);
+    const noToc = () => { body.classList.add("notoc"); toc.remove(); };
+    if (d.place === "notion") { noToc(); h("p", { class: "empty" }, `${d.group} · a Notion page. Open it in Notion to read it.`, art); return; }
+    if (!MD || !window.DOMPurify) { noToc(); h("p", { class: "empty" }, "The markdown renderer did not load, so this page cannot show documents.", art); return; }
+    let text = texts.get(d.id);
+    if (text == null) {
+      h("p", { class: "empty" }, "Loading…", art);
+      try { const r = await fetch(`/docs/read?id=${encodeURIComponent(d.id)}`); if (!r.ok) throw new Error(await r.text()); text = await r.text(); texts.set(d.id, text); }
+      catch (e) {
+        if (readingId !== d.id) return;
+        noToc(); art.replaceChildren(h("p", { class: "empty" }, `Could not read ${d.path}: ${e.message}`));
+        h("button", { type: "button" }, "Try again", art).addEventListener("click", () => drawReader(d, sec));
+        return;
+      }
+      if (readingId !== d.id) return;
+    }
+    const { frag, heads } = renderMd(text, d);
+    art.replaceChildren(frag);
+    if (!drawToc(toc, heads, body, art)) noToc();
+    if (sec) requestAnimationFrame(() => scrollToSec(sec));
+  };
+  // `[` / `]`: the previous or next document in the reading topic; false when there is none.
+  const stepDoc = (key) => {
+    if (!readingId) return false;
+    const d = byId[readingId], s = siblings(d), n = s[s.indexOf(d) + (key === "]" ? 1 : -1)];
+    if (n) openReader(n.id);
+    return !!n;
+  };
+  reader.tabIndex = -1;
+  reader.addEventListener("click", (e) => {
+    const a = e.target.closest("a"); if (!a || !reader.contains(a) || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+    if (a.dataset.doc) { e.preventDefault(); openReader(a.dataset.doc, { sec: a.dataset.sec }); say(`Opened ${byId[a.dataset.doc].title}; it is selected in the graph.`); return; }
+    if (a.dataset.sec) { e.preventDefault(); scrollToSec(a.dataset.sec); history.replaceState(null, "", docHash(readingId, a.dataset.sec)); }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!readMode || e.defaultPrevented || box.contains(e.target) || (menu && menu.contains(e.target)) || typing(e.target)) return;
+    if (e.key === "Escape") { e.preventDefault(); if (readMode === "focus" && focusFromWide) setMode("wide"); else closeReader(); }
+    else if ((e.key === "[" || e.key === "]") && !e.ctrlKey && !e.metaKey && stepDoc(e.key)) e.preventDefault();
+  });
+  const read = (id) => openReader(id);
+  // #doc=<id>[&sec=<section>][&mode=wide|focus]
+  const hashDoc = () => {
+    const m = /^#doc=([^&]+)((?:&[a-z]+=[^&]*)*)$/.exec(location.hash); if (!m) return null;
+    const p = new URLSearchParams(m[2].slice(1)), mode = p.get("mode");
+    return { id: decodeSafe(m[1]), sec: p.get("sec") || undefined, mode: ["wide", "focus"].includes(mode) ? mode : undefined };
+  };
+  window.addEventListener("hashchange", () => { const want = hashDoc(); if (want && byId[want.id]) openReader(want.id, { sec: want.sec, mode: want.mode }); });
+
+  const go = (v) => { view = v; current = null; render(); resetGraph(true); };
+  const render = () => { drawNav(); drawCrumbs(); drawRows(); };
+  const linked = decodeURIComponent((location.hash.match(/^#topic=(.+)$/) || [])[1] || "");
+  const linkedGroup = decodeURIComponent((location.hash.match(/^#group=(.+)$/) || [])[1] || "");
+  const linkedDoc = hashDoc();
+  // #select=<id>: the document's topic, with it selected and no reader open.
+  const linkedSel = decodeSafe((location.hash.match(/^#select=(.+)$/) || [])[1] || "");
+  buildModel();
+  if (linkedDoc && byId[linkedDoc.id]) { const t = topicOf(byId[linkedDoc.id]); view = { level: "topic", topic: t, group: groupOf(t) }; }
+  else if (linkedSel && byId[linkedSel]) { const t = topicOf(byId[linkedSel]); view = { level: "topic", topic: t, group: groupOf(t) }; }
+  else if (linked && allTopics().includes(linked)) view = { level: "topic", topic: linked, group: groupOf(linked) };
+  else if (linkedGroup && groups().includes(linkedGroup)) view = { level: "group", group: linkedGroup };
+  applyT();
+  render();
+  resetGraph(true);
+  if (linkedDoc && byId[linkedDoc.id]) openReader(linkedDoc.id, { sec: linkedDoc.sec, mode: linkedDoc.mode });
+  else if (linkedSel && byId[linkedSel]) showInGraph(linkedSel);
+})();
+</script>
+</body>
+</html>

@@ -4,33 +4,156 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chief of Staff</title>
+  <link rel="stylesheet" href="vendor/basecoat/basecoat-1.1.0.min.css">
+  <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <h1>Chief of Staff</h1>
-    <nav>
-      <button class="tab active" data-view="today">Today</button>
-      <button class="tab" data-view="agents">Agents <span id="agent-count"></span></button>
+  <header class="app-header">
+    <div class="brand">
+      <img src="mark.svg" alt="" class="brand-mark">
+      <span class="wordmark">Chief of Staff</span>
+    </div>
+    <nav class="app-nav" aria-label="Views">
+      <button class="app-tab" aria-current="page" data-view="today">Today</button>
+      <button class="app-tab" data-view="agents">Agents <span id="agent-count" class="count" hidden></span></button>
+      <button class="app-tab" data-view="docs">Docs</button>
     </nav>
-    <div id="where">
-      <span class="label">workspace</span>
-      <button id="ws-path" class="link" title="Change workspace"></button>
-      <span id="slots" class="muted"></span>
+    <div class="where">
+      <span class="muted">workspace</span>
+      <button id="ws-path" class="btn path" data-variant="ghost" data-size="sm" title="Change workspace"></button>
+      <span id="slots" class="badge num" data-variant="outline"></span>
     </div>
   </header>
 
-  <dialog id="ws-dialog">
-    <form method="dialog" id="ws-form">
-      <label>Workspace directory (holds <code>.chief-of-staff/</code>)
-        <input id="ws-input" type="text" spellcheck="false" required>
-      </label>
-      <p id="ws-error" class="error" hidden></p>
-      <menu>
-        <button value="cancel" formnovalidate>Cancel</button>
-        <button id="ws-save" value="save" class="primary">Use it</button>
-      </menu>
-    </form>
+  <dialog id="ws-dialog" class="dialog" aria-labelledby="ws-title">
+    <div>
+      <header>
+        <h2 id="ws-title">Workspace</h2>
+        <p>The directory that holds <code>.chief-of-staff/</code>.</p>
+      </header>
+      <section>
+        <form method="dialog" id="ws-form" class="form-grid">
+          <div class="field">
+            <label for="ws-input">Directory</label>
+            <input id="ws-input" class="input mono" type="text" spellcheck="false" required>
+          </div>
+          <p id="ws-error" class="error" hidden></p>
+        </form>
+      </section>
+      <footer>
+        <button class="btn" data-variant="outline" value="cancel" form="ws-form" formnovalidate>Cancel</button>
+        <button id="ws-save" class="btn" data-variant="primary" value="save" form="ws-form">Use it</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="hire-dialog" class="dialog hire" aria-labelledby="hire-title">
+    <div>
+      <header>
+        <h2 id="hire-title">Hire</h2>
+        <p>Pick a role and the work. The contract below is what the agent is judged on when it ends.</p>
+      </header>
+      <section>
+        <form id="hire-form" class="form-grid">
+          <div class="field">
+            <label for="h-role">Role</label>
+            <select id="h-role" class="select"></select>
+            <p id="h-mandate" class="muted"></p>
+          </div>
+
+          <fieldset class="work">
+            <legend>Work</legend>
+            <label class="choice"><input class="input" type="radio" name="h-work" value="deliverable" checked> Deliverable</label>
+            <select id="h-deliverable" class="select"></select>
+            <label class="choice"><input class="input" type="radio" name="h-work" value="brief"> Brief action</label>
+            <select id="h-brief" class="select"></select>
+            <label class="choice"><input class="input" type="radio" name="h-work" value="goals"> Week goal</label>
+            <select id="h-goals" class="select"></select>
+            <label class="choice"><input class="input" type="radio" name="h-work" value="own"> Own prompt</label>
+            <textarea id="h-prompt" class="textarea mono" rows="5" placeholder="What the agent should do"></textarea>
+          </fieldset>
+
+          <div class="row">
+            <div class="field">
+              <label for="h-harness">Harness</label>
+              <select id="h-harness" class="select">
+                <option value="claude">Claude Code</option>
+                <option value="codex">Codex</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="h-model">Model</label>
+              <input id="h-model" class="input" type="text" placeholder="role default">
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="h-repo">Repo</label>
+              <select id="h-repo" class="select"><option value="">found from the work</option></select>
+              <p id="h-repo-from" class="muted small"></p>
+            </div>
+            <label class="choice end"><input id="h-worktree" class="input" type="checkbox" checked> own worktree, seeded</label>
+          </div>
+
+          <section id="h-fit" class="fit" aria-live="polite" aria-labelledby="h-fit-title">
+            <h3 id="h-fit-title">Can this role do it?</h3>
+            <p id="h-fit-call"></p>
+            <ul id="h-fit-notes" class="reasons"></ul>
+            <pre id="h-fit-command" hidden></pre>
+            <div id="h-fit-actions" class="badges"></div>
+          </section>
+          <div class="field">
+            <label for="h-title">Title</label>
+            <input id="h-title" class="input" type="text" placeholder="from the work">
+          </div>
+
+          <section class="contract" aria-labelledby="h-contract-title">
+            <h3 id="h-contract-title">Contract</h3>
+            <dl class="kv">
+              <dt>done when</dt><dd id="h-done"></dd>
+              <dt id="h-finish-k" hidden>yours</dt><dd id="h-finish" hidden></dd>
+              <dt>expects</dt><dd id="h-expects"></dd>
+            </dl>
+            <div class="row">
+              <div class="field">
+                <label for="h-checks">Checks, one per line</label>
+                <textarea id="h-checks" class="textarea mono" rows="2"></textarea>
+              </div>
+              <div class="field">
+                <label for="h-scope">Scope, one path per line</label>
+                <textarea id="h-scope" class="textarea mono" rows="2"></textarea>
+              </div>
+            </div>
+          </section>
+
+          <div class="row">
+            <div class="field">
+              <label for="h-deadline">Deadline (s)</label>
+              <input id="h-deadline" class="input num" type="number" min="60" max="7200" value="1800">
+            </div>
+            <div class="field">
+              <label for="h-budget">Budget ($)</label>
+              <input id="h-budget" class="input num" type="number" min="0.5" step="0.5" value="5">
+            </div>
+            <div class="field">
+              <label for="h-count">Copies</label>
+              <input id="h-count" class="input num" type="number" min="1" max="32" value="1">
+            </div>
+          </div>
+
+          <div class="permission">
+            <h3>Permission</h3>
+            <p>Sandboxed worktree, no network for shell commands. Drafts only: nothing is sent, merged, tagged or deployed. This hire grants nothing outside the worktree.</p>
+          </div>
+          <p id="h-msg" class="muted" role="status"></p>
+        </form>
+      </section>
+      <footer>
+        <button id="h-cancel" class="btn" data-variant="outline" type="button">Cancel</button>
+        <button id="h-go" class="btn" data-variant="primary" type="submit" form="hire-form">Hire</button>
+      </footer>
+    </div>
   </dialog>
 
   <main>
@@ -38,62 +161,133 @@
       <iframe id="report" title="Today's report" sandbox="allow-scripts allow-popups"></iframe>
     </section>
 
+    <section id="view-docs" class="view">
+      <!-- Same-origin within cosreport:, its own origin apart from the app, so it can read and save through /docs. -->
+      <iframe id="docs-frame" title="Documentation room" sandbox="allow-scripts allow-popups allow-same-origin"></iframe>
+    </section>
+
     <section id="view-agents" class="view">
-      <aside id="spawn">
-        <h2>New agents</h2>
-        <form id="spawn-form">
-          <label>Harness
-            <select id="harness">
-              <option value="claude">Claude Code</option>
-              <option value="codex">Codex</option>
-            </select>
-          </label>
-          <label>Repo
-            <select id="repo"><option value="">(scratch directory, no repo)</option></select>
-          </label>
-          <label class="check"><input id="worktree" type="checkbox" checked> own detached worktree, seeded</label>
-          <label>Title <input id="title" type="text" placeholder="first line of the prompt"></label>
-          <label>Prompt <textarea id="prompt" rows="9" required></textarea></label>
-          <div class="row">
-            <label>Copies <input id="count" type="number" min="1" max="32" value="1"></label>
-            <label>Deadline (s) <input id="deadline" type="number" min="60" max="7200" value="1800"></label>
-            <label>Budget ($) <input id="budget" type="number" min="0.5" step="0.5" value="5"></label>
+      <div class="agents">
+        <div class="agents-bar">
+          <div class="tabs">
+            <nav role="tablist" aria-label="Agents" id="agent-panes">
+              <button role="tab" aria-selected="true" data-pane="staff">Staff</button>
+              <button role="tab" aria-selected="false" data-pane="runs">Runs <span id="runs-count" class="num"></span></button>
+              <button role="tab" aria-selected="false" data-pane="scorecard">Scorecard</button>
+            </nav>
           </div>
-          <label>Model <input id="model" type="text" placeholder="harness default"></label>
-          <button type="submit" class="primary">Spawn</button>
-          <p id="spawn-msg" class="muted"></p>
-        </form>
-
-        <h2>From the latest run</h2>
-        <div class="row">
-          <button data-from="brief" class="from">Brief actions</button>
-          <button data-from="review" class="from">Review goals</button>
+          <button id="hire-open" class="btn" data-variant="primary" type="button">Hire</button>
         </div>
-        <ol id="tasks"></ol>
-      </aside>
+        <div id="policy-note" class="alert" data-variant="destructive" hidden>
+          <h2>Hiring policy not used</h2>
+          <section id="policy-note-text"></section>
+        </div>
+        <p id="agents-error" class="error" hidden></p>
 
-      <div id="agents-pane">
-        <table id="agents">
-          <thead>
-            <tr><th>id</th><th>harness</th><th>status</th><th>title</th><th>tools</th><th>cost</th><th>latest</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-        <p id="no-agents" class="muted">No agents yet. Spawn one on the left; each runs in its own worktree under a supervisor that outlives this window.</p>
+        <div id="pane-staff" class="pane">
+          <article id="head-card" class="card head"></article>
+          <div id="roles" class="role-grid"></div>
+        </div>
 
-        <div id="detail" hidden>
-          <div class="detail-head">
+        <div id="pane-role" class="pane" hidden></div>
+
+        <div id="pane-runs" class="pane" hidden>
+          <div class="table-container">
+            <table class="table runs" id="agents">
+              <thead>
+                <tr><th>id</th><th>role</th><th>status</th><th>verdict</th><th>title</th><th class="n">tools</th><th class="n">cost</th><th>latest</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="no-agents" class="empty" hidden>
+            <header>
+              <h3>No agents yet</h3>
+              <p>Hire one from the staff. Each runs in its own worktree under a supervisor that outlives this window.</p>
+            </header>
+          </div>
+        </div>
+
+        <div id="pane-run" class="pane" hidden>
+          <div class="pane-head">
+            <button id="d-back" class="btn" data-variant="ghost" data-size="sm" type="button">← Back</button>
             <h2 id="d-title"></h2>
-            <div>
-              <button id="d-stop">Stop</button>
-              <button id="d-clean">Clean</button>
-              <button id="d-close" class="link">close</button>
+            <div class="actions">
+              <button id="d-stop" class="btn" data-variant="outline" data-size="sm" type="button">Stop</button>
+              <button id="d-rejudge" class="btn" data-variant="outline" data-size="sm" type="button">Re-judge</button>
+              <button id="d-clean" class="btn" data-variant="destructive" data-size="sm" type="button">Clean</button>
             </div>
           </div>
-          <dl id="d-meta"></dl>
+          <div id="d-badges" class="badges"></div>
+          <div id="d-flags"></div>
           <p id="d-error" class="error" hidden></p>
-          <details id="d-seed" hidden><summary>seed log</summary><pre id="d-seed-log"></pre></details>
-          <pre id="d-log"></pre>
+          <div class="run-grid">
+            <article class="card" data-size="sm" id="d-verdict-card">
+              <header><h3>Verdict</h3><p>From the diff, the checks cos re-ran and the scope; never the agent's own words.</p></header>
+              <section id="d-verdict"></section>
+            </article>
+            <article class="card" data-size="sm">
+              <header><h3>Contract</h3><p>Fixed at hire.</p></header>
+              <section><dl id="d-contract" class="kv"></dl></section>
+            </article>
+          </div>
+          <article class="card" data-size="sm">
+            <header><h3>Run</h3></header>
+            <section><dl id="d-meta" class="kv"></dl></section>
+          </article>
+          <details id="d-summary-box" class="card box" hidden>
+            <summary>The agent's own summary (its claim, not evidence)</summary>
+            <pre id="d-summary"></pre>
+          </details>
+          <details id="d-seed" class="card box" hidden><summary>Seed log</summary><pre id="d-seed-log"></pre></details>
+          <article class="card" data-size="sm" id="d-record-card" hidden>
+            <header><h3>Your result</h3><p>What happened when you ran what it drafted. Stored on this run only; nothing is sent.</p></header>
+            <section>
+              <div id="d-recorded"></div>
+              <form id="d-record" class="form-grid">
+                <div class="row">
+                  <div class="field">
+                    <label for="r-outcome">Outcome</label>
+                    <select id="r-outcome" class="select">
+                      <option value="passed">passed</option>
+                      <option value="failed">failed</option>
+                      <option value="blocked">blocked</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="r-notes">What you ran and saw</label>
+                  <textarea id="r-notes" class="textarea" rows="3" placeholder="Paste the outcome: the command, the environment, what passed or failed"></textarea>
+                </div>
+                <div class="field">
+                  <label for="r-evidence">Evidence, one link or path per line</label>
+                  <textarea id="r-evidence" class="textarea mono" rows="2"></textarea>
+                </div>
+                <p id="r-msg" class="muted" role="status"></p>
+                <div><button id="r-save" class="btn" data-variant="primary" data-size="sm" type="submit">Record result</button></div>
+              </form>
+            </section>
+          </article>
+          <h3 class="section-title">Activity</h3>
+          <ol id="d-feed" class="feed"></ol>
+        </div>
+
+        <div id="pane-scorecard" class="pane" hidden>
+          <p class="muted">Every judged agent, from the ledger; it outlives clean. Cost and time are medians; overclaimed counts agents that said they succeeded while a check disagreed.</p>
+          <div class="table-container">
+            <table class="table" id="scores">
+              <thead>
+                <tr><th>role</th><th>harness</th><th>model</th><th>repo</th><th class="n">runs</th><th class="n">accepted</th><th class="n">needs you</th><th class="n">rejected</th><th class="n">overclaimed</th><th class="n">flagged</th><th class="n">cost</th><th class="n">time</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="no-scores" class="empty" hidden>
+            <header>
+              <h3>No verdicts yet</h3>
+              <p>A row lands here each time an agent ends and is judged.</p>
+            </header>
+          </div>
         </div>
       </div>
     </section>
