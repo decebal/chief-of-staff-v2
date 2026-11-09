@@ -95,7 +95,8 @@ task schedule               # weekdays 08:30 brief
 | | |
 |---|---|
 | **Reads** | only the sources your profile approves: Calendar, Gmail, Jira/Confluence and Notion through your claude.ai connectors; open, review-requested and merged PRs (`gh`); ready tasks (`cn`) |
-| **Writes** | `out/`: briefs, facts, the history ledger, dated HTML reports. `.chief-of-staff/state.json`: a run receipt and source coverage, only if you approved local tracking, through the same validated, journaled commit as the kit's helper. Nothing is sent, merged, commented or edited — tools outside an explicit allowlist are denied, and the brains get no file tools (the workspace and `context/` are inlined) |
+| **Writes** | `out/`: briefs, facts, the history ledger, dated HTML reports. `.chief-of-staff/state.json`: a run receipt and source coverage, only if you approved local tracking, through the same validated, journaled commit as the kit's helper. Nothing is sent, merged, commented or edited — tools outside an explicit allowlist are denied, and the brains get no file tools (the workspace and `context/` are inlined). The one task-store write is `cos ritual approve`, which you type at a terminal |
+| **Flows** | every ritual flow (a Chronis epic) in the repos under `--projects`, with its step and its beads as a dependency graph: `cos flows`, `/flows` in `cos dash`, the desktop Flows tab; see [Ritual flows](docs/ritual.md) |
 | **Sleep** | a brief that fires in a dark wake (a maintenance wake with no display, `pmset -g systemstate` without `Graphics`) is deferred before any model call, exit 75; otherwise `caffeinate -i` holds idle sleep off for the run (closing the lid still sleeps the Mac). The 300 s deadline counts wall-clock time, so a run cut by sleep ends on wake rather than hours later. A timeout, dropped connection or sleep mid-response gets one retry inside the same 300 s. A failed or deferred run is recorded in `out/runs/`, and the Today page says "Today's brief didn't run" above the last brief |
 | **Handoffs** | each action and each goal ships a self-contained prompt for Claude Code or Codex that stops before anything outward-facing; `cos handoff D-1` builds the kit's nine-part handoff for a tracked deliverable |
 | **Agents** | runs a handoff as Claude Code or Codex in its own worktree, then judges what it left; see [Agents, judged on evidence](#agents-judged-on-evidence) |
@@ -173,6 +174,7 @@ cos --home /tmp/cos-demo dash
 | | |
 |---|---|
 | [Usage](docs/usage.md) | customising, agents and the hiring policy, Codex timeouts, the remote connector |
+| [Ritual flows](docs/ritual.md) | the seven steps, the `ritual-*` markers, approval and what it does not stop, how `cos flows` infers a step |
 | [Managed staff](docs/managed-staff.md) | configured mandates, AllStack evidence refresh, handoffs and parking |
 | [Design](docs/design.md) | how it works, and the measurements behind each decision |
 | [Desktop plan](docs/plans/2026-10-21-desktop-app.md) | the workspace split, the agent governor and seeding, and the Tauri app |

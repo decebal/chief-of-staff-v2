@@ -144,6 +144,10 @@ for (const tab of document.querySelectorAll(".app-tab")) {
     if (tab.dataset.view === "docs" && !$("docs-frame").src) {
       $("docs-frame").src = `${REPORT}docs?t=${Date.now()}`;
     }
+    // Every open reads the stores again: a flow's step changes as beads close.
+    if (tab.dataset.view === "flows") {
+      $("flows-frame").src = `${REPORT}flows?t=${Date.now()}`;
+    }
   });
 }
 

@@ -17,6 +17,7 @@
     <nav class="app-nav" aria-label="Views">
       <button class="app-tab" aria-current="page" data-view="today">Today</button>
       <button class="app-tab" data-view="agents">Agents <span id="agent-count" class="count" hidden></span></button>
+      <button class="app-tab" data-view="flows">Flows</button>
       <button class="app-tab" data-view="docs">Docs</button>
     </nav>
     <div class="where">
@@ -159,6 +160,10 @@
   <main>
     <section id="view-today" class="view active">
       <iframe id="report" title="Today's report" sandbox="allow-scripts allow-popups"></iframe>
+    </section>
+
+    <section id="view-flows" class="view">
+      <iframe id="flows-frame" title="Flows" sandbox="allow-popups"></iframe>
     </section>
 
     <section id="view-docs" class="view">

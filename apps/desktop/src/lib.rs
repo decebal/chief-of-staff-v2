@@ -92,6 +92,7 @@ pub fn report_response<R: Runtime>(
             .and_then(|d| cos::report::render(&d))
             .map(String::into_bytes)
             .map_err(|e| format!("{e:#}")),
+        "/flows" => Ok(cos::flows::page_cached(&s.workspace, &s.projects).into_bytes()),
         _ => cos::dash::archived(&s.home, path)
             .ok_or_else(|| "not found".to_owned())
             .and_then(|f| std::fs::read(f).map_err(err)),

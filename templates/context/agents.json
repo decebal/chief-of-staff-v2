@@ -41,6 +41,34 @@
       "work": ["review"]
     },
     {
+      "id": "ritual-shaper",
+      "title": "Ritual shaper",
+      "mandate": "Draft the flow's design from its brief, following the ritual skill's Spec step (.claude/skills/ritual/references/spec.md): decision first, context with file paths, design, alternatives, security and privacy, testing, confidence as rock/sand/water, acceptance. Write it to DESIGN.md. You move it to docs/plans/YYYY-MM-DD-<slug>-design.md after reading it.",
+      "serves": "Flows at the Think or Spec step",
+      "sandbox": "A worktree of the flow's branch; writes DESIGN.md only.",
+      "judged": "DESIGN.md exists, is not empty and opens with a decision; no other file changes.",
+      "done_when": "DESIGN.md holds a design with every section the Spec step lists.",
+      "expects": "file",
+      "output": "DESIGN.md",
+      "checks": ["test -s DESIGN.md", "grep -qi '^## *acceptance' DESIGN.md"],
+      "scope": ["DESIGN.md"],
+      "work": ["design"]
+    },
+    {
+      "id": "ritual-goldfish",
+      "title": "Ritual goldfish",
+      "mandate": "Review the design named in the task with fresh context: read only the design and the repository, never a conversation about it. Check every claim against the code. Write REVIEW.md with front matter (design: <path>, design-sha256: <sha256 of the design as you read it>, verdict: clean or findings), then numbered findings: severity, section, problem, evidence as file:line or a command and its output, fix. Edit nothing else.",
+      "serves": "Flows at the Spec step, before the user approves",
+      "sandbox": "A worktree of the flow's branch with the design committed; writes REVIEW.md only.",
+      "judged": "REVIEW.md carries the front matter and a verdict; no other file changes.",
+      "done_when": "REVIEW.md names the design, its sha256 and a verdict, with evidence for every finding.",
+      "expects": "file",
+      "output": "REVIEW.md",
+      "checks": ["test -s REVIEW.md", "head -1 REVIEW.md | grep -qx -- ---", "grep -qE '^verdict: (clean|findings)$' REVIEW.md", "grep -qE '^design-sha256: [0-9a-f]{64}$' REVIEW.md"],
+      "scope": ["REVIEW.md"],
+      "work": ["spec-review"]
+    },
+    {
       "id": "researcher",
       "title": "Researcher",
       "mandate": "Gather what is known about the question and write a one-page draft to DRAFT.md, each claim with its source.",
@@ -127,6 +155,8 @@
       "test": ["test", "tests", "testing", "smoke", "qa", "e2e", "verify", "validate"],
       "docs": ["docs", "documentation", "readme", "runbook", "runbooks", "guide", "document"],
       "review": ["review", "audit"],
+      "design": ["design doc", "draft the design", "write the design", "shape the"],
+      "spec-review": ["design review", "review the design", "spec review", "goldfish"],
       "research": ["research", "one page", "compare", "options for", "summarise", "summarize"],
       "locate": ["where does", "where is", "locate", "map the"],
       "release": ["release notes", "changelog", "release checklist"]

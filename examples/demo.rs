@@ -80,6 +80,7 @@ fn main() -> Result<()> {
     workspace(&home, today)?;
     docs_room(&home, today, &mut rng)?;
     staff(&home, today)?;
+    flows(&home)?;
 
     let report = cos::report::build(&home, &home)?;
     for back in 1..=12 {
@@ -88,9 +89,171 @@ fn main() -> Result<()> {
     }
     println!("demo home ready: {}", home.display());
     println!(
-        "  cos --home {0} --projects {0}/projects dash",
+        "  COS_CN={0}/bin/cn cos --home {0} --projects {0}/projects dash",
         home.display()
     );
+    Ok(())
+}
+/// Fictional ritual flows for the Flows page: a `.chronis/tasks.json` in two
+/// demo repos and a stand-in `cn` that prints it, so no real tracker runs.
+fn flows(home: &Path) -> Result<()> {
+    let cn = home.join("bin/cn");
+    write(
+        &cn,
+        "#!/bin/sh\n[ \"$1\" = list ] && cat .chronis/tasks.json\n",
+    )?;
+    std::fs::set_permissions(&cn, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+
+    let t = |id: &str,
+             title: &str,
+             kind: &str,
+             status: &str,
+             parent: Option<&str>,
+             blocked: &[&str],
+             desc: &str| {
+        json!({ "id": id, "title": title, "status": status, "task_type": kind, "parent": parent,
+                "blocked_by": blocked, "approved": null, "description": desc, "archived": false })
+    };
+    let approved = |mut v: serde_json::Value| {
+        v["approved"] = json!(true);
+        v
+    };
+    let gateway = json!([
+        approved(t(
+            "t-a1f0",
+            "Request log migration to the new store",
+            "epic",
+            "open",
+            None,
+            &[],
+            "ritual-brief: docs/plans/request-log-brief.md\nritual-branch: feat/NW-412-request-log\nritual-design: docs/plans/request-log-design.md\nritual-approved: docs/plans/request-log-design.md sha256:demo by Alex Rivera\nritual-plan: docs/plans/request-log-plan.md"
+        )),
+        t(
+            "t-a1f1",
+            "US-001: request_log table and migration",
+            "task",
+            "done",
+            Some("t-a1f0"),
+            &[],
+            ""
+        ),
+        t(
+            "t-a1f2",
+            "US-002: write path through the new store",
+            "task",
+            "in-progress",
+            Some("t-a1f0"),
+            &["t-a1f1"],
+            ""
+        ),
+        t(
+            "t-a1f3",
+            "US-003: read path and backfill job",
+            "task",
+            "open",
+            Some("t-a1f0"),
+            &["t-a1f1"],
+            ""
+        ),
+        t(
+            "t-a1f4",
+            "US-004: dashboards over the new store",
+            "task",
+            "open",
+            Some("t-a1f0"),
+            &["t-a1f2", "t-a1f3"],
+            ""
+        ),
+        t(
+            "t-a1f5",
+            "US-005: retire the old log writer",
+            "task",
+            "open",
+            Some("t-a1f0"),
+            &["t-a1f4"],
+            ""
+        ),
+        t(
+            "t-b200",
+            "Rate limits per tenant",
+            "epic",
+            "open",
+            None,
+            &[],
+            "ritual-brief: docs/plans/rate-limits-brief.md\nritual-branch: feat/NW-430-rate-limits\nritual-design: docs/plans/rate-limits-design.md"
+        ),
+        t(
+            "t-c300",
+            "Gateway health endpoint",
+            "epic",
+            "open",
+            None,
+            &[],
+            ""
+        ),
+        t(
+            "t-c301",
+            "Add /healthz",
+            "task",
+            "done",
+            Some("t-c300"),
+            &[],
+            ""
+        ),
+        t(
+            "t-c302",
+            "Wire the load balancer check",
+            "task",
+            "done",
+            Some("t-c300"),
+            &["t-c301"],
+            ""
+        ),
+    ]);
+    let web = json!([
+        t(
+            "t-d400",
+            "Sign-in with passkeys",
+            "epic",
+            "open",
+            None,
+            &[],
+            "ritual-brief: docs/plans/passkeys-brief.md"
+        ),
+        approved(t(
+            "t-e500",
+            "Design system v3 tokens in the web app",
+            "epic",
+            "open",
+            None,
+            &[],
+            "ritual-design: docs/plans/tokens-design.md\nritual-approved: docs/plans/tokens-design.md sha256:demo by Alex Rivera\nritual-review: https://github.invalid/northwind/web-app/pull/88 findings"
+        )),
+        t(
+            "t-e501",
+            "US-001: map v2 tokens to v3",
+            "task",
+            "done",
+            Some("t-e500"),
+            &[],
+            ""
+        ),
+        t(
+            "t-e502",
+            "US-002: swap the theme provider",
+            "task",
+            "done",
+            Some("t-e500"),
+            &["t-e501"],
+            ""
+        ),
+    ]);
+    for (repo, tasks) in [("api-gateway", gateway), ("web-app", web)] {
+        write(
+            &home.join("projects").join(repo).join(".chronis/tasks.json"),
+            &tasks.to_string(),
+        )?;
+    }
     Ok(())
 }
 
