@@ -221,7 +221,7 @@ fn the_ledger_outlives_clean_and_a_rejudge_replaces_its_row() {
 }
 
 #[test]
-fn the_template_seeds_eight_roles_under_the_chief_of_staff() {
+fn the_template_seeds_ten_roles_under_the_chief_of_staff() {
     let seed: policy::Policy = serde_json::from_str(policy::SEED).expect("the template parses");
     let ids: Vec<&str> = seed.roles.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(
@@ -230,6 +230,8 @@ fn the_template_seeds_eight_roles_under_the_chief_of_staff() {
             "chief-of-staff",
             "builder",
             "reviewer",
+            "ritual-shaper",
+            "ritual-goldfish",
             "researcher",
             "investigator",
             "docs-keeper",
@@ -242,6 +244,19 @@ fn the_template_seeds_eight_roles_under_the_chief_of_staff() {
     assert!(
         clerk.mandate.contains("Never tag, push, publish or deploy"),
         "the release role drafts only"
+    );
+    let goldfish = seed.role("ritual-goldfish").unwrap();
+    assert_eq!(
+        goldfish.scope,
+        ["REVIEW.md"],
+        "the goldfish writes its review and nothing else"
+    );
+    assert!(
+        goldfish
+            .checks
+            .iter()
+            .any(|c| c.contains("^verdict: (clean|findings)$")),
+        "the review carries a verdict the approval reads"
     );
     assert!(
         seed.hire("chief-of-staff")
@@ -267,9 +282,9 @@ fn a_home_whose_policy_predates_roles_gets_the_template_roles() {
         Some(45),
         "its own terms kept"
     );
-    assert_eq!(p.roles.len(), 8);
+    assert_eq!(p.roles.len(), 10);
     let (bare, _) = setup("no-policy", None);
-    assert_eq!(policy::load(&bare).roles.len(), 8);
+    assert_eq!(policy::load(&bare).roles.len(), 10);
 }
 
 #[test]

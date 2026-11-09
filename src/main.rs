@@ -108,6 +108,57 @@ enum Cmd {
         #[arg(long)]
         role: String,
     },
+    /// Every ritual flow under --projects: one Chronis epic each, with its
+    /// step. Read-only; needs an approved `tasks` source in the profile.
+    Flows {
+        #[arg(long)]
+        json: bool,
+        /// The chronis binary.
+        #[arg(long, env = "COS_CN", default_value = "cn")]
+        cn: PathBuf,
+    },
+    /// The ritual's gate: a person's approval of a design, on the flow's epic.
+    Ritual {
+        #[command(subcommand)]
+        cmd: RitualCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum RitualCmd {
+    /// Exit 0 when the epic is approved and its design is unchanged since.
+    Check {
+        epic: String,
+        /// The repo holding the epic's `.chronis/` store. Default: the main
+        /// checkout of the current directory.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long, env = "COS_CN", default_value = "cn")]
+        cn: PathBuf,
+    },
+    /// Record your approval of a design: its sha256 on the epic, then `cn approve`.
+    /// Asks on the terminal and refuses without one.
+    Approve {
+        epic: String,
+        /// The design, relative to the repo.
+        design: String,
+        /// Your name, as recorded on the epic.
+        #[arg(long)]
+        by: String,
+        /// A review file whose front matter names this design, its current
+        /// sha256, and `verdict: clean`.
+        #[arg(long, conflicts_with = "without_review")]
+        review: Option<PathBuf>,
+        /// Approve with no review; the epic records that.
+        #[arg(long)]
+        without_review: bool,
+        /// The repo holding the epic's `.chronis/` store. Default: the main
+        /// checkout of the current directory.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long, env = "COS_CN", default_value = "cn")]
+        cn: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -370,7 +421,83 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
         } => runtime()?.block_on(mcp::http(cfg, addr, token, public_host.clone())),
         Cmd::Tunnel { port } => runtime()?.block_on(cos::tunnel::run(cfg, *port)),
         Cmd::Agents { cmd } => agents_cmd(cli, cmd),
+        Cmd::Flows { json, cn } => flows_cmd(&ws, &cli.projects, cn, *json),
+        Cmd::Ritual { cmd } => ritual_cmd(cmd),
     }
+}
+
+/// `cos flows`: read-only, and only when the profile approves the `tasks`
+/// source, the same gate as the brief's `cn` facts.
+fn flows_cmd(
+    ws: &std::path::Path,
+    projects: &std::path::Path,
+    cn: &std::path::Path,
+    json: bool,
+) -> Result<()> {
+    if !cos::context::local_reads(ws).tasks {
+        anyhow::bail!(
+            "the profile does not approve a tasks source, so cos reads no task store; approve one in .chief-of-staff/profile.json"
+        );
+    }
+    let scan = cos::flows::scan(projects, cn, cos::flows::SCAN_BUDGET);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&scan)?);
+    } else {
+        println!("{}", cos::flows::render(&scan));
+    }
+    Ok(())
+}
+
+fn repo_dir(repo: &Option<PathBuf>) -> Result<PathBuf> {
+    cos::ritual::resolve_repo(repo.as_deref())
+}
+
+fn ritual_cmd(cmd: &RitualCmd) -> Result<()> {
+    match cmd {
+        RitualCmd::Check { epic, repo, cn } => {
+            let outcome = cos::ritual::check(cn, &repo_dir(repo)?, epic)?;
+            println!("{}", outcome.describe());
+            if outcome.ok() {
+                Ok(())
+            } else {
+                std::process::exit(1)
+            }
+        }
+        RitualCmd::Approve {
+            epic,
+            design,
+            by,
+            review,
+            without_review,
+            repo,
+            cn,
+        } => {
+            let args = cos::ritual::ApproveArgs {
+                epic,
+                design,
+                by,
+                review: review.clone(),
+                without_review: *without_review,
+            };
+            let line = cos::ritual::approve(cn, &repo_dir(repo)?, &args, confirm_on_terminal)?;
+            println!("{line}\napproved {epic}");
+            Ok(())
+        }
+    }
+}
+
+/// A person types `yes` at a terminal. A pipe, a file or an agent session's
+/// stdin is refused, so approval cannot be scripted.
+fn confirm_on_terminal(line: &str) -> Result<bool> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!("cos ritual approve needs a terminal: run it yourself, not through an agent");
+    }
+    eprint!("Append to the epic and approve it?\n  {line}\nType yes: ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    Ok(answer.trim() == "yes")
 }
 
 fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {

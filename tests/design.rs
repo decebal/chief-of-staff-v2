@@ -15,6 +15,7 @@ const SERVED: &[&str] = &[
     "src/dashboard.html",
     "src/docs.html",
     "src/agents/view.html",
+    "src/flows.html",
 ];
 const UI: &str = "apps/desktop/ui";
 

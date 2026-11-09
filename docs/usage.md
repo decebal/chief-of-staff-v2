@@ -252,6 +252,37 @@ messages from the Docs frame. Through `cos dash` a save must carry an
 `X-Cos: docs` header, so another website cannot write the file. A broken file
 is reported, never overwritten.
 
+### Flows
+
+Every piece of planned work you have going, across every repo under
+`--projects`: one Chronis epic per flow, with the `ritual` step it is in (think,
+spec, plan, build, review, ship, reflect, or drift when a design changed after
+approval) and its beads drawn as a dependency graph, ready beads outlined.
+
+```bash
+cos flows                 # one line per flow
+cos flows --json          # the same, for scripts
+```
+
+The desktop app's Flows tab and `cos dash` at `/flows` show the same page. It
+reads `cn list` once per repo under one deadline, skips linked worktrees, and
+keeps only ids, titles, statuses, edges and the `ritual-*` lines; it reads
+nothing unless the profile approves a `tasks` source.
+
+The ritual's one gate is your approval of a design, recorded on the flow's epic:
+
+```bash
+cos ritual approve <epic> docs/plans/<date>-<slug>-design.md --by "<your name>" \
+  --review docs/plans/<date>-<slug>-design-review.md
+cos ritual check <epic>   # exit 0: approved, and the design unchanged since
+```
+
+`approve` checks that the review names this exact design (its sha256) with
+`verdict: clean`, asks you to type `yes`, then writes the digest on the epic and
+runs `cn approve`. It refuses without a terminal, so a script cannot approve
+for you by accident. It does not authenticate you: see
+[ritual.md](ritual.md#what-approval-does-and-does-not-stop).
+
 ### In Claude Desktop and Codex
 
 ```bash

@@ -64,7 +64,10 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 | `src/history.rs` | the archive under `out/history/`, backfilled two months per run |
 | `src/dash.rs` | `cos dash`, the live localhost page |
 | `src/docs.rs` + `src/docs.html` | the documentation room: repo docs from `monitoredRepos`, Notion pages from `cos docs notion`, the user's topics, links and marks in `context/docs.json`; served at `/docs` by `cos dash` and the desktop app |
-| `examples/demo.rs` | the synthetic home behind every screenshot (`task demo`) |
+| `src/flows.rs` + `src/flows.html` | `cos flows` and `/flows`: every ritual flow (a Chronis epic) in the main checkouts under `--projects`, its step inferred from its beads and `ritual-*` markers, its bead graph; read-only, gated on an approved `tasks` source, one deadline for the scan (`tests/flows.rs`) |
+| `src/ritual.rs` | `cos ritual approve` / `check`: the design's sha256 on the epic plus `cn approve`; approve is CLI-only and refuses without a terminal, the one place `cos` writes a task store (`docs/ritual.md`) |
+| `.claude/skills/ritual/` | the ritual skill: Think, Spec, Plan, Build, Review, Ship, Reflect, and the `ritual-*` markers `cos flows` reads |
+| `examples/demo.rs` | the synthetic home behind every screenshot (`task demo`), with fictional Chronis stores and a stand-in `cn` for `/flows` |
 
 Screenshots in `docs/assets/` come only from `task screenshots` on the demo
 home. Never capture a real `COS_HOME`: briefs quote mail, calendar and tickets.

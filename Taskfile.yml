@@ -153,7 +153,7 @@ tasks:
       - task: demo
       - mkdir -p docs/assets
       - defer: pkill -f "cos --home /tmp/cos-demo --projects /tmp/cos-demo/projects --no-open dash --port 8792" || true
-      - (target/release/cos --home /tmp/cos-demo --projects /tmp/cos-demo/projects --no-open dash --port 8792 &) ; sleep 1
+      - (COS_CN=/tmp/cos-demo/bin/cn target/release/cos --home /tmp/cos-demo --projects /tmp/cos-demo/projects --no-open dash --port 8792 &) ; sleep 1
       - '{{.SHOT}} --window-size=1280,1500 --screenshot=docs/assets/today.png http://127.0.0.1:8792/'
       - '{{.SHOT}} --window-size=1280,1500 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/today-dark.png http://127.0.0.1:8792/'
       # Tab views start at the sub-nav under the hero: capture tall, then crop (offset in device pixels).
@@ -168,6 +168,8 @@ tasks:
       - '{{.SHOT}} --window-size=1440,900 --screenshot=docs/assets/docs-topic.png "http://127.0.0.1:8792/docs#select={{.GUIDE}}"'
       - '{{.SHOT}} --window-size=1440,900 --screenshot=docs/assets/docs-reader.png "http://127.0.0.1:8792/docs#doc={{.MAP}}&mode=wide"'
       - '{{.SHOT}} --window-size=1440,900 --screenshot=docs/assets/docs-focus.png "http://127.0.0.1:8792/docs#doc={{.GUIDE}}&mode=focus"'
+      # Every ritual flow over the demo's fictional Chronis stores, through its stand-in cn.
+      - '{{.SHOT}} --window-size=1280,1100 --screenshot=docs/assets/flows.png http://127.0.0.1:8792/flows'
 
   tunnel:
     desc: Read-only MCP behind a Cloudflare quick tunnel for claude.ai; prints the connector URL

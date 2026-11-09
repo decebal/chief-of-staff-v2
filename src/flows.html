@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cos flows</title>
+<style>
+/*__COS_TOKENS__*/
+body{margin:0;padding:1.5rem 1rem}
+main{max-width:68.75rem;margin:0 auto}
+h1{font-size:var(--text-xl);line-height:var(--text-xl--line-height);font-weight:var(--font-weight-semibold);letter-spacing:var(--tracking-tight);margin:0 0 0.25rem}
+p{color:var(--muted-foreground);margin:0 0 1rem}
+a{color:var(--brand-text)}
+.steps{display:flex;flex-wrap:wrap;gap:0.5rem;margin:0 0 1rem;padding:0;list-style:none}
+.steps li{font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--muted-foreground)}
+.steps b{font-family:var(--font-mono);font-variant-numeric:tabular-nums;color:var(--foreground)}
+details.flow{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);color:var(--card-foreground);margin:0 0 0.5rem}
+details.flow>summary{display:grid;grid-template-columns:6rem 10rem 1fr auto;gap:0.75rem;align-items:baseline;padding:0.625rem 0.75rem;cursor:pointer;list-style:none}
+details.flow>summary::-webkit-details-marker{display:none}
+.step{font-family:var(--font-mono);font-size:var(--text-xs);line-height:var(--text-xs--line-height);font-weight:var(--font-weight-semibold);border-radius:var(--radius-full);padding:0.125rem 0.5rem;justify-self:start;background:var(--secondary);color:var(--secondary-foreground)}
+.step.think,.step.spec{background:var(--info);color:var(--info-foreground)}
+.step.plan,.step.review{background:var(--warning);color:var(--warning-foreground)}
+.step.build,.step.ship{background:var(--primary);color:var(--primary-foreground)}
+.step.drift{background:var(--destructive);color:var(--destructive-foreground)}
+.step.reflect,.step.done{background:var(--success);color:var(--success-foreground)}
+.repo{color:var(--muted-foreground);font-size:var(--text-sm);line-height:var(--text-sm--line-height);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.title{font-weight:var(--font-weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.title small{color:var(--muted-foreground);font-weight:var(--font-weight-normal);font-family:var(--font-mono);font-size:var(--text-xs)}
+.counts{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--muted-foreground);white-space:nowrap}
+.body{padding:0 0.75rem 0.75rem;border-top:1px solid var(--border)}
+.meta{display:flex;flex-wrap:wrap;gap:0.25rem 1rem;margin:0.5rem 0;padding:0;list-style:none;font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--muted-foreground)}
+.meta code{font-size:var(--text-xs);color:var(--foreground)}
+svg.graph{width:100%;height:auto;display:block}
+svg.graph .edge{fill:none;stroke:var(--chart-axis);stroke-width:1.5}
+svg.graph .node rect{fill:var(--background);stroke:var(--border);stroke-width:1.5}
+svg.graph .node text{fill:var(--foreground);font-family:var(--font-mono);font-size:var(--text-xs)}
+svg.graph .node .sub{fill:var(--muted-foreground);font-family:var(--font-sans)}
+svg.graph .node.done rect{fill:var(--muted)}
+svg.graph .node.done text{fill:var(--muted-foreground)}
+svg.graph .node.in-progress rect{stroke:var(--primary);stroke-width:2.5}
+svg.graph .node.ready rect{stroke:var(--success);stroke-width:2.5}
+.legend{font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--muted-foreground);margin:0.25rem 0 0}
+.gaps{border:1px solid var(--warning);border-radius:var(--radius-md);padding:0.5rem 0.75rem;margin:1rem 0;font-size:var(--text-sm);line-height:var(--text-sm--line-height)}
+.empty{color:var(--muted-foreground)}
+</style>
+</head>
+<body>
+<main><h1>Flows</h1><p><!--__SUMMARY__--> · each flow is a Chronis epic; its step comes from its beads and the <code>ritual-*</code> lines on it · <a href="/">report</a></p>
+<!--__STEPS__-->
+<!--__FLOWS__-->
+<!--__GAPS__--></main>
+</body>
+</html>
