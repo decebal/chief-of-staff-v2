@@ -3,8 +3,8 @@
 //! design's sha256 plus `cn approve`.
 //!
 //! `approve` is the one place `cos` writes to a task store, and only on the
-//! user's typed command: it is never an MCP tool, and the CLI refuses it
-//! without a terminal so an agent session cannot approve for the user.
+//! user's command: it is never an MCP tool. Without `--yes` the CLI asks on a
+//! terminal; with it, the caller has the user's instruction to approve.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -143,10 +143,12 @@ pub struct ApproveArgs<'a> {
     pub by: &'a str,
     pub review: Option<PathBuf>,
     pub without_review: bool,
+    /// Records without calling `confirm`.
+    pub yes: bool,
 }
 
-/// Validates the review, asks `confirm`, then records the approval. Returns
-/// the line appended to the epic.
+/// Validates the review, asks `confirm` unless `yes`, then records the
+/// approval. Returns the line appended to the epic.
 pub fn approve(
     cn: &Path,
     repo: &Path,
@@ -205,7 +207,7 @@ pub fn approve(
         args.design.trim_start_matches("./"),
         args.by.trim()
     );
-    if !confirm(&line)? {
+    if !args.yes && !confirm(&line)? {
         bail!("not approved");
     }
 

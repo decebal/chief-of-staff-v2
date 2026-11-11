@@ -137,7 +137,7 @@ enum RitualCmd {
         cn: PathBuf,
     },
     /// Record your approval of a design: its sha256 on the epic, then `cn approve`.
-    /// Asks on the terminal and refuses without one.
+    /// Asks on the terminal and refuses without one; `--yes` records it with no prompt.
     Approve {
         epic: String,
         /// The design, relative to the repo.
@@ -152,6 +152,10 @@ enum RitualCmd {
         /// Approve with no review; the epic records that.
         #[arg(long)]
         without_review: bool,
+        /// Skip the terminal prompt. Only when the user has told you, in this
+        /// conversation, to approve this design; never on your own initiative.
+        #[arg(long)]
+        yes: bool,
         /// The repo holding the epic's `.chronis/` store. Default: the main
         /// checkout of the current directory.
         #[arg(long)]
@@ -469,6 +473,7 @@ fn ritual_cmd(cmd: &RitualCmd) -> Result<()> {
             by,
             review,
             without_review,
+            yes,
             repo,
             cn,
         } => {
@@ -478,6 +483,7 @@ fn ritual_cmd(cmd: &RitualCmd) -> Result<()> {
                 by,
                 review: review.clone(),
                 without_review: *without_review,
+                yes: *yes,
             };
             let line = cos::ritual::approve(cn, &repo_dir(repo)?, &args, confirm_on_terminal)?;
             println!("{line}\napproved {epic}");
@@ -486,12 +492,14 @@ fn ritual_cmd(cmd: &RitualCmd) -> Result<()> {
     }
 }
 
-/// A person types `yes` at a terminal. A pipe, a file or an agent session's
-/// stdin is refused, so approval cannot be scripted.
+/// A person types `yes` at a terminal. A pipe or a file is refused, so an
+/// unattended call cannot approve; `--yes` is the only way past this prompt.
 fn confirm_on_terminal(line: &str) -> Result<bool> {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
-        anyhow::bail!("cos ritual approve needs a terminal: run it yourself, not through an agent");
+        anyhow::bail!(
+            "cos ritual approve needs a terminal. An agent the user has told to approve this design passes --yes instead"
+        );
     }
     eprint!("Append to the epic and approve it?\n  {line}\nType yes: ");
     std::io::stderr().flush()?;

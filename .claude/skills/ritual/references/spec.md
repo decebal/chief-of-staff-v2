@@ -15,7 +15,7 @@ git worktree add -b <type>/<slug> ../<repo>-<slug> origin/<trunk>
 cn task edit <epic> --append-description "ritual-branch: <type>/<slug>" --toon   # from the main checkout
 ```
 
-Use the repo's branch rule (a ticket key, if the repo uses one). Move the Think brief from the main
+Use the repo's branch rule (a ticket key, see the org's notes in `repo-notes.md`). Move the Think brief from the main
 checkout onto the branch, and commit the design there as you draft it: `cos` reads the committed
 copy while the branch exists, and a hired reviewer's worktree is cut from it.
 
@@ -77,22 +77,30 @@ as history and mark their `design-sha256: superseded`.
 
 ## Approve
 
-A person approves, never the agent. Show the user the design and the clean review, and give them
-the command to type in their own terminal:
+The approval is the user's decision. Show the user the design and the clean review, then wait.
+Two ways it happens:
 
-```bash
-cos ritual approve <epic> docs/plans/YYYY-MM-DD-<slug>-design.md --by "<name>" \
-  --review docs/plans/YYYY-MM-DD-<slug>-design-review.md
-```
+- the user runs the command in their own terminal:
+
+  ```bash
+  cos ritual approve <epic> docs/plans/YYYY-MM-DD-<slug>-design.md --by "<name>" \
+    --review docs/plans/YYYY-MM-DD-<slug>-design-review.md
+  ```
+
+- the user tells you to approve in this conversation. First run `cos ritual approve --help` and
+  check that it lists `--yes`; if it does not, stop and tell the user to update chief-of-staff-v2 to
+  main. Do not run the command without `--yes`: it asks for a terminal answer you cannot give.
+  If it does, run the same command with `--yes` and quote the user's instruction in your report.
+  Never approve on your own initiative, never infer approval from silence or from a clean review,
+  and never approve to unblock yourself.
 
 It refuses unless the review names this design, its `design-sha256` matches the design's current
-digest and its verdict is `clean`; it asks for confirmation and refuses without a terminal. Then
-it appends `ritual-approved: <path> sha256:<digest> by <name>` to the epic and runs
+digest and its verdict is `clean`. Without `--yes` it asks for confirmation and refuses without a
+terminal. Then it appends `ritual-approved: <path> sha256:<digest> by <name>` to the epic and runs
 `cn approve <epic>`. `--without-review` replaces `--review` for designs too small to review, and
-says so in the line it writes.
+says so in the line it writes. `--by` is a name the caller types, not a verified identity.
 
-Never run `cos ritual approve` or `cn approve` yourself; a PreToolUse hook that denies
-both makes this a gate in agent sessions. Without `cos`, the user computes
-`shasum -a 256 <design>`, appends the same line, and runs `cn approve <epic>`.
+Without `cos`, the user computes `shasum -a 256 <design>`, appends the same line, and runs
+`cn approve <epic>`; if the user tells you to, you run `cn approve <epic>` after that line exists.
 
 Then the next step is Plan ([plan.md](plan.md)).

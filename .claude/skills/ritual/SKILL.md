@@ -6,10 +6,17 @@ description: "The one flow from an idea to a shipped change: Think, Spec, Plan, 
 # ritual
 
 One flow for planned work. A flow is one Chronis epic; every step hands the next one a file,
-and the epic's description names each file. `cos` reads every flow on the machine and shows
-which step it is in (`cos flows`).
+and the epic's description names each file. `cos`
+([chief-of-staff](https://github.com/decebal/chief-of-staff-v2), optional) reads every flow on
+the machine and shows which step it is in (`cos flows`); every step also works without it.
 
 This skill routes. It names the step, loads that step's reference, and stops at each gate.
+
+For page-by-page interface refinement, use `ui-refinement` alongside this router when installed. It contributes page decisions, captures and checks to the same flow; this skill retains stage and approval gates.
+
+**Requires** Chronis (`cn`, `cargo install chronis`). **Optional:** EGM, `cos`, graphify,
+claude-guard; [ritual-full](../ritual-full/SKILL.md) turns them all on. Install and a worked
+example: [docs/ritual-zero-to-hero.md](../../docs/ritual-zero-to-hero.md).
 
 ## Find the step
 
@@ -39,7 +46,7 @@ Report the step in one line before acting: `ritual: <repo> <epic> is at <step> b
 | Step | Writes | Names it on the epic as |
 |---|---|---|
 | Think | `docs/plans/YYYY-MM-DD-<slug>-brief.md` | `ritual-brief: <path>` |
-| Spec | the flow's branch; `…-design.md` and `…-design-review.md` committed on it | `ritual-branch: <branch>`, `ritual-design: <path>`, then `ritual-approved: …` (written by the user's `cos ritual approve`) |
+| Spec | the flow's branch; `…-design.md` and `…-design-review.md` committed on it | `ritual-branch: <branch>`, `ritual-design: <path>`, then `ritual-approved: …` (written by `cos ritual approve`, on the user's decision) |
 | Plan | `…-plan.md` (PRD, gates, testing trophy) on the branch; beads under the epic | `ritual-plan: <path>` |
 | Build | commits on the branch | the beads, closed with a reason |
 | Review | `…-code-review.md`, or a review on the PR | `ritual-review: <path or PR> clean` or `… findings` |
@@ -55,11 +62,13 @@ line in the repo's docs index in the same commit.
 
 - **Spec → Plan:** `cos ritual check <epic>` exits 0. Without `cos`, the epic shows `approved`
   in `cn show` and the design is unchanged since its `ritual-approved:` digest. Never cut beads
-  for an unapproved design, and never approve one yourself: the user runs `cos ritual approve`.
+  for an unapproved design. The approval is the user's decision: run `cos ritual approve` (or
+  `cn approve` without `cos`) only when the user explicitly tells you to approve in this
+  conversation, quote that instruction in your report, and never approve on your own initiative.
 - **Build → Review:** every bead done, and the repo's tests ran. A compile, a lint or a
   `--no-run` build is not a test run.
 - **Review → Ship:** a reviewer with fresh context returned clean, newer than the last change.
-- **Ship:** one PR, one commit, the test plan ticked.
+- **Ship:** one PR, one commit, the test plan ticked, pr-guard satisfied.
 
 A human approves the design; nothing else in the flow waits on a person. Manual and external
 actions never become beads ([actionability.md](references/actionability.md)).
@@ -78,10 +87,11 @@ The work is a graph and should be planned as one: beads with `blocked_by` edges,
 on top. Read [graph.md](references/graph.md) before cutting beads, and use the repo's
 `graphify-out/` graph for context in Think and Spec when it exists.
 
-## Repository conventions
+## Repository notes
 
-Read the repo's own `CLAUDE.md` or `AGENTS.md` before Build or Ship: its runtime pin, ticket key,
-branch rule and release path win over anything here.
+Repositories differ in version pins, ticket keys, release paths and CI-only steps. Keep those
+facts per organisation in `references/<org>.md`, shaped as [repo-notes.md](references/repo-notes.md)
+describes, and read it before Build or Ship.
 
 ## Where a flow lives
 

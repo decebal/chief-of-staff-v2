@@ -9,9 +9,9 @@ One PR, one commit, with evidence a reviewer can open.
 2. **Evidence.** For a user-visible change, `pr-proof` writes the HTML report under `docs/`. For a
    backend change, the PR body carries the commands run and their output, each labelled as
    observed.
-3. **Open the PR** with a title in the repo's convention (the repo's ticket key, if it has one), a
-   body with a summary, a test plan of ticked checkboxes, and a link to the design. Do not open
-   it while the test plan has unticked items, and keep one open PR per flow.
+3. **Open the PR** with a title in the repo's convention (see the org's notes, `repo-notes.md`, for ticket keys), a body
+   with a summary, a test plan of ticked checkboxes, and a link to the design. pr-guard asks
+   while the test plan has unticked items and denies a second open PR in the session.
 4. **Name it on the epic:** `ritual-pr: <url>`.
 5. **Deploys are reported in two parts.** A workflow dispatched is not a service deployed: report
    the dispatch, then read the deployed state (the revision, the version, the URL) before saying
