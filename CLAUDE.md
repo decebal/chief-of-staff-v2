@@ -65,8 +65,9 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 | `src/dash.rs` | `cos dash`, the live localhost page |
 | `src/docs.rs` + `src/docs.html` | the documentation room: repo docs from `monitoredRepos`, Notion pages from `cos docs notion`, the user's topics, links and marks in `context/docs.json`; served at `/docs` by `cos dash` and the desktop app |
 | `src/flows.rs` + `src/flows.html` | `cos flows` and `/flows`: every ritual flow (a Chronis epic) in the main checkouts under `--projects`, its step inferred from its beads and `ritual-*` markers, its bead graph; read-only, gated on an approved `tasks` source, one deadline for the scan (`tests/flows.rs`) |
-| `src/ritual.rs` | `cos ritual approve` / `check`: the design's sha256 on the epic plus `cn approve`; approve is CLI-only and refuses without a terminal, the one place `cos` writes a task store (`docs/ritual.md`) |
+| `src/ritual.rs` | `cos ritual approve` / `check`: the design's sha256 on the epic plus `cn approve`; approve is CLI-only and prompts on a terminal (`--yes` for an agent the user told to approve), the one place `cos` writes a task store (`docs/ritual.md`) |
 | `.claude/skills/ritual/` | the ritual skill: Think, Spec, Plan, Build, Review, Ship, Reflect, and the `ritual-*` markers `cos flows` reads |
+| `.claude/skills/ritual-full/`, `.claude/skills/semantic-isa/` | ritual with every tool on (EGM, a Semantic ISA section per design, two reviewers, `cos` hires); planned work in this repo runs as a `ritual-full` flow. All three skills are vendored byte-for-byte from decebal-claude-skills |
 | `examples/demo.rs` | the synthetic home behind every screenshot (`task demo`), with fictional Chronis stores and a stand-in `cn` for `/flows` |
 
 Screenshots in `docs/assets/` come only from `task screenshots` on the demo

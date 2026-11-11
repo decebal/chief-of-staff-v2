@@ -69,14 +69,15 @@ A later review supersedes an earlier one: keep the earlier file with `design-sha
 
 ## Approval
 
-`cos ritual approve <epic> <design> --by <name> (--review <path> | --without-review) [--repo <dir>]`:
+`cos ritual approve <epic> <design> --by <name> (--review <path> | --without-review) [--yes] [--repo <dir>]`:
 
 1. Refuses a design other than the one the epic's `ritual-design:` names, and refuses unless the
    review's front matter names this design, its `design-sha256` equals the design's sha256, and its
    `verdict` is `clean`.
 2. Shows the line it will write and asks for `yes` on the terminal; refuses when stdin is not a
-   terminal.
-3. Appends `ritual-approved: <path> sha256:<hex> by <name>`, then runs `cn approve <epic>`.
+   terminal. `--yes` skips this step and the terminal check.
+3. Prints the line, appends `ritual-approved: <path> sha256:<hex> by <name>`, then runs
+   `cn approve <epic>`.
 
 `cos ritual check <epic> [--repo <dir>]` exits 0 only when the epic is approved and the newest
 `ritual-approved:` digest matches the design as the flow holds it. Otherwise it prints
@@ -85,15 +86,18 @@ main checkout of the current directory, so both commands work from the flow's wo
 
 ### What approval does and does not stop
 
-The terminal prompt stops accidents: a piped or scripted call fails. It does not authenticate
-anyone: `--by` is a name, a pseudo-terminal wrapper gets past the check, and an agent with shell
-access can write the same line and run `cn approve` itself, which `check` cannot tell apart. The
-skill tells agents never to approve. A Claude Code PreToolUse hook that denies `cos ritual approve`
-and `cn approve` in agent Bash calls turns that into a gate for direct and chained calls; a call
-hidden behind a variable, `eval` or a script still gets through.
+Approval is the user's decision. An agent runs `cos ritual approve ... --yes` only when the user
+has told it, in the conversation, to approve this design; it never approves on its own initiative,
+never infers approval from a clean review, and never approves to unblock itself. Without `--yes`
+the terminal prompt stops accidents: a piped or scripted call fails.
+
+`--by` is a name, not an identity. Nothing authenticates the approver: an agent with shell access
+can write the same line and run `cn approve` itself, which `check` cannot tell apart, and a
+pseudo-terminal wrapper gets past the prompt. `check` verifies the design's digest, not who
+approved it.
 
 `approve` is a CLI command only, never an MCP tool. It is the one place `cos` writes to a task
-store, and only on your typed command; the starter kit's read-only rule holds everywhere else.
+store, and only on the user's command; the starter kit's read-only rule holds everywhere else.
 
 ## Reading flows
 

@@ -456,6 +456,7 @@ fn approve_refuses_anything_but_a_clean_review_of_this_exact_design() {
         by: "Ann",
         review,
         without_review: without,
+        yes: false,
     };
 
     let cases = [
@@ -493,6 +494,7 @@ fn approve_records_the_digest_then_approves() {
         by: "Ann",
         review: Some(clean),
         without_review: false,
+        yes: false,
     };
 
     let mut asked = String::new();
@@ -522,9 +524,37 @@ fn approve_without_review_says_so_on_the_epic() {
         by: "Ann",
         review: None,
         without_review: true,
+        yes: false,
     };
     let line = ritual::approve(&fake_cn(), &r, &args, |_| Ok(true)).unwrap();
     assert!(line.ends_with("by Ann without review"), "{line}");
+}
+
+#[test]
+fn approve_with_yes_records_without_asking() {
+    let design = "docs/plans/x-design.md";
+    let (_d, r) = ritual_repo("approve-yes", "v1", task("e", "epic", "open", None));
+    let digest = flows::sha256_file(&r.join(design)).unwrap();
+    let args = ApproveArgs {
+        epic: "e",
+        design,
+        by: "Ann",
+        review: None,
+        without_review: true,
+        yes: true,
+    };
+    let line = ritual::approve(&fake_cn(), &r, &args, |l| {
+        unreachable!("--yes must not prompt, asked: {l}")
+    })
+    .unwrap();
+    assert_eq!(
+        line,
+        format!("ritual-approved: {design} sha256:{digest} by Ann without review")
+    );
+    assert_eq!(
+        calls(&r),
+        format!("task edit e --append-description {line} --toon\napprove e --toon\n")
+    );
 }
 
 #[test]
@@ -542,6 +572,7 @@ fn approve_refuses_a_file_other_than_the_epics_design() {
         by: "Ann",
         review: None,
         without_review: true,
+        yes: false,
     };
     let err = ritual::approve(&fake_cn(), &r, &args, |_| Ok(true)).unwrap_err();
     assert!(
@@ -570,7 +601,38 @@ fn the_cli_refuses_to_approve_without_a_terminal() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("needs a terminal"), "{err}");
+    assert!(err.contains("--yes"), "{err}");
     assert_eq!(calls(&r), "", "an agent's piped stdin approves nothing");
+}
+
+#[test]
+fn the_cli_approves_with_yes_when_stdin_is_not_a_terminal() {
+    let design = "docs/plans/x-design.md";
+    let (d, r) = ritual_repo("approve-cli-yes", "v1", task("e", "epic", "open", None));
+    let digest = flows::sha256_file(&r.join(design)).unwrap();
+    let clean = review(&d.0, design, &digest, "clean");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_cos"))
+        .args(["ritual", "approve", "e", design, "--by", "Ann", "--review"])
+        .arg(&clean)
+        .args(["--yes", "--repo"])
+        .arg(&r)
+        .env("COS_CN", fake_cn())
+        .stdin(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = format!("ritual-approved: {design} sha256:{digest} by Ann");
+    assert_eq!(stdout, format!("{line}\napproved e\n"));
+    assert_eq!(
+        calls(&r),
+        format!("task edit e --append-description {line} --toon\napprove e --toon\n")
+    );
 }
 
 #[test]

@@ -280,7 +280,8 @@ cos ritual check <epic>   # exit 0: approved, and the design unchanged since
 `approve` checks that the review names this exact design (its sha256) with
 `verdict: clean`, asks you to type `yes`, then writes the digest on the epic and
 runs `cn approve`. It refuses without a terminal, so a script cannot approve
-for you by accident. It does not authenticate you: see
+for you by accident. An agent you have told to approve a design passes `--yes`
+to skip the prompt. It does not authenticate you: see
 [ritual.md](ritual.md#what-approval-does-and-does-not-stop).
 
 ### In Claude Desktop and Codex
