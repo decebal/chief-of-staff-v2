@@ -16,7 +16,7 @@ One bead per story, under the approved epic, wired as a dependency graph. Tracke
 ## Detect the gates' commands
 
 Prefer a `Taskfile.yml` or `Makefile` target (`task ci`, `make ci`). Otherwise the runtime's own
-runner: `bun` (read the version from `packageManager`), `cargo`, `mix`, `go`.
+runner: `bun` (read the version from `packageManager`, see `repo-notes.md`), `cargo`, `mix`, `go`.
 Use the package manager the lockfile names.
 
 ## Create
@@ -67,7 +67,7 @@ its own worktree with a detached HEAD, pushing with `git push origin HEAD:<branc
 
 The branch is the one Spec cut and named on the epic (`ritual-branch:`); stamp it into every bead.
 A bug flow that skipped Spec cuts and names it here, using the repo's own branch and PR title rule
-(the repo's ticket key, if it has one).
+(see the org's notes, `repo-notes.md`, for ticket keys).
 
 ## After cutting
 
