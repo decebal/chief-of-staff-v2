@@ -6,12 +6,14 @@
   <key>ProgramArguments</key>
   <array>
     <string>@HOME@/.cargo/bin/cos</string>
+    <string>--business</string>
+    <string>@BUSINESS@</string>
     <string>brief</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>@HOME@/.cargo/bin:@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <key>COS_HOME</key><string>@COS_HOME@</string>
+    <key>COS_BUSINESSES</key><string>@REGISTRY@</string>
   </dict>
   <key>StartCalendarInterval</key>
   <array>
@@ -21,7 +23,7 @@
     <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>30</integer></dict>
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>30</integer></dict>
   </array>
-  <key>StandardOutPath</key><string>@COS_HOME@/out/logs/brief.log</string>
-  <key>StandardErrorPath</key><string>@COS_HOME@/out/logs/brief.err</string>
+  <key>StandardOutPath</key><string>@HOME_DIR@/out/logs/brief.log</string>
+  <key>StandardErrorPath</key><string>@HOME_DIR@/out/logs/brief.err</string>
 </dict>
 </plist>

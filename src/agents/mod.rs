@@ -9,7 +9,7 @@
 
 use std::fmt;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,7 @@ use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::business::Triple;
 use crate::proc;
 use crate::reports::Brief;
 use crate::store::{self, Kind};
@@ -41,6 +42,9 @@ pub const CEILING: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// A supervisor that has not recorded its pid within this is presumed dead.
 const START_GRACE: Duration = Duration::from_secs(15);
+
+/// How long `clean` waits for a supervisor still judging an ended run.
+const JUDGE_GRACE: Duration = Duration::from_secs(15);
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, schemars::JsonSchema,
@@ -257,12 +261,45 @@ pub fn root(home: &Path) -> PathBuf {
     home.join("out/agents")
 }
 
-pub fn dir(home: &Path, id: &str) -> PathBuf {
+fn dir(home: &Path, id: &str) -> PathBuf {
     root(home).join(id)
 }
 
-pub fn events_path(home: &Path, id: &str) -> PathBuf {
-    dir(home, id).join("events.jsonl")
+/// A run directory checked by `run_dir`: the only way from a run id to a path.
+pub struct RunDir {
+    path: PathBuf,
+}
+
+impl RunDir {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn events_path(&self) -> PathBuf {
+        self.path.join("events.jsonl")
+    }
+}
+
+/// Resolves a run id under `home`'s `out/agents`, or refuses it. A refused id
+/// reads, writes, runs and kills nothing.
+pub fn run_dir(home: &Path, id: &str) -> Result<RunDir> {
+    let mut parts = Path::new(id).components();
+    match (parts.next(), parts.next()) {
+        (Some(Component::Normal(part)), None) if part == id => {}
+        _ => bail!("not a run id: {id:?}"),
+    }
+    let root = std::fs::canonicalize(root(home)).with_context(|| format!("no agent {id}"))?;
+    let path = root.join(id);
+    let meta = std::fs::symlink_metadata(&path).with_context(|| format!("no agent {id}"))?;
+    if !meta.is_dir() {
+        bail!("{id} is not a run directory");
+    }
+    let spec: Spec =
+        read_json(&path.join("spec.json")).with_context(|| format!("no agent {id}"))?;
+    if spec.id != id {
+        bail!("{id}'s spec.json names run {}", spec.id);
+    }
+    Ok(RunDir { path })
 }
 
 /// The agent prompts in the latest saved brief: its actions or its week's goals.
@@ -356,12 +393,15 @@ pub fn infer_repo(prompt: &str, projects: &Path) -> Option<PathBuf> {
 
 /// Creates the agent's directory and worktree, records its spec, and starts
 /// its supervisor detached. Returns once the supervisor is started; the agent
-/// itself runs in the background.
-pub fn spawn(home: &Path, mut req: Request, cos: &Path) -> Result<Spec> {
+/// itself runs in the background. The agent's env pins `triple`, so a `cos`
+/// it runs resolves the business that spawned it.
+pub fn spawn(triple: &Triple, mut req: Request, cos: &Path) -> Result<Spec> {
     if req.prompt.trim().is_empty() {
         bail!("empty prompt");
     }
-    let home = std::path::absolute(home)?;
+    let home = std::path::absolute(&triple.home)?;
+    let workspace = std::path::absolute(&triple.workspace)?;
+    let projects = std::path::absolute(&triple.projects)?;
     let explicit = req.explicit;
     let limits = policy::load(&home).apply(&mut req, explicit)?;
     let id = new_id()?;
@@ -416,13 +456,17 @@ pub fn spawn(home: &Path, mut req: Request, cos: &Path) -> Result<Spec> {
         role: req.role,
     };
     write_json(&d.join("spec.json"), &spec)?;
-    write_state(&home, &id, &State::default())?;
+    write_state(&RunDir { path: d.clone() }, &State::default())?;
 
     let log = std::fs::File::create(d.join("supervisor.log"))?;
     let mut cmd = Command::new(cos);
     cmd.arg("--home")
         .arg(&home)
         .args(["agents", "supervise", &id])
+        .env_remove("COS_BUSINESS")
+        .env("COS_HOME", &home)
+        .env("COS_WORKSPACE", &workspace)
+        .env("COS_PROJECTS", &projects)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -442,17 +486,27 @@ pub fn spawn(home: &Path, mut req: Request, cos: &Path) -> Result<Spec> {
     Ok(spec)
 }
 
+/// Every run that resolves, newest first. An id that fails `run_dir` or `read`
+/// is listed in `skipped` instead, so one bad directory hides nothing else.
+#[derive(Default)]
+pub struct Listing {
+    pub runs: Vec<(Spec, State)>,
+    pub skipped: Vec<String>,
+}
+
 /// Spec and state for one agent, reconciled against the process table.
 pub fn read(home: &Path, id: &str) -> Result<(Spec, State)> {
-    let d = dir(home, id);
-    let spec: Spec = read_json(&d.join("spec.json")).with_context(|| format!("no agent {id}"))?;
-    let state: State = read_json(&d.join("state.json")).unwrap_or_default();
-    let state = reconcile(home, &spec, state)?;
+    load(&run_dir(home, id)?)
+}
+
+fn load(run: &RunDir) -> Result<(Spec, State)> {
+    let spec: Spec = read_json(&run.path.join("spec.json"))?;
+    let state: State = read_json(&run.path.join("state.json")).unwrap_or_default();
+    let state = reconcile(run, &spec, state)?;
     Ok((spec, state))
 }
 
-/// Every agent, newest first.
-pub fn list(home: &Path) -> Result<Vec<(Spec, State)>> {
+fn run_ids(home: &Path) -> Vec<String> {
     let mut ids: Vec<String> = std::fs::read_dir(root(home))
         .into_iter()
         .flatten()
@@ -461,23 +515,90 @@ pub fn list(home: &Path) -> Result<Vec<(Spec, State)>> {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     ids.sort_unstable_by(|a, b| b.cmp(a));
-    ids.iter().map(|id| read(home, id)).collect()
+    ids
+}
+
+pub fn list(home: &Path) -> Result<Listing> {
+    let mut listing = Listing::default();
+    for id in run_ids(home) {
+        match read(home, &id) {
+            Ok(run) => listing.runs.push(run),
+            Err(_) => listing.skipped.push(id),
+        }
+    }
+    Ok(listing)
+}
+
+/// What a run that has not ended is doing, from its record alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    Live,
+    /// No supervisor pid yet, within `START_GRACE` of spawn.
+    Starting,
+    /// Its supervisor is gone.
+    Lost,
+}
+
+/// Callers check `status.terminal()` first; this is for runs that have not ended.
+pub fn classify(spec: &Spec, state: &State) -> Liveness {
+    match state.supervisor {
+        Some(pid) if is_cos(pid) => Liveness::Live,
+        None if age(&spec.created) < START_GRACE => Liveness::Starting,
+        _ => Liveness::Lost,
+    }
+}
+
+/// Run counts under one home, for the picker's badge.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
+    pub live: usize,
+    pub lost: usize,
+    /// Runs whose spec or state cannot be read, or whose id is refused.
+    pub unreadable: usize,
+}
+
+/// Counts runs without reconciling them: nothing is written and no process is signalled.
+pub fn count(home: &Path) -> Result<Counts> {
+    let mut counts = Counts::default();
+    let Ok(root) = std::fs::canonicalize(root(home)) else {
+        return Ok(counts);
+    };
+    for id in run_ids(home) {
+        let path = root.join(&id);
+        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            counts.unreadable += 1;
+            continue;
+        }
+        let spec: Result<Spec> = read_json(&path.join("spec.json"));
+        let state: Result<State> = read_json(&path.join("state.json"));
+        let (Ok(spec), Ok(state)) = (spec, state) else {
+            counts.unreadable += 1;
+            continue;
+        };
+        if spec.id != id {
+            counts.unreadable += 1;
+            continue;
+        }
+        if state.status.terminal() {
+            continue;
+        }
+        match classify(&spec, &state) {
+            Liveness::Live | Liveness::Starting => counts.live += 1,
+            Liveness::Lost => counts.lost += 1,
+        }
+    }
+    Ok(counts)
 }
 
 /// A running state whose supervisor is gone becomes `lost`, and the harness
 /// it left behind is stopped: nothing else would ever reap it.
-fn reconcile(home: &Path, spec: &Spec, state: State) -> Result<State> {
-    if state.status.terminal() {
+fn reconcile(run: &RunDir, spec: &Spec, state: State) -> Result<State> {
+    if state.status.terminal() || classify(spec, &state) != Liveness::Lost {
         return Ok(state);
-    }
-    match state.supervisor {
-        Some(pid) if is_cos(pid) => return Ok(state),
-        None if age(&spec.created) < START_GRACE => return Ok(state),
-        _ => {}
     }
     // `state` may predate the supervisor's last write; now that it is gone it
     // cannot write again, so the file on disk is final.
-    let mut state: State = read_json(&dir(home, &spec.id).join("state.json")).unwrap_or(state);
+    let mut state: State = read_json(&run.path.join("state.json")).unwrap_or(state);
     if state.status.terminal() {
         return Ok(state);
     }
@@ -489,21 +610,22 @@ fn reconcile(home: &Path, spec: &Spec, state: State) -> Result<State> {
     state.status = Status::Lost;
     state.ended = Some(jiff::Timestamp::now().to_string());
     state.error = Some(note);
-    write_state(home, &spec.id, &state)?;
+    write_state(run, &state)?;
     Ok(state)
 }
 
 /// Judges an ended agent again and records the new verdict, e.g. after its
 /// checks were fixed or its work was finished by hand.
 pub fn rejudge(home: &Path, id: &str) -> Result<Verdict> {
-    let (spec, mut state) = read(home, id)?;
+    let run = run_dir(home, id)?;
+    let (spec, mut state) = load(&run)?;
     if !state.status.terminal() {
         bail!("{id} is {}; it is judged when it ends", state.status);
     }
-    let bin = dir(home, id).join("bin");
+    let bin = run.path.join("bin");
     let v = judge::judge(&spec, &state, bin.exists().then_some(bin.as_path()));
     state.verdict = Some(v.clone());
-    write_state(home, id, &state)?;
+    write_state(&run, &state)?;
     if let Some(row) = ledger::row(&spec, &state) {
         ledger::append(home, &row)?;
     }
@@ -513,7 +635,8 @@ pub fn rejudge(home: &Path, id: &str) -> Result<Verdict> {
 /// Records what you found when you ran what a judged agent drafted. Stored
 /// on the run's state only; nothing is sent anywhere.
 pub fn record(home: &Path, id: &str, mut r: Recorded) -> Result<State> {
-    let (_, mut state) = read(home, id)?;
+    let run = run_dir(home, id)?;
+    let (_, mut state) = load(&run)?;
     if state.verdict.is_none() {
         bail!(
             "{id} is {}; record a result once it is judged",
@@ -526,7 +649,7 @@ pub fn record(home: &Path, id: &str, mut r: Recorded) -> Result<State> {
     r.evidence.retain(|e| !e.trim().is_empty());
     r.at = jiff::Timestamp::now().to_string();
     state.recorded = Some(r);
-    write_state(home, id, &state)?;
+    write_state(&run, &state)?;
     Ok(state)
 }
 
@@ -534,20 +657,21 @@ pub fn record(home: &Path, id: &str, mut r: Recorded) -> Result<State> {
 /// record that. A supervisor that does not answer is killed, and its harness
 /// with it.
 pub fn stop(home: &Path, id: &str, wait: Duration) -> Result<State> {
-    let (_, state) = read(home, id)?;
+    let run = run_dir(home, id)?;
+    let (_, state) = load(&run)?;
     if state.status.terminal() {
         return Ok(state);
     }
-    std::fs::write(dir(home, id).join("stop"), "")?;
+    std::fs::write(run.path.join("stop"), "")?;
     let until = Instant::now() + wait;
     while Instant::now() < until {
-        let (_, s) = read(home, id)?;
+        let (_, s) = load(&run)?;
         if s.status.terminal() {
             return Ok(s);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let (_, mut s) = read(home, id)?;
+    let (_, mut s) = load(&run)?;
     if let Some(pid) = s.supervisor.filter(|&p| is_cos(p)) {
         // SAFETY: signalling the supervisor this agent recorded; no memory is touched.
         unsafe {
@@ -560,7 +684,7 @@ pub fn stop(home: &Path, id: &str, wait: Duration) -> Result<State> {
     s.status = Status::Killed;
     s.ended = Some(jiff::Timestamp::now().to_string());
     s.error = Some("supervisor did not answer the stop request; killed".into());
-    write_state(home, id, &s)?;
+    write_state(&run, &s)?;
     Ok(s)
 }
 
@@ -568,12 +692,24 @@ pub fn stop(home: &Path, id: &str, wait: Duration) -> Result<State> {
 /// worktree holds uncommitted changes or commits past its base, unless
 /// `force`: that work exists nowhere else.
 pub fn clean(home: &Path, id: &str, force: bool) -> Result<()> {
-    let (spec, state) = read(home, id)?;
+    let run = run_dir(home, id)?;
+    let (spec, state) = load(&run)?;
     if !state.status.terminal() {
         bail!(
             "{id} is {}; stop it first (`cos agents kill {id}`)",
             state.status
         );
+    }
+    // The supervisor records the outcome, then judges and writes again; deleting under it
+    // fails with ENOTEMPTY or loses the verdict, so the directory waits for it to exit.
+    if let Some(pid) = state.supervisor {
+        let until = Instant::now() + JUDGE_GRACE;
+        while is_cos(pid) {
+            if Instant::now() >= until {
+                bail!("{id} is still being judged; clean it once its verdict is recorded");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     if spec.worktree && spec.workdir.exists() {
         if !force {
@@ -603,12 +739,12 @@ pub fn clean(home: &Path, id: &str, force: bool) -> Result<()> {
             ],
         )?;
     }
-    std::fs::remove_dir_all(dir(home, id))?;
+    std::fs::remove_dir_all(run.path())?;
     Ok(())
 }
 
-pub(crate) fn write_state(home: &Path, id: &str, state: &State) -> Result<()> {
-    write_json(&dir(home, id).join("state.json"), state)
+pub(crate) fn write_state(run: &RunDir, state: &State) -> Result<()> {
+    write_json(&run.path.join("state.json"), state)
 }
 
 /// Write-then-rename, so a reader never sees half a file.

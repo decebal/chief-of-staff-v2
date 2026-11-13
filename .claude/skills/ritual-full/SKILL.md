@@ -19,29 +19,29 @@ Run each check, print one table, then stop if any row is `missing`:
 | Tool | Check | Install when missing |
 |---|---|---|
 | Chronis `cn` | `cn --help` exits 0; `.chronis/` in the main checkout | `cargo install chronis`, then `cn init` in the repo |
-| EGM plugin | `claude plugin list` shows `egm@egm` enabled | `claude plugin marketplace add google/elephant-goldfish-model` then `claude plugin install egm@egm`, new session |
+| EGM plugin | `claude plugin list` shows `egm@egm` enabled, and its `skills/egm-review/SKILL.md` exists under `~/.claude/plugins/cache/egm/egm/<that version>/` | `claude plugin marketplace add google/elephant-goldfish-model` then `claude plugin install egm@egm`, new session |
 | semantic-isa | `~/.claude/skills/semantic-isa/SKILL.md` exists | `cp -R skills/semantic-isa ~/.claude/skills/semantic-isa` from this repo |
 | cos | `cos ritual check --help` exits 0 | clone `decebal/chief-of-staff-v2`, run `task setup` in it |
-| graphify | `graphify --help` exits 0; `graphify-out/` in the repo, else build it | `uv tool install graphifyy` then `graphify install` |
-| claude-guard | `claude-guard --help` exits 0; `~/.claude/settings.json` registers `claude-guard infra-guard` and `claude-guard bash-hygiene` | `cargo install --path gates/rust/claude-guard`, then `skillsync hooks install` |
-| skills | `brainstorming`, `pr-proof`, `systematic-debugging` under `~/.claude/skills/` | `cp -R skills/<name> ~/.claude/skills/<name>` |
+| graphify | `graphify --help` exits 0; `graphify-out/` in the repo, else build it | `uv tool install graphifyy` then `graphify install`; the same reinstall fixes `graphify --help` exiting 126 with `bad interpreter` (its old pipx venv is gone) |
+| claude-guard | `command -v claude-guard` finds it (it has no `--help`; with no subcommand it prints usage and exits 2); `~/.claude/settings.json` registers `claude-guard infra-guard` and `claude-guard bash-hygiene` | `cargo install --path gates/rust/claude-guard`, then `skillsync hooks install` |
+| skills | `pr-proof`, `systematic-debugging` under `~/.claude/skills/` | `cp -R skills/<name> ~/.claude/skills/<name>` |
 
 Report: `preflight: cn ok · egm ok · semantic-isa ok · cos ok · graphify ok · claude-guard ok · skills ok`,
-with `missing (<install command>)` in place of `ok` where it applies. EGM skills set
-`disable-model-invocation: true`, so for every `/egm:` step below you give the user the exact
-command and wait for its output file.
+with `missing (<install command>)` in place of `ok` where it applies. You run every EGM step below
+yourself: read the EGM skill's `SKILL.md` and follow it, spawning its `egm:egm-*` reviewers in
+fresh contexts ([ritual's EGM section](../ritual/SKILL.md#egm)).
 
 ## What is on, per step
 
 | Step | On by default | Hands over (in addition to ritual's) |
 |---|---|---|
-| Think | user runs `/egm:egm-brainstorm`; `graphify query` on the modules the idea touches | `concepts_brief.md` moved to the dated brief path; graph nodes cited |
-| Spec | user runs `/egm:egm-draft`; a **Semantic ISA** section; review by `/egm:egm-review` **and** a hired `ritual-goldfish`; resolve with `/egm:egm-resolve` or `/egm:egm-review-loop`; `cos ritual check` | design with ISA section; two review files |
+| Think | EGM `egm-brainstorm`; `graphify query` on the modules the idea touches | `concepts_brief.md` moved to the dated brief path; graph nodes cited |
+| Spec | EGM `egm-draft`; a **Semantic ISA** section; review by EGM `egm-review` **and** a hired `ritual-goldfish`; resolve with EGM `egm-resolve` or `egm-review-loop`; `cos ritual check` | design with ISA section; two review files |
 | Plan | one bead per ISA sink whose done-when is its VERIFY test; graph read back ([graph.md](../ritual/references/graph.md)) | plan with the ISA test matrix as trophy rows |
 | Build | `cos agents spawn --role builder` per ready bead, own worktree; claude-guard hooks on | ISA matrix rows as real tests |
 | Review | `cos agents spawn --role reviewer`; sink-to-VERIFY check | code review naming each sink's VERIFY at file:line |
 | Ship | `pr-proof` evidence; one PR, one commit ([ship.md](../ritual/references/ship.md)) | the evidence report |
-| Reflect | user runs `/egm:egm-drift-report` on the design; new-sink check | report under `docs/reports/` |
+| Reflect | EGM `egm-drift-report` on the design; new-sink check | report under `docs/reports/` |
 
 ## Spec: the Semantic ISA section
 

@@ -14,6 +14,16 @@ use cos::agents::{self, Contract, Harness, Request, Spec, State, Status, ledger}
 const COS: &str = env!("CARGO_BIN_EXE_cos");
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 
+fn at(home: &Path) -> cos::business::Triple {
+    cos::business::Triple {
+        home: home.to_owned(),
+        workspace: home.to_owned(),
+        projects: home.join("projects"),
+        business: None,
+        layer: cos::business::Layer::Flags,
+    }
+}
+
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cos-hiring-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -76,7 +86,7 @@ fn request(repo: &Path, prompt: &str) -> Request {
 }
 
 fn judged(home: &Path, req: Request) -> (Spec, State) {
-    let spec = agents::spawn(home, req, Path::new(COS)).unwrap();
+    let spec = agents::spawn(&at(home), req, Path::new(COS)).unwrap();
     let until = Instant::now() + Duration::from_secs(30);
     loop {
         let (spec, st) = agents::read(home, &spec.id).unwrap();
@@ -172,7 +182,7 @@ fn an_agent_repeating_one_call_is_flagged_looping() {
 #[test]
 fn an_agent_gone_quiet_is_flagged_stalled_while_it_runs() {
     let (home, repo) = setup("stall", Some(r#"{ "defaults": { "stall_secs": 1 } }"#));
-    let spec = agents::spawn(&home, request(&repo, "SLEEP"), Path::new(COS)).unwrap();
+    let spec = agents::spawn(&at(&home), request(&repo, "SLEEP"), Path::new(COS)).unwrap();
     let until = Instant::now() + Duration::from_secs(15);
     loop {
         let (_, st) = agents::read(&home, &spec.id).unwrap();
@@ -385,7 +395,7 @@ fn a_tester_drafts_the_plan_and_is_judged_on_it_then_you_record_the_result() {
 #[test]
 fn a_result_is_recorded_only_on_a_judged_run() {
     let (home, repo) = setup("record-live", None);
-    let spec = agents::spawn(&home, request(&repo, "SLEEP"), Path::new(COS)).unwrap();
+    let spec = agents::spawn(&at(&home), request(&repo, "SLEEP"), Path::new(COS)).unwrap();
     let err = agents::record(
         &home,
         &spec.id,
@@ -408,11 +418,11 @@ fn hiring_the_head_or_an_unknown_role_starts_nothing() {
         let mut req = request(&repo, "edit a file");
         req.role = Some(role.into());
         assert!(
-            agents::spawn(&home, req, Path::new(COS)).is_err(),
+            agents::spawn(&at(&home), req, Path::new(COS)).is_err(),
             "{role} was hired"
         );
     }
-    assert!(agents::list(&home).unwrap().is_empty());
+    assert!(agents::list(&home).unwrap().runs.is_empty());
 }
 
 #[test]

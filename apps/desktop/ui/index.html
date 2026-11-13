@@ -21,33 +21,15 @@
       <button class="app-tab" data-view="docs">Docs</button>
     </nav>
     <div class="where">
+      <button id="biz-open" class="btn" data-variant="outline" data-size="sm" type="button" aria-haspopup="dialog" title="Switch business (⌘K)">
+        <span class="muted">business</span> <span id="biz-name"></span>
+      </button>
+      <span id="biz-pin" class="badge" data-variant="outline" hidden></span>
       <span class="muted">workspace</span>
-      <button id="ws-path" class="btn path" data-variant="ghost" data-size="sm" title="Change workspace"></button>
+      <span id="ws-path" class="path"></span>
       <span id="slots" class="badge num" data-variant="outline"></span>
     </div>
   </header>
-
-  <dialog id="ws-dialog" class="dialog" aria-labelledby="ws-title">
-    <div>
-      <header>
-        <h2 id="ws-title">Workspace</h2>
-        <p>The directory that holds <code>.chief-of-staff/</code>.</p>
-      </header>
-      <section>
-        <form method="dialog" id="ws-form" class="form-grid">
-          <div class="field">
-            <label for="ws-input">Directory</label>
-            <input id="ws-input" class="input mono" type="text" spellcheck="false" required>
-          </div>
-          <p id="ws-error" class="error" hidden></p>
-        </form>
-      </section>
-      <footer>
-        <button class="btn" data-variant="outline" value="cancel" form="ws-form" formnovalidate>Cancel</button>
-        <button id="ws-save" class="btn" data-variant="primary" value="save" form="ws-form">Use it</button>
-      </footer>
-    </div>
-  </dialog>
 
   <dialog id="hire-dialog" class="dialog hire" aria-labelledby="hire-title">
     <div>
@@ -157,6 +139,19 @@
     </div>
   </dialog>
 
+  <dialog id="switch-dialog" class="dialog switch" aria-labelledby="switch-title">
+    <div>
+      <header>
+        <h2 id="switch-title">Switch business</h2>
+        <p class="muted">Type a name or a folder. Enter switches; Esc closes.</p>
+      </header>
+      <input id="switch-filter" class="input" type="search" autocomplete="off" spellcheck="false"
+        placeholder="Business name or folder" aria-label="Filter businesses" aria-controls="switch-list">
+      <ul id="switch-list" class="switch-list" role="listbox" aria-label="Businesses"></ul>
+      <p id="switch-msg" class="error" hidden></p>
+    </div>
+  </dialog>
+
   <main>
     <section id="view-today" class="view active">
       <iframe id="report" title="Today's report" sandbox="allow-scripts allow-popups"></iframe>
@@ -181,7 +176,10 @@
               <button role="tab" aria-selected="false" data-pane="scorecard">Scorecard</button>
             </nav>
           </div>
-          <button id="hire-open" class="btn" data-variant="primary" type="button">Hire</button>
+          <div class="agents-bar-end">
+            <button id="other-live" class="btn" data-variant="outline" data-size="sm" type="button" aria-haspopup="dialog" hidden></button>
+            <button id="hire-open" class="btn" data-variant="primary" type="button">Hire</button>
+          </div>
         </div>
         <div id="policy-note" class="alert" data-variant="destructive" hidden>
           <h2>Hiring policy not used</h2>
@@ -297,6 +295,7 @@
       </div>
     </section>
   </main>
-  <script src="app.js"></script>
+  <script src="command.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

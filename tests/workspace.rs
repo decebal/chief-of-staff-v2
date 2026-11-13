@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use cos::{context, report, state};
+use cos::{context, gather, pipeline, report, state};
 use serde_json::Value;
 
 struct Dir(PathBuf);
@@ -56,6 +56,25 @@ fn dash_version_moves_when_the_workspace_commits() {
     let before = cos::dash::version(&home.0, &ws.0);
     std::fs::write(ws.0.join(".chief-of-staff/candidate.json"), "{}").unwrap();
     assert_ne!(before, cos::dash::version(&home.0, &ws.0));
+}
+
+#[test]
+fn config_reads_workspace_profile() {
+    let (home, ws) = (dir("home-e"), seeded("ws-e"));
+    let path = state::runtime_dir(&ws.0).unwrap().join("profile.json");
+    let mut profile: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    profile["jiraProjects"] = serde_json::json!(["ACME"]);
+    std::fs::write(&path, profile.to_string()).unwrap();
+    let config = pipeline::Config {
+        home: home.0.clone(),
+        install: home.0.clone(),
+        workspace: ws.0.clone(),
+        projects: home.0.clone(),
+        budget: None,
+        bins: pipeline::Bins::default(),
+    };
+    let run = config.brief_run(&gather::Facts::default());
+    assert!(run.prompt.contains("project in (ACME)"), "{}", run.prompt);
 }
 
 #[test]

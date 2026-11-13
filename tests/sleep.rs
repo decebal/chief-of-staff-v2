@@ -56,6 +56,7 @@ fn setup(name: &str, caps: &str, mode: Option<&str>) -> (Config, PathBuf) {
     }
     let cfg = Config {
         home: home.clone(),
+        install: home.clone(),
         workspace: home.clone(),
         projects: home.join("projects"),
         budget: None,
@@ -302,7 +303,8 @@ fn hold_passes_its_own_pid_to_caffeinate() {
     let hold = wake::Hold::start(Some(&fake));
     let pid = hold.pid().expect("spawned");
     let until = Instant::now() + Duration::from_secs(5);
-    while !out.exists() && Instant::now() < until {
+    let written = || std::fs::read_to_string(&out).is_ok_and(|s| s.ends_with('\n'));
+    while !written() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(20));
     }
     drop(hold);

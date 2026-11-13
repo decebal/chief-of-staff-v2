@@ -2,7 +2,9 @@ version: "3"
 
 vars:
   AGENTS: [tactician]
-  LAUNCHD: ~/Library/LaunchAgents
+  LAUNCHD: "{{.HOME}}/Library/LaunchAgents"
+  LAUNCHCTL: launchctl
+  COS: cos
   BIN: "{{.HOME}}/.cargo/bin/cos"
   # Apps started from the Dock hand MCP servers a minimal PATH; cos needs
   # claude, gh and cn on it.
@@ -185,27 +187,53 @@ tasks:
       - rm -f out/.mcp-token
 
   schedule:
-    desc: Load the launchd jobs (weekday 08:30 brief, the dashboard kept running)
+    desc: Load the launchd jobs for BUSINESS=<name> (default the active business); weekday 08:30 brief, the dashboard kept running
+    vars:
+      # Task-scoped: a global var would run cos (and its first-run registry write) on every task call.
+      # Name on the `current:` line of `cos business list`; `explicit` when COS_HOME or a directory flag sets the triple.
+      ACTIVE:
+        sh: '{{.COS}} business list | sed -n "s/^current: \([^ ]*\) .*/\1/p"'
+      BUSINESS: '{{.BUSINESS | default .ACTIVE}}'
+      # Empty on failure: the precondition and the first step below stop the task with the reason.
+      HOME_DIR:
+        sh: '{{.COS}} --business {{.BUSINESS}} business home || true'
+      # Same lookup as `business::location`: launchd jobs get no XDG_CONFIG_HOME, so the plist pins the file.
+      REGISTRY:
+        sh: 'echo "${COS_BUSINESSES:-${XDG_CONFIG_HOME:-$HOME/.config}/cos/businesses.toml}"'
+    preconditions:
+      - sh: 'case "{{.BUSINESS}}" in ""|explicit) false ;; *) true ;; esac'
+        msg: "name the business: task schedule BUSINESS=<name>"
     cmds:
-      - mkdir -p out/logs
+      - '{{.COS}} --business {{.BUSINESS}} business home'
+      - mkdir -p "{{.HOME_DIR}}/out/logs"
       - task: unload-retired
+      # Both render before either replaces a live plist: a failed sed (a `|` in a path) leaves the loaded jobs and their files as they were.
       - for: [brief, dash]
         cmd: >-
-          sed -e "s|@HOME@|$HOME|g" -e "s|@COS_HOME@|{{.ROOT_DIR}}|g" launchd/cos.{{.ITEM}}.plist
-          > {{.LAUNCHD}}/cos.{{.ITEM}}.plist
+          sed -e "s|@HOME@|$HOME|g" -e "s|@BUSINESS@|{{.BUSINESS}}|g" -e "s|@HOME_DIR@|{{.HOME_DIR}}|g"
+          -e "s|@REGISTRY@|{{.REGISTRY}}|g"
+          launchd/cos.{{.ITEM}}.plist > "{{.LAUNCHD}}/cos.{{.ITEM}}.plist.new"
       - for: [brief, dash]
-        cmd: launchctl bootstrap gui/$(id -u) {{.LAUNCHD}}/cos.{{.ITEM}}.plist
+        cmd: 'mv -f "{{.LAUNCHD}}/cos.{{.ITEM}}.plist.new" "{{.LAUNCHD}}/cos.{{.ITEM}}.plist"'
+      # A loaded label refuses bootstrap; booting out first is what lets a reschedule move the jobs.
+      - for: [brief, dash]
+        cmd: "{{.LAUNCHCTL}} bootout gui/$(id -u)/cos.{{.ITEM}} 2>/dev/null || true"
+      - for: [brief, dash]
+        cmd: '{{.LAUNCHCTL}} bootstrap gui/$(id -u) "{{.LAUNCHD}}/cos.{{.ITEM}}.plist"'
 
   unschedule:
     desc: Unload the launchd jobs
     cmds:
       - task: unload-retired
       - for: [brief, dash]
-        cmd: launchctl bootout gui/$(id -u)/cos.{{.ITEM}} || true
+        cmd: "{{.LAUNCHCTL}} bootout gui/$(id -u)/cos.{{.ITEM}} || true"
+      # launchd loads every plist in LaunchAgents at login, so a left file reschedules the job.
+      - for: [brief, dash]
+        cmd: 'rm -f "{{.LAUNCHD}}/cos.{{.ITEM}}.plist"'
 
   unload-retired:
     internal: true
     desc: Unload the Friday `cos review` job an earlier schedule loaded; the subcommand no longer exists
     cmds:
-      - launchctl bootout gui/$(id -u)/cos.review 2>/dev/null || true
-      - rm -f {{.LAUNCHD}}/cos.review.plist
+      - "{{.LAUNCHCTL}} bootout gui/$(id -u)/cos.review 2>/dev/null || true"
+      - rm -f "{{.LAUNCHD}}/cos.review.plist"

@@ -13,6 +13,16 @@ use cos::agents::{self, Harness, Request, State, Status, slots};
 const COS: &str = env!("CARGO_BIN_EXE_cos");
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 
+fn at(home: &Path) -> cos::business::Triple {
+    cos::business::Triple {
+        home: home.to_owned(),
+        workspace: home.to_owned(),
+        projects: home.join("projects"),
+        business: None,
+        layer: cos::business::Layer::Flags,
+    }
+}
+
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cos-gov-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -93,10 +103,10 @@ fn wait_for(home: &Path, id: &str, done: impl Fn(&State) -> bool) -> State {
 #[test]
 fn one_slot_queues_the_second_agent_until_the_first_ends() {
     let home = scratch("queue").join("home");
-    let first = agents::spawn(&home, request(None, "SLEEP", 1), Path::new(COS)).unwrap();
+    let first = agents::spawn(&at(&home), request(None, "SLEEP", 1), Path::new(COS)).unwrap();
     wait_for(&home, &first.id, |s| s.status == Status::Running);
 
-    let second = agents::spawn(&home, request(None, "edit", 1), Path::new(COS)).unwrap();
+    let second = agents::spawn(&at(&home), request(None, "edit", 1), Path::new(COS)).unwrap();
     wait_for(&home, &second.id, |s| s.status == Status::Queued);
     std::thread::sleep(Duration::from_millis(700));
     assert_eq!(
@@ -112,9 +122,9 @@ fn one_slot_queues_the_second_agent_until_the_first_ends() {
 #[test]
 fn a_queued_agent_stops_without_ever_starting() {
     let home = scratch("queued-stop").join("home");
-    let first = agents::spawn(&home, request(None, "SLEEP", 1), Path::new(COS)).unwrap();
+    let first = agents::spawn(&at(&home), request(None, "SLEEP", 1), Path::new(COS)).unwrap();
     wait_for(&home, &first.id, |s| s.status == Status::Running);
-    let second = agents::spawn(&home, request(None, "edit", 1), Path::new(COS)).unwrap();
+    let second = agents::spawn(&at(&home), request(None, "edit", 1), Path::new(COS)).unwrap();
     wait_for(&home, &second.id, |s| s.status == Status::Queued);
 
     let st = agents::stop(&home, &second.id, Duration::from_secs(10)).unwrap();
@@ -128,7 +138,7 @@ fn a_cargo_worktree_starts_with_the_checkout_target_cloned() {
     let root = scratch("seed");
     let repo = repo(&root, &[("Cargo.toml", "[package]\nname = \"x\"\n")]);
     let home = root.join("home");
-    let spec = agents::spawn(&home, request(Some(repo), "edit", 4), Path::new(COS)).unwrap();
+    let spec = agents::spawn(&at(&home), request(Some(repo), "edit", 4), Path::new(COS)).unwrap();
     let st = wait_for(&home, &spec.id, |s| s.status.terminal());
     assert_eq!(st.status, Status::Done, "{st:?}");
     assert_eq!(st.seeded, vec!["cloned target".to_owned()]);
@@ -152,7 +162,7 @@ fn a_failing_seed_script_fails_the_agent_before_its_harness_runs() {
     git(&repo, &["add", ".cos/seed"]);
     git(&repo, &["commit", "-q", "-m", "exec"]);
     let home = root.join("home");
-    let spec = agents::spawn(&home, request(Some(repo), "edit", 4), Path::new(COS)).unwrap();
+    let spec = agents::spawn(&at(&home), request(Some(repo), "edit", 4), Path::new(COS)).unwrap();
     let st = wait_for(&home, &spec.id, |s| s.status.terminal());
     assert_eq!(st.status, Status::Failed);
     let err = st.error.unwrap_or_default();

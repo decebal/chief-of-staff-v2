@@ -16,6 +16,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
+use cos::business::{Business, Sources};
 use serde_json::Value;
 use tauri::WebviewWindowBuilder;
 use tauri::test::{
@@ -46,14 +47,27 @@ fn main() {
     let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(8793);
     let home = home.canonicalize().expect("the home exists");
     let cos = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/cos");
-    let settings = cos_desktop::Settings {
+    let projects = home.join("projects");
+    std::fs::create_dir_all(&projects).expect("the projects directory");
+    let registry = home.join("businesses.toml");
+    let demo = Business {
         home: home.clone(),
         workspace: home.clone(),
-        projects: home.join("projects"),
-        slots: Some(2),
-        cos: cos.is_file().then_some(cos),
+        projects,
     };
-    let app = cos_desktop::builder(mock_builder(), Some(settings))
+    cos::business::add(&registry, "demo", demo, true).expect("register the demo business");
+    cos::business::set_active(&registry, "demo").expect("activate the demo business");
+    let install = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let start = cos_desktop::Start {
+        install: install.canonicalize().unwrap_or(install),
+        user_home: std::env::var_os("HOME").map(PathBuf::from),
+        registry,
+        settings_file: home.join("settings.json"),
+        sources: Sources::default(),
+        cos_bin: cos.is_file().then_some(cos),
+        slots: Some(2),
+    };
+    let app = cos_desktop::builder(mock_builder(), Some(start))
         .build(mock_context(noop_assets()))
         .expect("mock app");
     let w = WebviewWindowBuilder::new(&app, "main", Default::default())

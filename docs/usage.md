@@ -112,7 +112,7 @@ What changes once a profile exists:
 cos brief                                  # goals → this week → today
 cos ask "release review or the bug fix today?"
 cos --dry-run brief                        # print the prompt, spend nothing
-task schedule                              # weekdays 08:30 brief
+task schedule                              # weekdays 08:30 brief, the active business (BUSINESS=<name> for another)
 ```
 
 `task schedule` and `task unschedule` also unload the Friday `cos review`
@@ -456,6 +456,22 @@ choosing.
 - **Models and budgets**: `src/pipeline.rs` (`brain(...)` calls, defaults
   `--budget`).
 - **Where your repos live**: `COS_PROJECTS` (default `~/Projects`).
+- **Businesses**: each business is a home, a workspace and a projects
+  directory, named in `~/.config/cos/businesses.toml` (`COS_BUSINESSES` moves
+  it). With no registry, `cos business list` creates a `default` business.
+
+  ```bash
+  mkdir -p ~/biz/acme/repos
+  cos --workspace ~/biz/acme state init        # the new workspace's profile and state
+  cos business add acme ~/biz/acme ~/biz/acme ~/biz/acme/repos
+  cos business use acme                        # the active business for cos, the app and the MCP server
+  cos --business acme report --no-open         # one run for a named business, without changing the active one
+  task schedule BUSINESS=acme                  # launchd jobs bound to acme
+  ```
+
+  `COS_HOME` and the other directory variables still set a whole triple by
+  hand and win over the registry; `cos business list` prints the `current:`
+  line that says which layer answered.
 
 ## Troubleshooting
 

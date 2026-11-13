@@ -129,7 +129,7 @@ fn route(
             Err(e) => text(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
         },
         "/version" => text(StatusCode::OK, &version(home, ws)),
-        "/agents" => match crate::agents::list(home) {
+        "/agents" => match crate::agents::list(home).map(|listing| listing.runs) {
             Ok(list) => respond(
                 StatusCode::OK,
                 "text/html; charset=utf-8",

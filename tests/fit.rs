@@ -11,6 +11,16 @@ use cos::agents::policy;
 use cos::agents::{Contract, Task};
 use serde_json::{Value, json};
 
+fn pinned(home: &Path) -> cos::business::Triple {
+    cos::business::Triple {
+        home: home.to_owned(),
+        workspace: home.to_owned(),
+        projects: home.join("projects"),
+        business: None,
+        layer: cos::business::Layer::Flags,
+    }
+}
+
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cos-fit-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -254,10 +264,10 @@ fn a_researcher_needs_no_repo_and_a_builder_without_one_is_refused_at_spawn_too(
         explicit: policy::Explicit::default(),
         role: Some("builder".into()),
     };
-    let err = cos::agents::spawn(&home, req, Path::new("/bin/false")).unwrap_err();
+    let err = cos::agents::spawn(&pinned(&home), req, Path::new("/bin/false")).unwrap_err();
     assert!(err.to_string().contains("works in a repo"), "{err}");
     assert!(
-        cos::agents::list(&home).unwrap().is_empty(),
+        cos::agents::list(&home).unwrap().runs.is_empty(),
         "nothing started"
     );
 }
