@@ -187,6 +187,8 @@ cos --home /tmp/cos-demo dash
 | [Multiple businesses design](docs/plans/2026-11-12-multi-business-design.md) | the business registry, the one resolver, app switching, and launchd per business |
 | [Multiple businesses plan](docs/plans/2026-11-12-multi-business-plan.md) | the stories, their gates and the ISA row to test table |
 | [Multiple businesses design review](docs/plans/2026-11-12-multi-business-design-review.md) | the final review of the design, verdict clean |
+| [Business sidebar and dashboards brief](docs/plans/2026-11-13-business-dashboards-brief.md) | four businesses in a pinned sidebar, each with its own dashboards embedded in the app |
+| [Business sidebar and dashboards design](docs/plans/2026-11-13-business-dashboards-design.md) | dashboards.toml, the app's server supervisor, the sidebar signals and the Semantic ISA |
 
 ## License
 
