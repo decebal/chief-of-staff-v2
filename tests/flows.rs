@@ -313,6 +313,8 @@ fn git(dir: &Path, args: &[&str]) {
         .arg("-C")
         .arg(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        // The test identity has no signing key, so a global commit.gpgsign=true fails the commit.
+        .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .output()
         .unwrap()

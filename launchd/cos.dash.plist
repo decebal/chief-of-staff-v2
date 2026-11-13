@@ -6,18 +6,20 @@
   <key>ProgramArguments</key>
   <array>
     <string>@HOME@/.cargo/bin/cos</string>
+    <string>--business</string>
+    <string>@BUSINESS@</string>
     <string>--no-open</string>
     <string>dash</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>@HOME@/.cargo/bin:@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <key>COS_HOME</key><string>@COS_HOME@</string>
+    <key>COS_BUSINESSES</key><string>@REGISTRY@</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>@COS_HOME@/out/logs/dash.log</string>
-  <key>StandardErrorPath</key><string>@COS_HOME@/out/logs/dash.err</string>
+  <key>StandardOutPath</key><string>@HOME_DIR@/out/logs/dash.log</string>
+  <key>StandardErrorPath</key><string>@HOME_DIR@/out/logs/dash.err</string>
 </dict>
 </plist>

@@ -32,7 +32,7 @@ estimates.
 
 ## Drift check
 
-Ask the user to run `/egm:egm-drift-report` against the design, or compare the design's
+Run EGM's `egm-drift-report` skill against the design (read its `SKILL.md` and follow it), or compare the design's
 interfaces with the code by hand. Fix the design in the same change.
 
 ## Close

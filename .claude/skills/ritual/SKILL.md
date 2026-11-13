@@ -12,6 +12,8 @@ the machine and shows which step it is in (`cos flows`); every step also works w
 
 This skill routes. It names the step, loads that step's reference, and stops at each gate.
 
+For page-by-page interface refinement, use `ui-refinement` alongside this router when installed. It contributes page decisions, captures and checks to the same flow; this skill retains stage and approval gates.
+
 **Requires** Chronis (`cn`, `cargo install chronis`). **Optional:** EGM, `cos`, graphify,
 claude-guard; [ritual-full](../ritual-full/SKILL.md) turns them all on. Install and a worked
 example: [docs/ritual-zero-to-hero.md](../../docs/ritual-zero-to-hero.md).
@@ -73,11 +75,25 @@ actions never become beads ([actionability.md](references/actionability.md)).
 
 ## EGM
 
-The Elephant-Goldfish Model plugin (`egm@egm`) is the deeper Think and Spec path. Its skills set
-`disable-model-invocation: true`, so the user starts them: tell them the exact command
-(`/egm:egm-brainstorm`, `/egm:egm-draft`, `/egm:egm-review`, `/egm:egm-resolve`,
-`/egm:egm-drift-report`). EGM writes `concepts_brief.md` and `design_draft.md` in the working
-directory; move them to the dated paths above and index them.
+The Elephant-Goldfish Model plugin (`egm@egm`) is the deeper Think, Spec and Reflect path, and
+you run it. Its skills set `disable-model-invocation: true`, which only keeps them out of
+automatic loading; read the skill file and follow it:
+
+- Claude Code: `~/.claude/plugins/cache/egm/egm/<version>/skills/egm-<step>/SKILL.md`, the
+  version `claude plugin list` shows. Read that plugin's `docs/claude.md` first.
+- Spawn its Goldfish reviewers as the subagent types it names (`egm:egm-zoom-out`,
+  `egm:egm-comprehension`, `egm:egm-design`, …) in fresh contexts; never review in your own.
+- At each EGM checkpoint ask the user its one question, unless they asked for the
+  uninterrupted run.
+
+| Step | EGM skill | Writes |
+|---|---|---|
+| Think | `egm-brainstorm` | `concepts_brief.md` |
+| Spec | `egm-draft`, then `egm-review`, `egm-resolve` or `egm-review-loop` | `design_draft.md`, review reports |
+| Reflect | `egm-drift-report` | the drift report |
+
+The persona reviewers are read-only: write each stage's report from their output yourself. Move
+`concepts_brief.md` and `design_draft.md` to the dated paths above and index them.
 
 ## Graphs
 

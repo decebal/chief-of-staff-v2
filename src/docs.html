@@ -363,7 +363,7 @@ const DATA = "__DOCS_DATA__";
   });
   const send = () => new Promise((resolve, reject) => {
     if (!embedded) {
-      fetch("/docs/organize", { method: "POST", headers: { "Content-Type": "application/json", "X-Cos": "docs" }, body: JSON.stringify(org) })
+      fetch("/docs/organize", { method: "POST", headers: { "Content-Type": "application/json", "X-Cos": "docs", "X-Cos-Business": new URLSearchParams(location.search).get("business") ?? "" }, body: JSON.stringify(org) })
         .then(async (r) => r.ok ? resolve() : reject(new Error(await r.text()))).catch(reject);
       return;
     }

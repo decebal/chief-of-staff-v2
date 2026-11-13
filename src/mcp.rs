@@ -92,7 +92,7 @@ pub struct DeliverableId {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct AgentId {
     /// An agent id from `agents`.
-    id: String,
+    pub id: String,
 }
 
 fn ui_meta() -> MetaObject {
@@ -181,9 +181,10 @@ impl Cos {
                     "incidents": st["incidents"],
                 }))
             }
-            Ok(None) => {
-                failed("no .chief-of-staff workspace; run `cos state init` and set up goals")
-            }
+            Ok(None) => failed(format!(
+                "no .chief-of-staff workspace; run `cos --workspace {} state init` and set up goals",
+                self.cfg.workspace.display()
+            )),
             Err(e) => failed(e),
         }
     }
@@ -214,7 +215,7 @@ impl Cos {
     /// workdir. Free; local only.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn agents(&self) -> CallToolResult {
-        match agents::list(&self.cfg.home) {
+        match agents::list(&self.cfg.home).map(|listing| listing.runs) {
             Ok(list) => {
                 let rows: Vec<Value> = list
                     .iter()
@@ -275,7 +276,14 @@ impl Cos {
                     budget: explicit_budget,
                 },
             })?;
-            agents::spawn(&home, req, &cos)
+            let triple = crate::business::Triple {
+                home,
+                workspace,
+                projects,
+                business: None,
+                layer: crate::business::Layer::Flags,
+            };
+            agents::spawn(&triple, req, &cos)
         };
         match tokio::task::spawn_blocking(run).await {
             Ok(Ok(spec)) => CallToolResult::success(vec![ContentBlock::text(format!(
@@ -295,7 +303,7 @@ impl Cos {
         destructive_hint = true,
         open_world_hint = false
     ))]
-    async fn stop_agent(&self, Parameters(args): Parameters<AgentId>) -> CallToolResult {
+    pub async fn stop_agent(&self, Parameters(args): Parameters<AgentId>) -> CallToolResult {
         let home = self.cfg.home.clone();
         match tokio::task::spawn_blocking(move || {
             agents::stop(&home, &args.id, std::time::Duration::from_secs(10))

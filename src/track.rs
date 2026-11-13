@@ -56,20 +56,20 @@ fn window(c: &Coverage) -> Option<(String, String)> {
 
 /// Records one run. `mode` is `brief`; times are ISO-8601.
 pub fn record_run(
-    home: &Path,
+    workspace: &Path,
     mode: &str,
     coverage: &[Coverage],
     gaps: usize,
     invoked_at: &str,
     finished_at: &str,
 ) -> Result<Recorded> {
-    let Some(profile) = state::profile(home) else {
+    let Some(profile) = state::profile(workspace) else {
         return Ok(Recorded::NoWorkspace);
     };
     if !state::tracking_approved(&profile) {
         return Ok(Recorded::NotApproved);
     }
-    let ws = std::path::absolute(home)?;
+    let ws = std::path::absolute(workspace)?;
     let current = state::read(&ws)?.context("profile.json without state.json")?;
     let revision = current["revision"].as_i64().unwrap_or(0);
     let mut cand = current.clone();
@@ -189,10 +189,18 @@ pub struct Candidate {
 
 /// Writes the brief's proposals for the week into `.chief-of-staff/candidate.json` as
 /// `proposed` deliverables. Nothing is committed.
-pub fn proposal_candidate(home: &Path, proposals: &[Proposal], source: &str) -> Result<Candidate> {
-    let ws = std::path::absolute(home)?;
-    let current =
-        state::read(&ws)?.context("no .chief-of-staff/state.json; run `cos state init`")?;
+pub fn proposal_candidate(
+    workspace: &Path,
+    proposals: &[Proposal],
+    source: &str,
+) -> Result<Candidate> {
+    let ws = std::path::absolute(workspace)?;
+    let current = state::read(&ws)?.with_context(|| {
+        format!(
+            "no .chief-of-staff/state.json; run `cos --workspace {} state init`",
+            ws.display()
+        )
+    })?;
     let revision = current["revision"].as_i64().unwrap_or(0);
     let mut cand = current.clone();
     let now = state::now();

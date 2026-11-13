@@ -108,16 +108,16 @@ pub struct Outcome {
     pub called: Vec<String>,
 }
 
-/// The `claude` invocation for `run`, with `home` as cwd so the repo's
-/// CLAUDE.md and `.claude/agents` load.
-pub fn command(home: &Path, run: &Run) -> Command {
-    command_with(Path::new("claude"), home, run)
+/// The `claude` invocation for `run`, with `install` as cwd so cos's own
+/// CLAUDE.md and `.claude/agents` load whichever business is active.
+pub fn command(install: &Path, run: &Run) -> Command {
+    command_with(Path::new("claude"), install, run)
 }
 
 /// `command` with `program` standing in for `claude`.
-pub fn command_with(program: &Path, home: &Path, run: &Run) -> Command {
+pub fn command_with(program: &Path, install: &Path, run: &Run) -> Command {
     let mut cmd = Command::new(program);
-    cmd.current_dir(home)
+    cmd.current_dir(install)
         .args(["-p", &run.prompt])
         .args(["--output-format", "stream-json", "--verbose"])
         .args(["--agent", run.agent, "--model", run.model])
@@ -190,8 +190,8 @@ pub fn transient(o: &Outcome) -> bool {
 
 /// Runs `run` and appends every tool call to `audit`. An error result comes
 /// back as a [`Failed`].
-pub fn execute(program: &Path, home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
-    let mut cmd = command_with(program, home, run);
+pub fn execute(program: &Path, install: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
+    let mut cmd = command_with(program, install, run);
     let mut log = AuditLog::open(audit, run.agent)?;
     let mut outcome = None;
     let mut called = Vec::new();

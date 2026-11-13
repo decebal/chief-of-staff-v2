@@ -546,6 +546,13 @@ pub fn load(path: &Path) -> Result<Value> {
 
 /// Temp file in the same directory, fsync, rename, fsync the directory.
 pub fn atomic_write(path: &Path, value: &Value) -> Result<()> {
+    let mut text = serde_json::to_string_pretty(value)?;
+    text.push('\n');
+    atomic_write_bytes(path, text.as_bytes())
+}
+
+/// [`atomic_write`] for bytes that are not JSON.
+pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().context("no parent directory")?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -557,9 +564,7 @@ pub fn atomic_write(path: &Path, value: &Value) -> Result<()> {
             .write(true)
             .create_new(true)
             .open(&tmp)?;
-        let mut text = serde_json::to_string_pretty(value)?;
-        text.push('\n');
-        f.write_all(text.as_bytes())?;
+        f.write_all(bytes)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)?;
         std::fs::File::open(dir)?.sync_all()?;

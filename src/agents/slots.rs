@@ -32,7 +32,7 @@ pub fn run_slots() -> usize {
         })
 }
 
-/// A held run slot; dropping it (or exiting) frees it.
+/// A held lock; dropping it (or exiting) releases it.
 pub struct Held {
     _lock: File,
 }
@@ -45,6 +45,19 @@ fn flock(file: &File, nonblocking: bool) -> bool {
     let op = libc::LOCK_EX | if nonblocking { libc::LOCK_NB } else { 0 };
     // SAFETY: flock on a descriptor this process owns; no memory is touched.
     unsafe { libc::flock(file.as_raw_fd(), op) == 0 }
+}
+
+/// Blocks until the exclusive lock on `path` is held; the file is created if missing.
+pub(crate) fn lock_exclusive(path: &Path) -> Result<Held> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    if !flock(&file, false) {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(Held { _lock: file })
 }
 
 /// The first free run slot, or `None` when all `slots` are held.

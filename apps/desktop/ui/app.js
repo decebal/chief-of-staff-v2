@@ -94,6 +94,10 @@ const kv = (pairs) =>
 
 async function loadPaths() {
   const p = await invoke("paths");
+  ui.business = p.business;
+  $("biz-name").textContent = p.business;
+  $("biz-pin").textContent = `pinned by ${p.pinned}`;
+  $("biz-pin").hidden = !p.pinned;
   $("ws-path").textContent = p.workspace;
   $("ws-path").title = `home ${p.home}\nprojects ${p.projects}\ncos ${p.cos ?? "not found"}`;
   ui.slots = p.slots;
@@ -111,44 +115,58 @@ function renderSlots() {
   $("runs-count").textContent = ui.agents.length ? String(ui.agents.length) : "";
 }
 
-$("ws-path").addEventListener("click", () => {
-  $("ws-input").value = $("ws-path").textContent;
-  $("ws-error").hidden = true;
-  $("ws-dialog").showModal();
-});
+const VIEWS = ["today", "agents", "flows", "docs"];
+const SWITCH_PANES = ["staff", "runs", "scorecard"];
 
-$("ws-save").addEventListener("click", async (ev) => {
-  ev.preventDefault();
-  try {
-    await invoke("set_workspace", { path: $("ws-input").value });
-    $("ws-dialog").close();
-    await loadPaths();
-    reloadReport();
-    refreshStaff();
-  } catch (e) {
-    $("ws-error").textContent = String(e);
-    $("ws-error").hidden = false;
+// The docs room names the business it was opened for; its saves carry it back.
+const docsUrl = () => `${REPORT}docs?t=${Date.now()}&business=${encodeURIComponent(ui.business)}`;
+
+function openTab(view, pane) {
+  for (const t of document.querySelectorAll(".app-tab")) {
+    if (t.dataset.view === view) t.setAttribute("aria-current", "page");
+    else t.removeAttribute("aria-current");
   }
-});
+  for (const v of document.querySelectorAll(".view")) {
+    v.classList.toggle("active", v.id === `view-${view}`);
+  }
+  // Loaded on first open: the room scans every monitored repo.
+  if (view === "docs" && !$("docs-frame").src) {
+    $("docs-frame").src = docsUrl();
+  }
+  // Every open reads the stores again: a flow's step changes as beads close.
+  if (view === "flows") {
+    $("flows-frame").src = `${REPORT}flows?t=${Date.now()}`;
+  }
+  if (view === "agents" && SWITCH_PANES.includes(pane)) showPane(pane);
+  if (view === "agents") refreshOtherLive();
+}
 
 for (const tab of document.querySelectorAll(".app-tab")) {
-  tab.addEventListener("click", () => {
-    for (const t of document.querySelectorAll(".app-tab")) {
-      if (t === tab) t.setAttribute("aria-current", "page");
-      else t.removeAttribute("aria-current");
-    }
-    for (const v of document.querySelectorAll(".view")) {
-      v.classList.toggle("active", v.id === `view-${tab.dataset.view}`);
-    }
-    // Loaded on first open: the room scans every monitored repo.
-    if (tab.dataset.view === "docs" && !$("docs-frame").src) {
-      $("docs-frame").src = `${REPORT}docs?t=${Date.now()}`;
-    }
-    // Every open reads the stores again: a flow's step changes as beads close.
-    if (tab.dataset.view === "flows") {
-      $("flows-frame").src = `${REPORT}flows?t=${Date.now()}`;
-    }
-  });
+  tab.addEventListener("click", () => openTab(tab.dataset.view, ""));
+}
+
+function openFromHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (VIEWS.includes(h.get("tab"))) openTab(h.get("tab"), h.get("pane") ?? "");
+}
+
+// A Hire dialog with typed text, or contract edits, counts as unsaved.
+const hireHasEdits = () =>
+  $("hire-dialog").open && (hire.edited || $("h-prompt").value.trim() !== "" || $("h-title").value.trim() !== "");
+let pendingDiscard = null;
+
+// Nothing is written to disk; the reload drops every view and cache of the old one.
+async function switchTo(name) {
+  if (name === ui.business) return;
+  if (hireHasEdits() && pendingDiscard !== name) {
+    pendingDiscard = name;
+    throw new Error("The Hire dialog has unsaved edits. Pick the business again to discard them.");
+  }
+  await invoke("switch_business", { args: { name } });
+  const tab = document.querySelector('.app-tab[aria-current="page"]').dataset.view;
+  const pane = ui.pane === "role" ? "staff" : ui.pane === "run" ? ui.from : ui.pane;
+  location.hash = `tab=${tab}&pane=${pane}`;
+  location.reload();
 }
 
 // The Docs room saves through the app, not over its own scheme: only messages
@@ -157,7 +175,7 @@ window.addEventListener("message", async (ev) => {
   const frame = $("docs-frame").contentWindow;
   if (ev.source !== frame || ev.data?.type !== "cos-docs-save") return;
   try {
-    await invoke("docs_save", { organize: ev.data.organize });
+    await invoke("docs_save", { business: ui.business, organize: ev.data.organize });
     frame.postMessage({ type: "cos-docs-saved", seq: ev.data.seq, ok: true }, "*");
   } catch (e) {
     frame.postMessage({ type: "cos-docs-saved", seq: ev.data.seq, ok: false, error: String(e) }, "*");
@@ -255,7 +273,7 @@ async function refreshAgents() {
     retry.dataset.variant = "outline";
     retry.dataset.size = "sm";
     retry.addEventListener("click", refreshAgents);
-    $("agents-error").replaceChildren(`Could not read the agents in out/agents: ${e} `, retry);
+    $("agents-error").replaceChildren(`Could not read the agents: ${e} `, retry);
     $("agents-error").hidden = false;
   } finally {
     ui.inflight = false;
@@ -763,6 +781,7 @@ $("d-record").addEventListener("submit", async (ev) => {
   $("r-msg").textContent = "Saving…";
   try {
     await invoke("agents_record", {
+      business: ui.business,
       args: { id: ui.run, outcome: $("r-outcome").value, notes: $("r-notes").value, evidence: lines("r-evidence") },
     });
     $("r-msg").textContent = "Recorded on this run.";
@@ -809,7 +828,7 @@ function verdictView(v, live) {
 $("d-stop").addEventListener("click", async () => {
   $("d-stop").disabled = true;
   try {
-    await invoke("agents_stop", { id: ui.run });
+    await invoke("agents_stop", { business: ui.business, id: ui.run });
   } catch (e) {
     $("d-error").textContent = String(e);
     $("d-error").hidden = false;
@@ -821,7 +840,7 @@ $("d-rejudge").addEventListener("click", async () => {
   $("d-rejudge").disabled = true;
   $("d-verdict").replaceChildren(el("p", { className: "muted", textContent: "Re-running the checks…" }));
   try {
-    await invoke("agents_rejudge", { id: ui.run });
+    await invoke("agents_rejudge", { business: ui.business, id: ui.run });
   } catch (e) {
     $("d-error").textContent = String(e);
     $("d-error").hidden = false;
@@ -833,12 +852,12 @@ $("d-rejudge").addEventListener("click", async () => {
 $("d-clean").addEventListener("click", async () => {
   const id = ui.run;
   try {
-    await invoke("agents_clean", { id, force: false });
+    await invoke("agents_clean", { business: ui.business, id, force: false });
   } catch (e) {
     const force = confirm(`${e}\n\nRemove it anyway? The worktree's work exists nowhere else.`);
     if (!force) return;
     try {
-      await invoke("agents_clean", { id, force: true });
+      await invoke("agents_clean", { business: ui.business, id, force: true });
     } catch (e2) {
       $("d-error").textContent = String(e2);
       $("d-error").hidden = false;
@@ -1084,7 +1103,7 @@ $("hire-form").addEventListener("submit", async (ev) => {
   msg.textContent = "Starting…";
   $("h-go").disabled = true;
   try {
-    const specs = await invoke("agents_spawn", { args });
+    const specs = await invoke("agents_spawn", { business: ui.business, args });
     $("hire-dialog").close();
     await refreshAgents();
     ui.from = "runs";
@@ -1096,6 +1115,24 @@ $("hire-form").addEventListener("submit", async (ev) => {
     $("h-go").disabled = Boolean(hire.plan?.refused);
   }
 });
+
+// ---- other businesses
+
+function showOtherLive(rows) {
+  const n = rows.filter((r) => !r.app).reduce((sum, r) => sum + (r.live ?? 0), 0);
+  const badge = $("other-live");
+  badge.textContent = `${n} live in other businesses`;
+  badge.hidden = !n;
+}
+
+async function refreshOtherLive() {
+  try {
+    showOtherLive(await invoke("businesses"));
+  } catch (e) {
+    logDev("businesses", e);
+    $("other-live").hidden = true;
+  }
+}
 
 // ---- start
 
@@ -1110,7 +1147,11 @@ listen("agents-changed", () => {
   clearTimeout(staffTimer);
   staffTimer = setTimeout(refreshStaff, 800);
 });
-loadPaths().then(loadRepos).catch((e) => logDev("paths", e));
+$("biz-open").addEventListener("click", () => openSwitcher(switchTo));
+$("other-live").addEventListener("click", () => openSwitcher(switchTo));
+document.addEventListener("businesses-loaded", (e) => showOtherLive(e.detail));
+listen("switch-business", () => openSwitcher(switchTo));
+loadPaths().then(loadRepos).then(openFromHash).catch((e) => logDev("paths", e));
 reloadReport();
 refreshAgents();
 refreshStaff();

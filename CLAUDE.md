@@ -28,8 +28,9 @@ manifests at its version (`tests/kit.rs`).
 
 ## What the brains read
 
-- `<workspace>/.chief-of-staff/` (`--workspace` / `COS_WORKSPACE`, default
-  the home) — `profile.json` (approved sources, timezone,
+- `<workspace>/.chief-of-staff/` (the active business's workspace; `--business`
+  / `COS_BUSINESS` pick another, `--workspace` / `COS_WORKSPACE` override it,
+  default the home) — `profile.json` (approved sources, timezone,
   tracking approval) and `state.json` (goals, KPIs, deliverables,
   commitments, sources, runs, incidents, journal). Written only through
   `state::commit` or the kit's `state.py`. Gitignored.
@@ -81,7 +82,8 @@ task desktop            # build cos, run the desktop app; `task desktop-check` l
 task kit OUT=/abs.zip   # package the starter kit from release-files.json
 task setup              # first run: seed context/, build, install
 task install-mcp        # register with Claude Desktop + Codex
-task schedule           # launchd: weekday brief, the dashboard
+task schedule BUSINESS=acme  # launchd: weekday brief, the dashboard, for one business (default: the active one)
+cos business list       # registry: each business, the active one, its directories
 cos --dry-run brief     # print the prompt, call nothing
 ```
 

@@ -19,8 +19,11 @@ use crate::wake::{self, Wake};
 
 #[derive(Clone)]
 pub struct Config {
-    /// The clone: `context/`, `out/`, agent files.
+    /// The business home: `context/` and `out/`.
     pub home: PathBuf,
+    /// The clone cos was built from: `CLAUDE.md` and `.claude/agents`, the
+    /// working directory of every run.
+    pub install: PathBuf,
     /// Holds `.chief-of-staff/` (profile and state); the kit's `--workspace`.
     pub workspace: PathBuf,
     pub projects: PathBuf,
@@ -116,8 +119,8 @@ pub struct Dates {
 }
 
 /// Today in the profile's timezone when one is set, else the system's.
-fn dates_in(home: &std::path::Path) -> Dates {
-    let tz = crate::state::profile(home).and_then(|p| crate::state::timezone(&p));
+fn dates_in(workspace: &std::path::Path) -> Dates {
+    let tz = crate::state::profile(workspace).and_then(|p| crate::state::timezone(&p));
     dates_at(match tz {
         Some(tz) => jiff::Zoned::now().with_time_zone(tz),
         None => jiff::Zoned::now(),
@@ -180,8 +183,8 @@ pub fn hold_to_window(brief: &mut Brief, d: &Dates) {
 /// Gives every approved source a coverage row. One the brief left out is
 /// `partial` when the run called its tools and `not_reviewed` when it never
 /// tried; `cos`'s own reads report what `cos` collected.
-pub fn cover_every_source(brief: &mut Brief, home: &Path, facts: &Facts, called: &[String]) {
-    let Some(profile) = crate::state::profile(home) else {
+pub fn cover_every_source(brief: &mut Brief, workspace: &Path, facts: &Facts, called: &[String]) {
+    let Some(profile) = crate::state::profile(workspace) else {
         return;
     };
     for src in crate::state::approved_sources(&profile) {
@@ -577,7 +580,7 @@ impl Config {
         let audit = claude::audit_path(&self.home);
         let started = SystemTime::now();
         tally.attempts += 1;
-        let err = match claude::execute(&self.bins.claude, &self.home, &audit, run) {
+        let err = match claude::execute(&self.bins.claude, &self.install, &audit, run) {
             Ok(o) => {
                 tally.cost_usd += o.total_cost_usd;
                 return Ok(o);
@@ -619,7 +622,7 @@ impl Config {
             ..run.clone()
         };
         tally.attempts += 1;
-        match claude::execute(&self.bins.claude, &self.home, &audit, &second) {
+        match claude::execute(&self.bins.claude, &self.install, &audit, &second) {
             Ok(mut o) => {
                 tally.cost_usd += o.total_cost_usd;
                 o.total_cost_usd += first_cost;

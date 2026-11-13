@@ -14,8 +14,8 @@ use anyhow::{Context, Result};
 
 use super::watch::Watch;
 use super::{
-    CEILING, Spec, State, Status, dir, harness, judge, ledger, read, seed, slots, started_at,
-    write_state,
+    CEILING, RunDir, Spec, State, Status, harness, judge, ledger, load, run_dir, seed, slots,
+    started_at, write_state,
 };
 use crate::proc;
 
@@ -38,19 +38,19 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
             libc::signal(sig, on_signal as *const () as libc::sighandler_t);
         }
     }
-    let (spec, mut state) = read(home, id)?;
-    let d = dir(home, id);
-    let stop_file = d.join("stop");
+    let run = run_dir(home, id)?;
+    let (spec, mut state) = load(&run)?;
+    let stop_file = run.path().join("stop");
     let mut events = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(d.join("events.jsonl"))?;
-    let stderr = std::fs::File::create(d.join("harness.stderr.log"))?;
+        .open(run.events_path())?;
+    let stderr = std::fs::File::create(run.path().join("harness.stderr.log"))?;
     let stopped = || STOP.load(Ordering::SeqCst) || stop_file.exists();
 
     state.supervisor = Some(std::process::id() as i32);
     state.status = Status::Queued;
-    write_state(home, id, &state)?;
+    write_state(&run, &state)?;
     let slots = spec.slots.unwrap_or_else(slots::run_slots);
     let _slot = loop {
         if let Some(held) = slots::try_run_slot(home, slots)? {
@@ -58,17 +58,18 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
         }
         if stopped() {
             let _ = std::fs::remove_file(&stop_file);
-            return finish(home, &spec, &mut state, Status::Killed, None);
+            return finish(home, &run, &spec, &mut state, Status::Killed, None);
         }
         std::thread::sleep(TICK);
     };
 
     state.started = Some(jiff::Timestamp::now().to_string());
-    let mut cmd = match prepare(home, id, &spec, &mut state) {
+    let mut cmd = match prepare(&run, &spec, &mut state) {
         Ok(cmd) => cmd,
         Err(e) => {
             finish(
                 home,
+                &run,
                 &spec,
                 &mut state,
                 Status::Failed,
@@ -83,6 +84,7 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
         Err(e) => {
             finish(
                 home,
+                &run,
                 &spec,
                 &mut state,
                 Status::Failed,
@@ -95,7 +97,7 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
     state.pgid = Some(pgid);
     state.pgid_started = started_at(pgid);
     state.status = Status::Running;
-    write_state(home, id, &state)?;
+    write_state(&run, &state)?;
 
     let rx = proc::lines(child.stdout.take().context("harness stdout not piped")?);
     let until = proc::Deadline::capped(Duration::from_secs(spec.deadline_secs), CEILING);
@@ -133,7 +135,7 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
             dirty = true;
         }
         if dirty {
-            write_state(home, id, &state)?;
+            write_state(&run, &state)?;
             flushed = Instant::now();
         }
     };
@@ -141,16 +143,16 @@ pub fn supervise(home: &Path, id: &str) -> Result<()> {
     proc::kill_group(pgid);
     let _ = std::fs::remove_file(&stop_file);
     state.flags.clear();
-    finish(home, &spec, &mut state, status, failed)
+    finish(home, &run, &spec, &mut state, status, failed)
 }
 
 /// Seeds a worktree agent's tree, then builds the harness command with the
 /// build-tool shims first on its PATH.
-fn prepare(home: &Path, id: &str, spec: &Spec, state: &mut State) -> Result<Command> {
-    let d = dir(home, id);
+fn prepare(run: &RunDir, spec: &Spec, state: &mut State) -> Result<Command> {
+    let d = run.path();
     if let (true, Some(repo)) = (spec.worktree, spec.repo.as_deref()) {
         state.status = Status::Seeding;
-        write_state(home, id, state)?;
+        write_state(run, state)?;
         state.seeded =
             seed::run(repo, &spec.workdir, &d.join("seed.log")).context("seed the worktree")?;
     }
@@ -230,6 +232,7 @@ fn apply(state: &mut State, t: harness::Tick, failed: &mut Option<String>) {
 /// before the verdict, so a watcher sees the agent end while it is judged.
 fn finish(
     home: &Path,
+    run: &RunDir,
     spec: &Spec,
     state: &mut State,
     status: Status,
@@ -243,10 +246,10 @@ fn finish(
         Status::Killed => Some("stopped on request".into()),
         _ => None,
     };
-    write_state(home, &spec.id, state)?;
-    let bin = (!state.shimmed.is_empty()).then(|| dir(home, &spec.id).join("bin"));
+    write_state(run, state)?;
+    let bin = (!state.shimmed.is_empty()).then(|| run.path().join("bin"));
     state.verdict = Some(judge::judge(spec, state, bin.as_deref()));
-    write_state(home, &spec.id, state)?;
+    write_state(run, state)?;
     if let Some(row) = ledger::row(spec, state) {
         ledger::append(home, &row)?;
     }

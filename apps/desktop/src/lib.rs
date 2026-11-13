@@ -3,28 +3,253 @@
 //!
 //! The app launches and watches; it owns no agent. Each agent is a setsid'd
 //! `cos agents supervise` process, so closing the window stops nothing, and
-//! reopening it reconciles every agent from `out/agents/*/state.json`. The
+//! reopening it reconciles every agent from the state each one recorded. The
 //! report renders in a sandboxed iframe with an opaque origin: a brief quotes
 //! mail and tickets, and nothing in it may reach these commands.
 
 pub mod settings;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use cos::agents::{self, Harness, Spec, State};
+use cos::business::{self, Business, Dirs, Inputs, Layer, Sources, Triple};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime};
 
 pub use settings::Settings;
 
-struct App(Mutex<Settings>);
+/// What the window starts from: the install, the files it reads, and the env values it was
+/// started with. Tests build one directly; the app reads it from the environment.
+#[derive(Debug, Clone)]
+pub struct Start {
+    /// The clone this binary was built from: the built-in home and workspace.
+    pub install: PathBuf,
+    pub user_home: Option<PathBuf>,
+    pub registry: PathBuf,
+    pub settings_file: PathBuf,
+    /// `COS_BUSINESS`, `COS_HOME`, `COS_WORKSPACE`, `COS_PROJECTS`.
+    pub sources: Sources,
+    /// `COS_BIN`.
+    pub cos_bin: Option<PathBuf>,
+    /// `COS_AGENT_SLOTS`, ahead of the settings file.
+    pub slots: Option<usize>,
+}
+
+impl Start {
+    fn from_env<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<Self> {
+        let env_path = |var: &str| {
+            std::env::var_os(var)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
+        let install = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        Ok(Self {
+            install: install.canonicalize().unwrap_or(install),
+            user_home: env_path("HOME"),
+            registry: business::location()?,
+            settings_file: app.path().app_config_dir()?.join("settings.json"),
+            sources: Sources {
+                business: std::env::var("COS_BUSINESS").ok().filter(|v| !v.is_empty()),
+                dirs: Dirs {
+                    home: env_path("COS_HOME"),
+                    workspace: env_path("COS_WORKSPACE"),
+                    projects: env_path("COS_PROJECTS"),
+                },
+            },
+            cos_bin: env_path("COS_BIN"),
+            slots: std::env::var("COS_AGENT_SLOTS")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+        })
+    }
+}
+
+/// Problems found at start, shown in the header; none of them stops the window.
+#[derive(Default)]
+struct Notes {
+    start: Option<String>,
+    settings: Option<String>,
+    legacy: Option<String>,
+}
+
+/// The window's state: the app business, the `cos` binary, and what start found.
+pub struct AppState {
+    settings: Settings,
+    triple: Triple,
+    cos: Option<PathBuf>,
+    /// The variable that set the triple at start; a pinned window cannot switch.
+    pinned: Option<&'static str>,
+    registry: PathBuf,
+    notes: Notes,
+}
+
+fn chain(e: anyhow::Error) -> String {
+    format!("{e:#}")
+}
+
+/// The built-in defaults as a triple, for a start whose registry gave none. Without a
+/// readable `HOME` there are no defaults, so every directory is the install.
+fn defaults(builtin: Option<&Business>, install: &Path) -> Triple {
+    let (home, workspace, projects) = match builtin {
+        Some(b) => (b.home.clone(), b.workspace.clone(), b.projects.clone()),
+        None => (install.to_owned(), install.to_owned(), install.to_owned()),
+    };
+    Triple {
+        home,
+        workspace,
+        projects,
+        business: None,
+        layer: Layer::Defaults,
+    }
+}
+
+fn pinned_by(s: &Sources) -> Option<&'static str> {
+    [
+        (s.business.is_some(), "COS_BUSINESS"),
+        (s.dirs.home.is_some(), "COS_HOME"),
+        (s.dirs.workspace.is_some(), "COS_WORKSPACE"),
+        (s.dirs.projects.is_some(), "COS_PROJECTS"),
+    ]
+    .into_iter()
+    .find(|(set, _)| *set)
+    .map(|(_, var)| var)
+}
+
+/// The `cos` CLI that supervises agents, resolved once at start: `COS_BIN`, then the
+/// settings file, then `cos` beside this executable, then the install's release and debug
+/// builds, then `~/.cargo/bin/cos`.
+fn cos_binary(
+    env: Option<PathBuf>,
+    saved: Option<PathBuf>,
+    install: &Path,
+    user_home: Option<&Path>,
+) -> Option<PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("cos")));
+    env.into_iter()
+        .chain(saved)
+        .chain(beside)
+        .chain([
+            install.join("target/release/cos"),
+            install.join("target/debug/cos"),
+        ])
+        .chain(user_home.map(|h| h.join(".cargo/bin/cos")))
+        .find(|p| p.is_file())
+}
+
+impl AppState {
+    /// First-run migration when the registry is missing, then the triple from the env
+    /// layer, the registry's active business, or the built-in defaults.
+    fn boot(s: &Start) -> Self {
+        let mut notes = Notes::default();
+        let mut settings = Settings::load(&s.settings_file).unwrap_or_else(|e| {
+            notes.settings = Some(chain(e));
+            Settings::default()
+        });
+        settings.slots = s.slots.or(settings.slots);
+        let inputs = Inputs {
+            flags: Sources::default(),
+            env: s.sources.clone(),
+            install: s.install.clone(),
+            user_home: s.user_home.clone(),
+        };
+        let builtin = match business::builtin(&inputs) {
+            Ok(builtin) => {
+                if !s.registry.exists() {
+                    match business::first_run(&s.registry, &builtin) {
+                        Ok(true) => notes.legacy = legacy_hint(&settings, &builtin),
+                        Ok(false) => {}
+                        Err(e) => notes.start = Some(chain(e)),
+                    }
+                }
+                Some(builtin)
+            }
+            Err(e) => {
+                notes.start = Some(chain(e));
+                None
+            }
+        };
+        let loaded = business::load(&s.registry);
+        if let Err(e) = &loaded {
+            notes.start.get_or_insert(format!("{e:#}"));
+        }
+        let resolved = business::resolve(&inputs, || match &loaded {
+            Ok(registry) => Ok(registry.clone()),
+            Err(e) => Err(anyhow::anyhow!("{e:#}")),
+        });
+        let triple = resolved.unwrap_or_else(|e| {
+            notes.start.get_or_insert(chain(e));
+            defaults(builtin.as_ref(), &s.install)
+        });
+        let cos = cos_binary(
+            s.cos_bin.clone(),
+            settings.cos.clone(),
+            &s.install,
+            s.user_home.as_deref(),
+        );
+        Self {
+            settings,
+            triple,
+            cos,
+            pinned: pinned_by(&s.sources),
+            registry: s.registry.clone(),
+            notes,
+        }
+    }
+}
+
+fn legacy_hint(settings: &Settings, builtin: &Business) -> Option<String> {
+    settings
+        .legacy(builtin)
+        .filter(|legacy| legacy != builtin)
+        .map(|legacy| {
+            format!(
+                "cos business add legacy {} {} {}",
+                legacy.home.display(),
+                legacy.workspace.display(),
+                legacy.projects.display()
+            )
+        })
+}
+
+struct App(Mutex<AppState>);
+
+/// One command's view of the app business. Taken once per command, so a switch never
+/// lands between two reads of the same command.
+#[derive(Clone)]
+struct Current {
+    business: String,
+    home: PathBuf,
+    workspace: PathBuf,
+    projects: PathBuf,
+    cos: Option<PathBuf>,
+    slots: Option<usize>,
+}
 
 impl App {
-    fn get(&self) -> Settings {
-        self.0.lock().expect("settings lock").clone()
+    fn new(s: &Start) -> Self {
+        Self(Mutex::new(AppState::boot(s)))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, AppState> {
+        self.0.lock().expect("app state lock")
+    }
+
+    fn get(&self) -> Current {
+        let st = self.lock();
+        Current {
+            business: st.triple.label().to_owned(),
+            home: st.triple.home.clone(),
+            workspace: st.triple.workspace.clone(),
+            projects: st.triple.projects.clone(),
+            cos: st.cos.clone(),
+            slots: st.settings.slots,
+        }
     }
 }
 
@@ -32,6 +257,18 @@ type Res<T> = Result<T, String>;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+/// A write names the business it was issued for. A call sent before a switch
+/// is refused here, before anything is read, written, run or killed.
+fn named(cur: &Current, business: &str) -> Res<()> {
+    if cur.business == business {
+        return Ok(());
+    }
+    Err(format!(
+        "this call names business {business:?} but the window is on {:?}: nothing written, run or killed",
+        cur.business
+    ))
 }
 
 /// Blocking work off the main thread: a sync command would freeze the window.
@@ -46,37 +283,160 @@ async fn blocking<T: Send + 'static>(
 
 #[tauri::command]
 fn paths(app: tauri::State<'_, App>) -> Value {
-    let s = app.get();
+    let st = app.lock();
     json!({
-        "home": s.home,
-        "workspace": s.workspace,
-        "projects": s.projects,
-        "cos": s.cos_binary(),
-        "slots": s.slots.unwrap_or_else(agents::slots::run_slots),
+        "business": st.triple.label(),
+        "home": st.triple.home,
+        "workspace": st.triple.workspace,
+        "projects": st.triple.projects,
+        "cos": st.cos,
+        "slots": st.settings.slots.unwrap_or_else(agents::slots::run_slots),
+        "pinned": st.pinned,
+        "startError": st.notes.start,
+        "settingsError": st.notes.settings,
+        "legacyHint": st.notes.legacy,
     })
 }
 
-/// Points the app at another workspace; it must already hold `.chief-of-staff/`.
-#[tauri::command]
-fn set_workspace<R: Runtime>(
-    handle: AppHandle<R>,
-    app: tauri::State<'_, App>,
-    path: String,
-) -> Res<Value> {
-    let ws = PathBuf::from(path.trim());
-    let dir = cos::state::runtime_dir(&ws).map_err(|e| format!("{e:#}"))?;
-    if !dir.join("profile.json").is_file() {
-        return Err(format!(
-            "{} has no profile.json; run `cos --workspace {} state init` first",
-            dir.display(),
-            ws.display()
-        ));
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SwitchArgs {
+    name: String,
+}
+
+/// A business's directories must exist and be directories; the message names the repair.
+fn check_dirs(name: &str, b: &Business) -> Res<()> {
+    for (label, dir) in [
+        ("home", &b.home),
+        ("workspace", &b.workspace),
+        ("projects", &b.projects),
+    ] {
+        if !dir.is_dir() {
+            return Err(format!(
+                "business {name:?}: {label} {} is not a directory; repair it with `cos business add`",
+                dir.display()
+            ));
+        }
     }
-    let mut s = app.0.lock().map_err(err)?;
-    s.workspace = ws;
-    s.save(&handle).map_err(|e| format!("{e:#}"))?;
-    drop(s);
+    Ok(())
+}
+
+/// Points the window at another registered business. Nothing is written to disk.
+#[tauri::command]
+fn switch_business(app: tauri::State<'_, App>, args: SwitchArgs) -> Res<Value> {
+    {
+        let mut st = app.lock();
+        if let Some(var) = st.pinned {
+            return Err(format!(
+                "pinned by {var}: this window's business comes from the environment; start it without {var} to switch"
+            ));
+        }
+        let registry = business::load(&st.registry).map_err(chain)?;
+        let found = registry.businesses.get(&args.name).ok_or_else(|| {
+            let known: Vec<&str> = registry.businesses.keys().map(String::as_str).collect();
+            format!(
+                "business {:?} is not registered; known: {}",
+                args.name,
+                known.join(", ")
+            )
+        })?;
+        check_dirs(&args.name, found)?;
+        let dir = cos::state::runtime_dir(&found.workspace).map_err(chain)?;
+        if !dir.join("profile.json").is_file() {
+            return Err(format!(
+                "{} has no profile.json; run `cos --workspace {} state init` first",
+                dir.display(),
+                found.workspace.display()
+            ));
+        }
+        st.triple = Triple {
+            home: found.home.clone(),
+            workspace: found.workspace.clone(),
+            projects: found.projects.clone(),
+            business: Some(args.name.clone()),
+            layer: Layer::Registry,
+        };
+    }
     Ok(paths(app))
+}
+
+#[derive(Serialize)]
+struct Present {
+    home: bool,
+    workspace: bool,
+    projects: bool,
+}
+
+#[derive(Serialize)]
+struct Live {
+    live: usize,
+    lost: usize,
+    unreadable: usize,
+}
+
+/// One business in the picker. A business whose home is missing carries no count.
+#[derive(Serialize)]
+struct BusinessRow {
+    name: String,
+    triple: Business,
+    active: bool,
+    app: bool,
+    dirs: Present,
+    missing: bool,
+    #[serde(flatten)]
+    counts: Option<Live>,
+}
+
+fn business_row(name: &str, b: &Business, active: bool, app: bool) -> BusinessRow {
+    let dirs = Present {
+        home: b.home.is_dir(),
+        workspace: b.workspace.is_dir(),
+        projects: b.projects.is_dir(),
+    };
+    let counts = dirs
+        .home
+        .then(|| agents::count(&b.home).ok())
+        .flatten()
+        .map(|c| Live {
+            live: c.live,
+            lost: c.lost,
+            unreadable: c.unreadable,
+        });
+    BusinessRow {
+        name: name.to_owned(),
+        triple: b.clone(),
+        active,
+        app,
+        missing: !dirs.home,
+        dirs,
+        counts,
+    }
+}
+
+/// Every registered business with its directories and run counts, read without
+/// touching any run.
+#[tauri::command]
+async fn businesses(app: tauri::State<'_, App>) -> Res<Vec<BusinessRow>> {
+    let (registry, current) = {
+        let st = app.lock();
+        (st.registry.clone(), st.triple.business.clone())
+    };
+    blocking(move || {
+        let reg = business::load(&registry)?;
+        Ok(reg
+            .businesses
+            .iter()
+            .map(|(name, b)| {
+                business_row(
+                    name,
+                    b,
+                    reg.active.as_deref() == Some(name),
+                    current.as_deref() == Some(name),
+                )
+            })
+            .collect())
+    })
+    .await
 }
 
 /// `cosreport://localhost/` is the report; `/reports/<day>.html` an archived
@@ -116,6 +476,20 @@ pub fn docs_response<R: Runtime>(
     req: &tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
     let s = app.state::<App>().get();
+    if *req.method() == tauri::http::Method::POST
+        && req
+            .headers()
+            .get("x-cos-business")
+            .and_then(|h| h.to_str().ok())
+            != Some(s.business.as_str())
+    {
+        return docs_http(cos::docs::Reply {
+            status: 403,
+            kind: "text/plain; charset=utf-8",
+            body: b"missing or stale X-Cos-Business header: nothing written".to_vec(),
+            headers: Vec::new(),
+        });
+    }
     let ask = cos::docs::Ask {
         method: req.method().as_str(),
         path: req.uri().path(),
@@ -148,8 +522,10 @@ pub fn docs_http(r: cos::docs::Reply) -> tauri::http::Response<Vec<u8>> {
 /// Saves the documentation room's organisation. The room asks for it by
 /// `postMessage`, which the window checks came from the Docs frame.
 #[tauri::command]
-async fn docs_save(app: tauri::State<'_, App>, organize: Value) -> Res<()> {
-    let home = app.get().home;
+async fn docs_save(app: tauri::State<'_, App>, business: String, organize: Value) -> Res<()> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
     blocking(move || {
         let org: cos::docs::Organize = serde_json::from_value(organize)?;
         cos::docs::save_organize(&home, &org)
@@ -168,6 +544,7 @@ async fn agents_list(app: tauri::State<'_, App>) -> Res<Vec<Row>> {
     let home = app.get().home;
     blocking(move || {
         Ok(agents::list(&home)?
+            .runs
             .into_iter()
             .map(|(spec, state)| Row { spec, state })
             .collect())
@@ -210,8 +587,14 @@ async fn agents_scorecard(app: tauri::State<'_, App>) -> Res<Value> {
 
 /// Judges an ended agent again from what it left.
 #[tauri::command]
-async fn agents_rejudge(app: tauri::State<'_, App>, id: String) -> Res<agents::Verdict> {
-    let home = app.get().home;
+async fn agents_rejudge(
+    app: tauri::State<'_, App>,
+    business: String,
+    id: String,
+) -> Res<agents::Verdict> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
     blocking(move || agents::rejudge(&home, &id)).await
 }
 
@@ -303,7 +686,7 @@ struct SpawnArgs {
 
 /// The hire as planned from the dialog's fields: the repo, the fit, the
 /// contract, and why it would be refused.
-fn plan(s: &Settings, args: &SpawnArgs) -> anyhow::Result<agents::hire::Plan> {
+fn plan(s: &Current, args: &SpawnArgs) -> anyhow::Result<agents::hire::Plan> {
     let ask = match args.deliverable.as_deref().filter(|d| !d.trim().is_empty()) {
         Some(id) => agents::hire::Ask::Deliverable(id.to_owned()),
         None => {
@@ -360,13 +743,25 @@ async fn agents_fit(app: tauri::State<'_, App>, args: SpawnArgs) -> Res<agents::
 }
 
 #[tauri::command]
-async fn agents_spawn(app: tauri::State<'_, App>, args: SpawnArgs) -> Res<Vec<Spec>> {
+async fn agents_spawn(
+    app: tauri::State<'_, App>,
+    business: String,
+    args: SpawnArgs,
+) -> Res<Vec<Spec>> {
     let s = app.get();
-    let cos = s.cos_binary().ok_or(
+    named(&s, &business)?;
+    let cos = s.cos.clone().ok_or(
         "no cos binary: set COS_BIN, build it (`cargo build`), or `task install`".to_owned(),
     )?;
     blocking(move || {
         let planned = plan(&s, &args)?;
+        let triple = cos::business::Triple {
+            home: s.home.clone(),
+            workspace: s.workspace.clone(),
+            projects: s.projects.clone(),
+            business: None,
+            layer: cos::business::Layer::Flags,
+        };
         (0..args.count.clamp(1, 32))
             .map(|_| {
                 let req = planned.clone().request(agents::hire::Run {
@@ -383,7 +778,7 @@ async fn agents_spawn(app: tauri::State<'_, App>, args: SpawnArgs) -> Res<Vec<Sp
                         budget: true,
                     },
                 })?;
-                agents::spawn(&s.home, req, &cos)
+                agents::spawn(&triple, req, &cos)
             })
             .collect()
     })
@@ -402,8 +797,14 @@ struct RecordArgs {
 
 /// Stores what you found when you ran what a judged agent drafted.
 #[tauri::command]
-async fn agents_record(app: tauri::State<'_, App>, args: RecordArgs) -> Res<State> {
-    let home = app.get().home;
+async fn agents_record(
+    app: tauri::State<'_, App>,
+    business: String,
+    args: RecordArgs,
+) -> Res<State> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
     blocking(move || {
         agents::record(
             &home,
@@ -420,14 +821,23 @@ async fn agents_record(app: tauri::State<'_, App>, args: RecordArgs) -> Res<Stat
 }
 
 #[tauri::command]
-async fn agents_stop(app: tauri::State<'_, App>, id: String) -> Res<State> {
-    let home = app.get().home;
+async fn agents_stop(app: tauri::State<'_, App>, business: String, id: String) -> Res<State> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
     blocking(move || agents::stop(&home, &id, Duration::from_secs(10))).await
 }
 
 #[tauri::command]
-async fn agents_clean(app: tauri::State<'_, App>, id: String, force: bool) -> Res<()> {
-    let home = app.get().home;
+async fn agents_clean(
+    app: tauri::State<'_, App>,
+    business: String,
+    id: String,
+    force: bool,
+) -> Res<()> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
     blocking(move || agents::clean(&home, &id, force)).await
 }
 
@@ -438,10 +848,10 @@ async fn agents_clean(app: tauri::State<'_, App>, id: String, force: bool) -> Re
 async fn agents_tail(app: tauri::State<'_, App>, id: String, from: u64) -> Res<Value> {
     let home = app.get().home;
     blocking(move || {
+        let run = agents::run_dir(&home, &id)?;
         let (spec, _) = agents::read(&home, &id)?;
-        let (entries, next) =
-            agents::view::feed(&agents::events_path(&home, &id), spec.harness, from);
-        let seed_log = std::fs::read_to_string(agents::dir(&home, &id).join("seed.log")).ok();
+        let (entries, next) = agents::view::feed(&run.events_path(), spec.harness, from);
+        let seed_log = std::fs::read_to_string(run.path().join("seed.log")).ok();
         Ok(json!({ "entries": entries, "next": next, "seedLog": seed_log }))
     })
     .await
@@ -498,11 +908,55 @@ fn watch<R: Runtime>(handle: AppHandle<R>) {
     });
 }
 
-/// The app on any runtime: the report scheme, the settings (given, or loaded
-/// from the environment and the config directory), the watcher, the commands.
-pub fn builder<R: Runtime>(builder: Builder<R>, settings: Option<Settings>) -> Builder<R> {
-    let builder = match settings {
-        Some(s) => builder.manage(App(Mutex::new(s))),
+const SWITCH_MENU: &str = "switch-business";
+
+/// ⌘K opens the picker from anywhere, frames included: the native menu takes the
+/// key before the page does. Edit and Window keep the platform items, so copy,
+/// paste and window commands still reach the focused frame.
+fn app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let switch = MenuItemBuilder::with_id(SWITCH_MENU, "Switch business…")
+        .accelerator("CmdOrCtrl+K")
+        .build(app)?;
+    let app_sub = SubmenuBuilder::new(app, "Chief of Staff")
+        .about(None)
+        .separator()
+        .item(&switch)
+        .separator()
+        .quit()
+        .build()?;
+    let edit = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let window = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .close_window()
+        .build()?;
+    Menu::with_items(app, &[&app_sub, &edit, &window])
+}
+
+/// The window's menu bar. Menus are created on the main thread, so only the real
+/// app adds it; the test harness builds without it.
+pub fn with_menu<R: Runtime>(builder: Builder<R>) -> Builder<R> {
+    builder.menu(app_menu).on_menu_event(|app, event| {
+        if event.id().as_ref() == SWITCH_MENU {
+            let _ = app.emit("switch-business", ());
+        }
+    })
+}
+
+/// The app on any runtime: the report scheme, the state (given, or read from the
+/// environment and the config directory at setup), the watcher, the commands.
+pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder<R> {
+    let builder = match start {
+        Some(s) => builder.manage(App::new(&s)),
         None => builder,
     };
     builder
@@ -520,14 +974,16 @@ pub fn builder<R: Runtime>(builder: Builder<R>, settings: Option<Settings>) -> B
         })
         .setup(|app| {
             if app.try_state::<App>().is_none() {
-                app.manage(App(Mutex::new(Settings::load(app.handle()))));
+                let start = Start::from_env(app.handle()).map_err(chain)?;
+                app.manage(App::new(&start));
             }
             watch(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             paths,
-            set_workspace,
+            switch_business,
+            businesses,
             agents_list,
             agents_fit,
             agents_spawn,

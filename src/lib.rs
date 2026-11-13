@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod auth;
+pub mod business;
 pub mod claude;
 pub mod context;
 pub mod dash;

@@ -12,6 +12,16 @@ use cos::agents::{
 const COS: &str = env!("CARGO_BIN_EXE_cos");
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 
+fn at(home: &Path) -> cos::business::Triple {
+    cos::business::Triple {
+        home: home.to_owned(),
+        workspace: home.to_owned(),
+        projects: home.join("projects"),
+        business: None,
+        layer: cos::business::Layer::Flags,
+    }
+}
+
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cos-judge-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -58,7 +68,7 @@ fn judged(name: &str, prompt: &str, contract: Contract) -> (PathBuf, Spec, State
     let root = scratch(name);
     let (home, repo) = (root.join("home"), repo(&root));
     let spec = agents::spawn(
-        &home,
+        &at(&home),
         Request {
             harness: Harness::Claude,
             program: Some(FAKE_CLAUDE.into()),

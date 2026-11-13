@@ -87,8 +87,12 @@ git clone https://github.com/decebal/chief-of-staff-v2 && cd chief-of-staff-v2
 task setup                  # seed context/ and .chief-of-staff/, build, install cos + agents
 # set up goals and approved sources: paste the prompt from START-HERE.md into Claude Code or Codex
 cos brief                   # first brief, opens the report
-task schedule               # weekdays 08:30 brief
+task schedule               # weekdays 08:30 brief, for the active business
 ```
+
+Several businesses share one install: `cos business add <name> <home> <workspace> <projects>`
+registers one, `cos business use <name>` switches, `task schedule BUSINESS=<name>` binds the
+scheduled jobs to one. [Usage › Customise](docs/usage.md#customise) has the steps.
 
 ## What it does
 
@@ -179,6 +183,10 @@ cos --home /tmp/cos-demo dash
 | [Design](docs/design.md) | how it works, and the measurements behind each decision |
 | [Desktop plan](docs/plans/2026-10-21-desktop-app.md) | the workspace split, the agent governor and seeding, and the Tauri app |
 | [Agents tab plan](docs/plans/2026-10-28-agents-tab-design.md) | roles the chief of staff runs, design pack research (shadcn/ui, Basecoat, Geist), the tab redesign |
+| [Multiple businesses brief](docs/plans/2026-11-12-multi-business-brief.md) | the problem: one install, several businesses, each with its own home, workspace and projects |
+| [Multiple businesses design](docs/plans/2026-11-12-multi-business-design.md) | the business registry, the one resolver, app switching, and launchd per business |
+| [Multiple businesses plan](docs/plans/2026-11-12-multi-business-plan.md) | the stories, their gates and the ISA row to test table |
+| [Multiple businesses design review](docs/plans/2026-11-12-multi-business-design-review.md) | the final review of the design, verdict clean |
 
 ## License
 

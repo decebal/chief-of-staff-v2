@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use cos::agents::{self, Harness};
+use cos::business::{self, Business, Dirs, Inputs, Sources, Triple};
 use cos::claude::Run;
 use cos::mcp::{self, Mode};
 use cos::pipeline::Config;
@@ -14,16 +15,20 @@ use cos::pipeline::Config;
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Repo holding CLAUDE.md, .claude/agents and context/.
-    #[arg(long, env = "COS_HOME", default_value_os_t = default_home())]
-    home: PathBuf,
+    /// The registered business to run on: its home, workspace and projects together.
+    /// Env: COS_BUSINESS.
+    #[arg(long)]
+    business: Option<String>,
+    /// Repo holding CLAUDE.md, .claude/agents and context/. Env: COS_HOME.
+    #[arg(long)]
+    home: Option<PathBuf>,
     /// Directory holding `.chief-of-staff/` (profile and state), as the kit's
-    /// `state.py --workspace`. Default: `--home`.
-    #[arg(long, env = "COS_WORKSPACE")]
+    /// `state.py --workspace`. Default: `--home`. Env: COS_WORKSPACE.
+    #[arg(long)]
     workspace: Option<PathBuf>,
-    /// Directory scanned for chronis repos.
-    #[arg(long, env = "COS_PROJECTS", default_value_os_t = home_dir().join("Projects"))]
-    projects: PathBuf,
+    /// Directory scanned for chronis repos. Env: COS_PROJECTS.
+    #[arg(long)]
+    projects: Option<PathBuf>,
     /// Spending cap per Claude run, in USD.
     #[arg(long)]
     budget: Option<f64>,
@@ -32,16 +37,10 @@ struct Cli {
     #[arg(long)]
     dry_run: bool,
     /// Write the HTML report but do not open it.
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_open: bool,
     #[command(subcommand)]
     cmd: Cmd,
-}
-
-impl Cli {
-    fn ws(&self) -> PathBuf {
-        self.workspace.clone().unwrap_or_else(|| self.home.clone())
-    }
 }
 
 #[derive(Subcommand)]
@@ -122,6 +121,36 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RitualCmd,
     },
+    /// The registered businesses, each with its home, workspace and projects.
+    Business {
+        #[command(subcommand)]
+        cmd: BusinessCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum BusinessCmd {
+    /// One line per business: `*` on the active one, directory and profile status,
+    /// then the triple this invocation runs on.
+    List,
+    /// Register a business. Its three directories must exist. A new home gets
+    /// `context/` from the install's templates.
+    Add {
+        name: String,
+        home_dir: PathBuf,
+        workspace_dir: PathBuf,
+        projects_dir: PathBuf,
+        /// Overwrite the business of this name.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Make a business the active one.
+    Use { name: String },
+    /// Print a business's home, and exit 0 only when its directories exist.
+    /// Default: the business this invocation runs on.
+    Home { name: Option<String> },
+    /// Unregister a business. Refuses the active one; deletes no directory.
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -325,15 +354,50 @@ fn main() -> Result<()> {
 }
 
 fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
-    let ws = cli.ws();
+    match &cli.cmd {
+        Cmd::Ritual { cmd } => ritual_cmd(cmd),
+        Cmd::Business { cmd } => business_cmd(cli, cmd),
+        // These take their paths as arguments and never resolve a triple.
+        Cmd::Agents {
+            cmd: AgentCmd::Supervise { id },
+        } => agents::supervise(
+            cli.home
+                .as_deref()
+                .context("agents supervise needs --home")?,
+            id,
+        ),
+        Cmd::Agents {
+            cmd:
+                AgentCmd::BuildSlot {
+                    lock,
+                    program,
+                    args,
+                },
+        } => agents::slots::exec_holding_build_slot(lock, program, args),
+        cmd => {
+            let t = resolve_triple(cli)?;
+            if matches!(
+                cmd,
+                Cmd::Dash { .. } | Cmd::Mcp | Cmd::Serve { .. } | Cmd::Tunnel { .. }
+            ) {
+                eprintln!("business: {} {t}", t.label());
+            }
+            run_on(cli, &t, auth, cmd)
+        }
+    }
+}
+
+fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<()> {
+    let ws = t.workspace.clone();
     let cfg = Config {
-        home: cli.home.clone(),
+        home: t.home.clone(),
+        install: install_dir(),
         workspace: ws.clone(),
-        projects: cli.projects.clone(),
+        projects: t.projects.clone(),
         budget: cli.budget,
         bins: Default::default(),
     };
-    match &cli.cmd {
+    match cmd {
         Cmd::Brief if cli.dry_run => print_run(&cfg.brief_run(&cfg.gather()?)),
         Cmd::Ask { question } if cli.dry_run => print_run(&cfg.ask_run(&question.join(" "))),
         Cmd::Brief => {
@@ -343,10 +407,10 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
             if !done.value.week.proposed.is_empty() {
                 eprintln!("proposals: `cos state propose` writes them as a candidate to review");
             }
-            show_report(cli)
+            show_report(&t.home, cli.no_open)
         }
-        Cmd::Auth => auth_check(&cli.home, auth),
-        Cmd::State { cmd } => state_cmd(&cli.home, &ws, cmd),
+        Cmd::Auth => auth_check(&t.home, auth),
+        Cmd::State { cmd } => state_cmd(&t.home, &ws, cmd),
         Cmd::StaffSync {
             coordinator,
             run,
@@ -367,9 +431,9 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
             Ok(())
         }
         Cmd::Report => {
-            fold_latest_run(&cli.home)?;
-            cos::report::build(&cli.home, &ws)?;
-            show_report(cli)
+            fold_latest_run(&t.home)?;
+            cos::report::build(&t.home, &ws)?;
+            show_report(&t.home, cli.no_open)
         }
         Cmd::Dash { port } => {
             if !cli.no_open {
@@ -380,25 +444,25 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
                 });
             }
             runtime()?.block_on(cos::dash::serve(
-                cli.home.clone(),
+                t.home.clone(),
                 ws,
-                cli.projects.clone(),
+                t.projects.clone(),
                 *port,
             ))
         }
         Cmd::Docs { cmd } => match cmd {
             Some(DocsCmd::Notion) => {
                 let (list, cost) = cfg.notion_pages()?;
-                cos::docs::save_notion(&cli.home, &list)?;
+                cos::docs::save_notion(&t.home, &list)?;
                 eprintln!(
                     "cost ${cost:.2}\nlisted {} Notion pages into {}",
                     list.pages.len(),
-                    cos::docs::notion_path(&cli.home).display()
+                    cos::docs::notion_path(&t.home).display()
                 );
                 Ok(())
             }
             Some(DocsCmd::Json) => {
-                let data = cos::docs::library(&cli.home, &ws, &cli.projects)?;
+                let data = cos::docs::library(&t.home, &ws, &t.projects)?;
                 println!("{}", serde_json::to_string_pretty(&data)?);
                 Ok(())
             }
@@ -424,9 +488,122 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
             public_host,
         } => runtime()?.block_on(mcp::http(cfg, addr, token, public_host.clone())),
         Cmd::Tunnel { port } => runtime()?.block_on(cos::tunnel::run(cfg, *port)),
-        Cmd::Agents { cmd } => agents_cmd(cli, cmd),
-        Cmd::Flows { json, cn } => flows_cmd(&ws, &cli.projects, cn, *json),
-        Cmd::Ritual { cmd } => ritual_cmd(cmd),
+        Cmd::Agents { cmd } => agents_cmd(cli, t, cmd),
+        Cmd::Flows { json, cn } => flows_cmd(&ws, &t.projects, cn, *json),
+        Cmd::Ritual { .. } => unreachable!("run dispatches ritual before a triple resolves"),
+        Cmd::Business { .. } => unreachable!("run dispatches business before a triple resolves"),
+    }
+}
+
+/// `cos business`. Dispatched before a triple resolves, so a corrupt registry fails only the
+/// commands that read it.
+fn business_cmd(cli: &Cli, cmd: &BusinessCmd) -> Result<()> {
+    let path = business::location()?;
+    let inputs = inputs(cli);
+    let default = business::builtin(&inputs)?;
+    match cmd {
+        BusinessCmd::List => {
+            announce_first_run(business::first_run(&path, &default)?, &path, &default);
+            let registry = business::load(&path)?;
+            for (name, b) in &registry.businesses {
+                let star = if registry.active.as_deref() == Some(name) {
+                    "*"
+                } else {
+                    " "
+                };
+                println!(
+                    "{star} {name:<12} {}  home={} workspace={} projects={}",
+                    business::status(b),
+                    b.home.display(),
+                    b.workspace.display(),
+                    b.projects.display()
+                );
+            }
+            let t = resolve_triple(cli)?;
+            println!("current: {} {t}", t.label());
+            Ok(())
+        }
+        BusinessCmd::Add {
+            name,
+            home_dir,
+            workspace_dir,
+            projects_dir,
+            replace,
+        } => {
+            let business = Business {
+                home: home_dir.clone(),
+                workspace: workspace_dir.clone(),
+                projects: projects_dir.clone(),
+            };
+            let canon = business::canonical(&business).context("cos business add refused")?;
+            announce_first_run(business::first_run(&path, &default)?, &path, &default);
+            business::add(&path, name, canon.clone(), *replace)?;
+            let install = default_home();
+            if business::seed_context(&install.join("templates/context"), &canon.home)? {
+                eprintln!(
+                    "seeded {}/context from the install's templates",
+                    canon.home.display()
+                );
+            }
+            eprintln!("added {name} to {}", path.display());
+            if cos::state::profile(&canon.workspace).is_none() {
+                eprintln!(
+                    "no profile in {}; run `cos --workspace {} state init`",
+                    canon.workspace.display(),
+                    canon.workspace.display()
+                );
+            }
+            Ok(())
+        }
+        BusinessCmd::Use { name } => {
+            announce_first_run(business::first_run(&path, &default)?, &path, &default);
+            business::set_active(&path, name)?;
+            eprintln!("active business: {name}");
+            Ok(())
+        }
+        BusinessCmd::Home { name } => {
+            announce_first_run(business::first_run(&path, &default)?, &path, &default);
+            let registry = business::load(&path)?;
+            let name = match name {
+                Some(name) => name.clone(),
+                None => resolve_triple(cli)?
+                    .business
+                    .context("no active business; name one: `cos business home <name>`")?,
+            };
+            let b = registry
+                .businesses
+                .get(&name)
+                .with_context(|| format!("business {name:?} is not registered"))?;
+            for (label, dir) in [
+                ("home", &b.home),
+                ("workspace", &b.workspace),
+                ("projects", &b.projects),
+            ] {
+                if !dir.is_dir() {
+                    anyhow::bail!("{label} {} of business {name:?} is missing", dir.display());
+                }
+            }
+            println!("{}", b.home.display());
+            Ok(())
+        }
+        BusinessCmd::Remove { name } => {
+            announce_first_run(business::first_run(&path, &default)?, &path, &default);
+            business::remove(&path, name)?;
+            eprintln!("removed {name} from {}", path.display());
+            Ok(())
+        }
+    }
+}
+
+fn announce_first_run(fresh: bool, path: &std::path::Path, default: &Business) {
+    if fresh {
+        eprintln!(
+            "wrote default (active) from the built-in defaults to {}: home={} workspace={} projects={}",
+            path.display(),
+            default.home.display(),
+            default.workspace.display(),
+            default.projects.display()
+        );
     }
 }
 
@@ -508,8 +685,8 @@ fn confirm_on_terminal(line: &str) -> Result<bool> {
     Ok(answer.trim() == "yes")
 }
 
-fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
-    let home = &cli.home;
+fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
+    let home = &t.home;
     match cmd {
         AgentCmd::Spawn {
             from,
@@ -564,11 +741,11 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
             if let Some(note) = agents::policy::load(home).note {
                 eprintln!("{note}; hiring on the built-in defaults");
             }
-            let ws = cli.ws();
+            let ws = t.workspace.clone();
             let at = agents::hire::Where {
                 home,
                 workspace: &ws,
-                projects: &cli.projects,
+                projects: &t.projects,
             };
             let asked = agents::Contract {
                 done_when: done_when.clone(),
@@ -598,7 +775,7 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
                         budget: cli.budget.is_some(),
                     },
                 })?;
-                let spec = agents::spawn(home, req, &cos)?;
+                let spec = agents::spawn(t, req, &cos)?;
                 println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
             }
             if !cli.dry_run {
@@ -607,13 +784,16 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
             Ok(())
         }
         AgentCmd::Ls => {
-            print!("{}", agents::view::table(&agents::list(home)?));
+            let listing = agents::list(home)?;
+            print!("{}", agents::view::table(&listing.runs));
+            note_skipped(&listing.skipped);
             Ok(())
         }
         AgentCmd::Watch => loop {
-            let list = agents::list(home)?;
-            print!("\x1b[2J\x1b[H{}", agents::view::table(&list));
-            if list.iter().all(|(_, s)| s.status.terminal()) {
+            let listing = agents::list(home)?;
+            print!("\x1b[2J\x1b[H{}", agents::view::table(&listing.runs));
+            note_skipped(&listing.skipped);
+            if listing.skipped.is_empty() && listing.runs.iter().all(|(_, s)| s.status.terminal()) {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_secs(2));
@@ -625,7 +805,7 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
         }
         AgentCmd::Tail { id, follow } => {
             let (spec, _) = agents::read(home, id)?;
-            let events = agents::events_path(home, id);
+            let events = agents::run_dir(home, id)?.events_path();
             let mut at = 0;
             let mut calls = std::collections::HashMap::new();
             loop {
@@ -691,11 +871,16 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
         AgentCmd::Clean { id, force } => {
             let ids: Vec<String> = match id {
                 Some(id) => vec![id.clone()],
-                None => agents::list(home)?
-                    .into_iter()
-                    .filter(|(_, s)| s.status.terminal())
-                    .map(|(spec, _)| spec.id)
-                    .collect(),
+                None => {
+                    let listing = agents::list(home)?;
+                    note_skipped(&listing.skipped);
+                    listing
+                        .runs
+                        .into_iter()
+                        .filter(|(_, s)| s.status.terminal())
+                        .map(|(spec, _)| spec.id)
+                        .collect()
+                }
             };
             let mut refused = 0;
             for id in ids {
@@ -710,12 +895,16 @@ fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
             anyhow::ensure!(refused == 0, "{refused} agent(s) kept");
             Ok(())
         }
-        AgentCmd::Supervise { id } => agents::supervise(home, id),
-        AgentCmd::BuildSlot {
-            lock,
-            program,
-            args,
-        } => agents::slots::exec_holding_build_slot(lock, program, args),
+        AgentCmd::Supervise { .. } | AgentCmd::BuildSlot { .. } => {
+            unreachable!("run dispatches these before a triple resolves")
+        }
+    }
+}
+
+/// Names the run ids `agents::list` could not resolve, on stderr.
+fn note_skipped(skipped: &[String]) {
+    if !skipped.is_empty() {
+        eprintln!("skipped: {}", skipped.join(" "));
     }
 }
 
@@ -727,9 +916,12 @@ fn state_cmd(home: &std::path::Path, ws: &std::path::Path, cmd: &StateCmd) -> Re
         let ws = std::path::absolute(ws)?;
         match cmd {
             StateCmd::Init => state::initialize(&ws),
-            StateCmd::Read => {
-                state::read(&ws)?.context("no .chief-of-staff/state.json; run `cos state init`")
-            }
+            StateCmd::Read => state::read(&ws)?.with_context(|| {
+                format!(
+                    "no .chief-of-staff/state.json; run `cos --workspace {} state init`",
+                    ws.display()
+                )
+            }),
             StateCmd::Check { file } => {
                 state::validate(&state::load(file)?)?;
                 Ok(serde_json::json!({ "valid": true }))
@@ -772,10 +964,16 @@ fn state_cmd(home: &std::path::Path, ws: &std::path::Path, cmd: &StateCmd) -> Re
 }
 
 /// The validated state and the profile, or why there are none.
-fn workspace(home: &std::path::Path) -> Result<(serde_json::Value, Option<serde_json::Value>)> {
-    let st = cos::state::read(home)?
-        .context("no .chief-of-staff/state.json; run `cos state init`, then set up goals")?;
-    Ok((st, cos::state::profile(home)))
+fn workspace(
+    workspace: &std::path::Path,
+) -> Result<(serde_json::Value, Option<serde_json::Value>)> {
+    let st = cos::state::read(workspace)?.with_context(|| {
+        format!(
+            "no .chief-of-staff/state.json; run `cos --workspace {} state init`, then set up goals",
+            workspace.display()
+        )
+    })?;
+    Ok((st, cos::state::profile(workspace)))
 }
 
 fn tracked(r: Option<&cos::track::Recorded>) {
@@ -839,10 +1037,10 @@ fn auth_check(home: &std::path::Path, source: cos::auth::Source) -> Result<()> {
     Ok(())
 }
 
-fn show_report(cli: &Cli) -> Result<()> {
-    let path = cli.home.join("out/report.html");
+fn show_report(home: &std::path::Path, no_open: bool) -> Result<()> {
+    let path = home.join("out/report.html");
     eprintln!("report {}", path.display());
-    if cli.no_open {
+    if no_open {
         return Ok(());
     }
     cos::report::open(&path)
@@ -872,14 +1070,46 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
         .context("start tokio runtime")
 }
 
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
+/// The triple this invocation runs on. Flags and env are passed separately, so a conflict
+/// within one layer is an error and a higher layer wins over a lower one.
+fn resolve_triple(cli: &Cli) -> Result<Triple> {
+    let inputs = inputs(cli);
+    business::resolve(&inputs, || business::load(&business::location()?))
+}
+
+fn inputs(cli: &Cli) -> Inputs {
+    Inputs {
+        flags: Sources {
+            business: cli.business.clone(),
+            dirs: Dirs {
+                home: cli.home.clone(),
+                workspace: cli.workspace.clone(),
+                projects: cli.projects.clone(),
+            },
+        },
+        env: Sources {
+            business: env_value("COS_BUSINESS"),
+            dirs: Dirs {
+                home: env_value("COS_HOME").map(PathBuf::from),
+                workspace: env_value("COS_WORKSPACE").map(PathBuf::from),
+                projects: env_value("COS_PROJECTS").map(PathBuf::from),
+            },
+        },
+        install: install_dir(),
+        user_home: env_value("HOME").map(PathBuf::from),
+    }
+}
+
+fn env_value(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
 /// The clone `cos` was built from: `task install` builds in place, so an
 /// installed binary finds its agents and context with no configuration.
 fn default_home() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn install_dir() -> PathBuf {
+    std::fs::canonicalize(default_home()).unwrap_or_else(|_| default_home())
 }

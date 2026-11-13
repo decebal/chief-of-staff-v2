@@ -6,8 +6,9 @@ Chronis epic that names it.
 ## Two paths
 
 - **Here, in conversation:** follow the process below.
-- **EGM:** ask the user to run `/egm:egm-brainstorm`. When it finishes, move `concepts_brief.md`
-  to the dated brief path and index it.
+- **EGM:** run EGM's `egm-brainstorm` skill (read its `SKILL.md` and follow it, as in the ritual
+  skill's EGM section), asking the user its questions. When it finishes, move
+  `concepts_brief.md` to the dated brief path and index it.
 
 ## Process
 

@@ -69,9 +69,9 @@ pub fn block(home: &Path, ws: &Path) -> String {
 
 /// The `.chief-of-staff/` workspace: the profile, and the state's open work.
 /// Completed work and the journal stay out; they are history, not today.
-pub fn workspace(home: &Path) -> String {
-    let profile = state::profile(home);
-    let current = state::read(home);
+pub fn workspace(workspace: &Path) -> String {
+    let profile = state::profile(workspace);
+    let current = state::read(workspace);
     let (Some(profile), Ok(Some(st))) = (profile, &current) else {
         return match current {
             Err(e) => format!(
@@ -200,8 +200,8 @@ pub fn local_kind(service: &str) -> Option<Local> {
 }
 
 /// GitHub orgs the profile counts as work; empty without a workspace.
-pub fn work_orgs(home: &Path) -> Vec<String> {
-    state::profile(home)
+pub fn work_orgs(workspace: &Path) -> Vec<String> {
+    state::profile(workspace)
         .map(|p| state::code_orgs(&p))
         .unwrap_or_default()
 }
@@ -209,8 +209,8 @@ pub fn work_orgs(home: &Path) -> Vec<String> {
 /// Which local facts `cos` may collect. With a workspace profile, only those
 /// of an approved `code` / `tasks` source; without one, both, as before the
 /// workspace existed.
-pub fn local_reads(home: &Path) -> gather::Reads {
-    let Some(profile) = state::profile(home) else {
+pub fn local_reads(workspace: &Path) -> gather::Reads {
+    let Some(profile) = state::profile(workspace) else {
         return gather::Reads::ALL;
     };
     let kinds: Vec<Local> = state::approved_sources(&profile)
@@ -226,8 +226,8 @@ pub fn local_reads(home: &Path) -> gather::Reads {
 /// The tools a brain may call. With a workspace profile, only the connectors
 /// of its approved sources (none approved means none); without one, every
 /// `READ_ONLY` connector, as before the workspace existed.
-pub fn tools(home: &Path) -> Vec<&'static str> {
-    let Some(profile) = state::profile(home) else {
+pub fn tools(workspace: &Path) -> Vec<&'static str> {
+    let Some(profile) = state::profile(workspace) else {
         return READ_ONLY.to_vec();
     };
     let mut allowed = vec!["ToolSearch"];
