@@ -190,6 +190,7 @@ cos --home /tmp/cos-demo dash
 | [Business sidebar and dashboards brief](docs/plans/2026-11-13-business-dashboards-brief.md) | four businesses in a pinned sidebar, each with its own dashboards embedded in the app |
 | [Business sidebar and dashboards design](docs/plans/2026-11-13-business-dashboards-design.md) | dashboards.toml, the app's server supervisor, the sidebar signals and the Semantic ISA |
 | [Business sidebar and dashboards design review](docs/plans/2026-11-13-business-dashboards-design-review.md) | 13 EGM rounds, owner decisions, what Build must prove |
+| [Business sidebar and dashboards plan](docs/plans/2026-11-15-business-dashboards-plan.md) | quality gates, testing trophy and 45 stories, the Q1 spike first |
 
 ## License
 
