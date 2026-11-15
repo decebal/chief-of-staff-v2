@@ -245,8 +245,16 @@ tasks:
           sleep 0.25
           i=$((i + 1))
         done
-      - 'mv -f "{{.LAUNCHD}}/cos.dash.plist.new" "{{.LAUNCHD}}/cos.dash.plist"'
-      - '{{.LAUNCHCTL}} bootstrap gui/$(id -u) "{{.LAUNCHD}}/cos.dash.plist"'
+        # lsof exits non-zero when nothing listens. A listener other than the old pid holds the
+        # port; the first such line names it, so IPv4 and IPv6 sockets of one pid report once.
+        held=$(lsof -nP -iTCP:{{.DASH_PORT}} -sTCP:LISTEN 2>/dev/null || true)
+        held=$(printf '%s\n' "$held" | awk -v old="$old" 'NR > 1 && $2 != "" && $2 != old { print $1 " (pid " $2 ")"; exit }')
+        if [ -n "$held" ]; then
+          echo "cos.dash skipped: port {{.DASH_PORT}} held by $held"
+          exit 0
+        fi
+        mv -f "{{.LAUNCHD}}/cos.dash.plist.new" "{{.LAUNCHD}}/cos.dash.plist"
+        {{.LAUNCHCTL}} bootstrap gui/$(id -u) "{{.LAUNCHD}}/cos.dash.plist"
 
   unschedule:
     desc: Unload the launchd jobs
