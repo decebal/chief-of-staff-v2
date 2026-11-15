@@ -103,6 +103,26 @@ const TESTS: &[(&str, fn())] = &[
         "second_supervisor_locks_after_the_reap",
         second_supervisor_locks_after_the_reap,
     ),
+    (
+        "control_room_then_salesroom_share_one_server",
+        control_room_then_salesroom_share_one_server,
+    ),
+    (
+        "owned_slot_refuses_a_marker_it_never_serves",
+        owned_slot_refuses_a_marker_it_never_serves,
+    ),
+    (
+        "success_wakes_a_waiter_with_its_own_probe",
+        success_wakes_a_waiter_with_its_own_probe,
+    ),
+    (
+        "reopen_after_owned_exit_waits_for_the_reaper",
+        reopen_after_owned_exit_waits_for_the_reaper,
+    ),
+    (
+        "reopen_after_owned_exit_refuses_at_the_deadline",
+        reopen_after_owned_exit_refuses_at_the_deadline,
+    ),
 ];
 
 fn main() {
@@ -1900,4 +1920,291 @@ fn second_supervisor_locks_after_the_reap() {
         "the second supervisor holds no lock"
     );
     kill_and_reap(&root, addr, pids[0], &second_exits);
+}
+
+/// The second dashboard on `addr`'s server: `/sales`, probed for marker B.
+fn salesroom(addr: SocketAddrV4) -> Dashboard {
+    Dashboard {
+        name: "Salesroom".into(),
+        url: format!("http://{addr}/sales"),
+        port: addr.port(),
+        server: Some("fake".into()),
+        probe: Probe {
+            path: "/sales".into(),
+            contains: MARKER_B.into(),
+        },
+    }
+}
+
+fn log_of(root: &Path, addr: SocketAddrV4) -> PathBuf {
+    root.join("logs")
+        .join("servers")
+        .join(format!("{}.log", addr.port()))
+}
+
+/// How many times the server log records `request` as a request line.
+fn requests(root: &Path, addr: SocketAddrV4, request: &str) -> usize {
+    std::fs::read_to_string(log_of(root, addr))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| *l == request)
+        .count()
+}
+
+fn control_room_then_salesroom_share_one_server() {
+    let root = scratch("owned-reuse");
+    let addr = free_addr();
+    let (server, control) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let sales = salesroom(addr);
+    let (emit, exits) = recording();
+    let (sup, pids) = real_spawning(&root, emit);
+
+    assert_eq!(
+        sup.ensure(Some(&server), &control),
+        Ok(Running {
+            url: control.url.clone(),
+            owned: true
+        })
+    );
+    assert_eq!(requests(&root, addr, "GET /sales HTTP/1.0"), 0);
+    assert_eq!(
+        sup.ensure(Some(&server), &sales),
+        Ok(Running {
+            url: sales.url.clone(),
+            owned: true
+        })
+    );
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 1, "one process for two dashboards");
+    assert_eq!(
+        requests(&root, addr, "GET /sales HTTP/1.0"),
+        1,
+        "the Salesroom ran its own identity probe"
+    );
+    kill_and_reap(&root, addr, pids[0], &exits);
+}
+
+fn owned_slot_refuses_a_marker_it_never_serves() {
+    let root = scratch("owned-foreign-marker");
+    let addr = free_addr();
+    let exe = std::env::current_exe().unwrap();
+    let (server, control) = managed(addr, exe.clone(), MARKER_A);
+    let (_, never) = managed(addr, exe, "<title>Never served");
+    let (emit, exits) = recording();
+    let (sup, pids) = real_spawning(&root, emit);
+    let want = Ok(Running {
+        url: control.url.clone(),
+        owned: true,
+    });
+
+    assert_eq!(sup.ensure(Some(&server), &control), want);
+    match sup.ensure(Some(&server), &never) {
+        Err(Refusal::Identity {
+            status,
+            head,
+            owned: true,
+            spawned: false,
+        }) => {
+            assert_eq!(status, "HTTP/1.0 200 OK");
+            assert!(head.starts_with("HTTP/1.0 200 OK"), "{head}");
+        }
+        other => panic!("a marker the server never serves: {other:?}"),
+    }
+    let pid = pids.lock().unwrap()[0];
+    assert!(
+        exits.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the Owned server exited"
+    );
+    assert!(proc::alive(pid), "the Owned server was signalled");
+    assert!(
+        take_lock(&root, addr.port()).is_none(),
+        "the Owned slot gave up its port lock"
+    );
+    assert!(pidfile_of(&root, addr).exists(), "the pidfile was removed");
+    assert_eq!(
+        sup.ensure(Some(&server), &control),
+        want,
+        "the first dashboard"
+    );
+    assert_eq!(pids.lock().unwrap().len(), 1, "a second spawn");
+    kill_and_reap(&root, addr, pid, &exits);
+}
+
+fn success_wakes_a_waiter_with_its_own_probe() {
+    let root = scratch("owned-waiter");
+    let addr = free_addr();
+    let (server, control) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let sales = salesroom(addr);
+    let (gate_tx, gate_rx) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate_rx);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let pids = Arc::new(Mutex::new(Vec::<libc::pid_t>::new()));
+    let (counted, recorded) = (calls.clone(), pids.clone());
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, move |server: &Server, log: &Path| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        let _ = gate.lock().unwrap().recv();
+        let child = real_spawn(server, log)?;
+        recorded.lock().unwrap().push(child.id() as libc::pid_t);
+        Ok(child)
+    });
+
+    let (tx, rx) = mpsc::channel();
+    let mut threads = vec![open_on_thread(&sup, &server, &control, 0, &tx)];
+    assert!(
+        until(Duration::from_secs(5), || calls.load(Ordering::SeqCst) == 1),
+        "the first open never reached the spawn"
+    );
+    threads.push(open_on_thread(&sup, &server, &sales, 1, &tx));
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "an open returned while the slot was Starting"
+    );
+    gate_tx.send(()).unwrap();
+    let got = collect(&rx, threads, Duration::from_secs(20));
+
+    assert_eq!(
+        got[0],
+        Ok(Running {
+            url: control.url.clone(),
+            owned: true
+        })
+    );
+    assert_eq!(
+        got[1],
+        Ok(Running {
+            url: sales.url.clone(),
+            owned: true
+        }),
+        "the waiter's own URL"
+    );
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 1, "the waiter spawned");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(requests(&root, addr, "GET / HTTP/1.0"), 1);
+    assert_eq!(
+        requests(&root, addr, "GET /sales HTTP/1.0"),
+        1,
+        "the waiter ran its own identity probe"
+    );
+    kill_and_reap(&root, addr, pids[0], &exits);
+}
+
+/// An `emit` that forwards every notice, then sleeps `delay` after the first owned one.
+fn delaying(
+    delay: Duration,
+) -> (
+    impl Fn(ExitNotice) + Send + Sync + 'static,
+    mpsc::Receiver<ExitNotice>,
+) {
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let delayed = AtomicBool::new(false);
+    (
+        move |n: ExitNotice| {
+            let owned = n.owned;
+            let _ = tx.lock().unwrap().send(n);
+            if owned && !delayed.swap(true, Ordering::SeqCst) {
+                std::thread::sleep(delay);
+            }
+        },
+        rx,
+    )
+}
+
+/// Opens the Control room, kills its group and returns once the reaper has emitted the
+/// exit, while `emit` still delays the reap.
+fn open_then_exit(
+    root: &Path,
+    server: &Server,
+    control: &Dashboard,
+    sup: &Supervisor,
+    pids: &Mutex<Vec<libc::pid_t>>,
+    exits: &mpsc::Receiver<ExitNotice>,
+) -> libc::pid_t {
+    assert_eq!(
+        sup.ensure(Some(server), control),
+        Ok(Running {
+            url: control.url.clone(),
+            owned: true
+        })
+    );
+    let pid = pids.lock().unwrap()[0];
+    proc::kill_group(pid);
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert!(n.owned, "an Owned server's exit");
+    assert!(
+        take_lock(root, server.addr.port()).is_none(),
+        "the reaper released the lock before the delayed reap"
+    );
+    pid
+}
+
+fn reopen_after_owned_exit_waits_for_the_reaper() {
+    let root = scratch("owned-reopen");
+    let addr = free_addr();
+    let (server, control) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (emit, exits) = delaying(Duration::from_millis(200));
+    let (sup, pids) = real_spawning(&root, emit);
+    let first = open_then_exit(&root, &server, &control, &sup, &pids, &exits);
+
+    assert_eq!(
+        sup.ensure(Some(&server), &control),
+        Ok(Running {
+            url: control.url.clone(),
+            owned: true
+        }),
+        "the reopen while the reaper still holds the lock"
+    );
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 2, "one fresh server");
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(first, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "the reaper never reaped the first server");
+    kill_and_reap(&root, addr, pids[1], &exits);
+}
+
+fn reopen_after_owned_exit_refuses_at_the_deadline() {
+    let root = scratch("owned-reopen-deadline");
+    let addr = free_addr();
+    let (server, control) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (emit, exits) = delaying(Duration::from_millis(6500));
+    let (sup, pids) = real_spawning(&root, emit);
+    open_then_exit(&root, &server, &control, &sup, &pids, &exits);
+
+    let started = Instant::now();
+    let r = sup.ensure(Some(&server), &control);
+    let waited = started.elapsed();
+    assert_eq!(
+        r,
+        Err(Refusal::NotRunning {
+            hint: "the previous server on this port is still exiting; open the dashboard again"
+                .into(),
+        })
+    );
+    assert!(
+        waited >= Duration::from_millis(4900) && waited < Duration::from_millis(6000),
+        "refused after {waited:?}, not at the 5 s deadline"
+    );
+    assert_eq!(pids.lock().unwrap().len(), 1, "spawned at the deadline");
+    assert!(
+        take_lock(&root, addr.port()).is_none(),
+        "the reaper released the lock before the delayed reap"
+    );
+
+    // A dropped slot would reach lock-take while the reaper still holds the lock and
+    // refuse as "another app instance"; the kept Exited slot is waited on instead.
+    assert_eq!(
+        sup.ensure(Some(&server), &control),
+        Ok(Running {
+            url: control.url.clone(),
+            owned: true
+        }),
+        "the reopen after the reap"
+    );
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 2, "one fresh server");
+    kill_and_reap(&root, addr, pids[1], &exits);
 }
