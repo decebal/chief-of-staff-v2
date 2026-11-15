@@ -146,6 +146,14 @@ const TESTS: &[(&str, fn())] = &[
         "cleanup_removes_a_leftover_of_another_binary",
         cleanup_removes_a_leftover_of_another_binary,
     ),
+    (
+        "cleanup_stops_a_matching_leftover",
+        cleanup_stops_a_matching_leftover,
+    ),
+    (
+        "cleanup_kills_a_leftover_member",
+        cleanup_kills_a_leftover_member,
+    ),
 ];
 
 fn main() {
@@ -2512,4 +2520,64 @@ fn cleanup_removes_a_leftover_of_another_binary() {
     sup.launch_cleanup(&declaring(addr, other));
     assert!(!file.exists(), "the pidfile of another binary was kept");
     assert_unsignalled(left.0, "declared binary is another file");
+}
+
+/// The leftover runs the test binary, declared for its port, and dies on SIGTERM, so
+/// cleanup returning well before the 5 s deadline means the SIGTERM reached it.
+fn cleanup_stops_a_matching_leftover() {
+    let root = scratch("cleanup-match");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let addr = free_addr();
+    let left = leftover("idle", addr);
+    let pid = left.0;
+    assert_eq!(proc::pgid(pid), Some(pid), "the leftover leads its group");
+    let file = plant_record(&root, &format!("{}.json", addr.port()), pid, addr);
+
+    let began = Instant::now();
+    sup.launch_cleanup(&declaring(addr, std::env::current_exe().unwrap()));
+    assert!(
+        began.elapsed() < Duration::from_secs(4),
+        "cleanup waited for the deadline: {:?}",
+        began.elapsed()
+    );
+    assert!(!file.exists(), "the pidfile of a stopped leftover was kept");
+    assert!(
+        until(Duration::from_secs(1), || !proc::group_alive(pid)),
+        "the leftover's group survived cleanup"
+    );
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "cleanup kept the port lock"
+    );
+}
+
+/// The member ignores SIGTERM, so only the group SIGKILL after the leader's exit can
+/// stop it; cleanup does not wait for the group, so the test polls for it.
+fn cleanup_kills_a_leftover_member() {
+    let root = scratch("cleanup-member");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let addr = free_addr();
+    let left = leftover("serve-with-member", addr);
+    let pid = left.0;
+    assert!(
+        until(Duration::from_secs(5), || matched(&get(
+            addr, "/health", READY
+        ))),
+        "the leftover never became ready"
+    );
+    let file = plant_record(&root, &format!("{}.json", addr.port()), pid, addr);
+
+    let began = Instant::now();
+    sup.launch_cleanup(&declaring(addr, std::env::current_exe().unwrap()));
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "cleanup reached the deadline: {:?}",
+        began.elapsed()
+    );
+    assert!(!file.exists(), "the pidfile of a stopped leftover was kept");
+    assert!(
+        until(Duration::from_secs(1), || !proc::group_alive(pid)
+            && get(addr, "/health", READY) == ProbeResult::NoListener),
+        "the group or the listener outlived cleanup"
+    );
 }
