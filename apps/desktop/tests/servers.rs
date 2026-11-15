@@ -154,6 +154,14 @@ const TESTS: &[(&str, fn())] = &[
         open_after_quit_refuses_at_reserve,
     ),
     (
+        "quit_signals_owned_before_waiting_on_a_probe",
+        quit_signals_owned_before_waiting_on_a_probe,
+    ),
+    (
+        "quit_kills_a_member_and_spares_another_instance",
+        quit_kills_a_member_and_spares_another_instance,
+    ),
+    (
         "cleanup_removes_an_undeclared_leftover",
         cleanup_removes_an_undeclared_leftover,
     ),
@@ -2252,6 +2260,185 @@ fn open_after_quit_refuses_at_reserve() {
     assert!(
         take_lock(&root, addr.port()).is_some(),
         "the port lock is held"
+    );
+}
+
+fn quit_signals_owned_before_waiting_on_a_probe() {
+    let root = scratch("quit-owned-and-probing");
+    let (owned_addr, probing_addr) = (free_addr(), free_addr());
+    let (owned_server, owned_d) = managed(owned_addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (probing_server, probing_d) =
+        managed(probing_addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (gate_tx, gate_rx) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate_rx);
+    let connects = Arc::new(AtomicUsize::new(0));
+    let counted = connects.clone();
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = Arc::new(
+        Supervisor::new(
+            &root.join("data"),
+            &root.join("logs"),
+            emit,
+            fake_spawn("serve", 0, pids.clone()),
+            move |addr: SocketAddrV4| {
+                if addr != probing_addr {
+                    return real_connect(addr);
+                }
+                counted.fetch_add(1, Ordering::SeqCst);
+                let _ = gate.lock().unwrap().recv();
+                false
+            },
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        sup.ensure(Some(&owned_server), &owned_d),
+        Ok(Running {
+            url: owned_d.url.clone(),
+            owned: true,
+        })
+    );
+    let pid = pids.lock().unwrap()[0];
+
+    let (tx, rx) = mpsc::channel();
+    let threads = vec![open_on_thread(&sup, &probing_server, &probing_d, 0, &tx)];
+    assert!(
+        until(Duration::from_secs(2), || connects.load(Ordering::SeqCst)
+            == 1),
+        "the second open never reached connect"
+    );
+
+    let stopping = Arc::new(AtomicBool::new(true));
+    let started = Instant::now();
+    let stopper = {
+        let (sup, stopping) = (sup.clone(), stopping.clone());
+        std::thread::spawn(move || {
+            sup.stop_owned();
+            stopping.store(false, Ordering::SeqCst);
+        })
+    };
+    let n = exits
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the Owned server was not stopped while the probe blocked");
+    assert!(
+        stopping.load(Ordering::SeqCst),
+        "stop_owned returned before the Owned server exited"
+    );
+    assert!(n.owned, "the Owned server's exit");
+    assert_eq!(n.status, "signal 15", "the group was sent SIGTERM");
+    assert!(
+        until(Duration::from_secs(1), || !proc::group_alive(pid)),
+        "the Owned group outlived its SIGTERM"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the Owned server stopped only after {:?}",
+        started.elapsed()
+    );
+
+    stopper.join().unwrap();
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(4900) && took < Duration::from_secs(7),
+        "stop_owned returned after {took:?}, not at its deadline"
+    );
+    assert!(
+        exits.recv_timeout(Duration::from_millis(200)).is_err(),
+        "a second exit was reported"
+    );
+    assert!(
+        TcpListener::bind(owned_addr).is_ok(),
+        "the Owned port is still bound"
+    );
+    assert!(
+        !pidfile_of(&root, owned_addr).exists(),
+        "the Owned pidfile remains"
+    );
+
+    gate_tx.send(()).unwrap();
+    let got = collect(&rx, threads, Duration::from_secs(5));
+    assert_eq!(got[0], quitting());
+    assert_eq!(pids.lock().unwrap().len(), 1, "spawned during quit");
+    assert!(!pidfile_of(&root, probing_addr).exists());
+}
+
+fn quit_kills_a_member_and_spares_another_instance() {
+    let root = scratch("quit-member");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let first = spawning(
+        &root,
+        emit,
+        fake_spawn("serve-with-member", 0, pids.clone()),
+    );
+    assert_eq!(
+        first.ensure(Some(&server), &d),
+        Ok(Running {
+            url: d.url.clone(),
+            owned: true,
+        })
+    );
+    let pid = pids.lock().unwrap()[0];
+    let pidfile = pidfile_of(&root, addr);
+
+    let (second_emit, second_exits) = recording();
+    let second_spawns = Arc::new(AtomicUsize::new(0));
+    let counted = second_spawns.clone();
+    let second = Supervisor::new(
+        &root.join("data"),
+        &root.join("logs"),
+        second_emit,
+        move |_: &Server, _: &Path| -> anyhow::Result<Child> {
+            counted.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("no spawn in the second instance")
+        },
+        real_connect,
+    )
+    .unwrap();
+    assert_eq!(
+        second.ensure(Some(&server), &d),
+        Ok(Running {
+            url: d.url.clone(),
+            owned: false,
+        }),
+        "the second instance did not embed the server"
+    );
+    second.stop_owned();
+    assert!(
+        exits.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the second instance's stop_owned stopped the server"
+    );
+    assert!(second_exits.try_recv().is_err());
+    assert_eq!(second_spawns.load(Ordering::SeqCst), 0);
+    assert!(proc::alive(pid), "the leader died");
+    assert!(
+        matched(&get(addr, "/", MARKER_A)),
+        "the server stopped answering"
+    );
+    assert!(pidfile.exists(), "the first instance's pidfile is gone");
+
+    let started = Instant::now();
+    first.stop_owned();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the group needed the deadline SIGKILL"
+    );
+    let n = exits
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 15", "the leader exited on SIGTERM");
+    assert!(
+        !proc::group_alive(pid),
+        "the SIGTERM-ignoring member outlived stop_owned"
+    );
+    assert!(TcpListener::bind(addr).is_ok(), "the port is still bound");
+    assert!(!pidfile.exists(), "a pidfile remains");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
     );
 }
 
