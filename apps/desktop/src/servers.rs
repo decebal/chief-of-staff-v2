@@ -12,7 +12,7 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use cos::dashboards::{Dashboard, Probe, ProbeResult, Server};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -77,6 +77,67 @@ pub struct ExitNotice {
     pub owned: bool,
 }
 
+/// The kernel's view of a spawned child, read before it has a waiter, so its pid
+/// cannot be reused during the reads. Built only from a `Child`: a pidfile record is
+/// never copied from an earlier file.
+#[derive(Debug, Clone)]
+pub struct SpawnResult {
+    pid: libc::pid_t,
+    pgid: Option<libc::pid_t>,
+    start_time: Option<(i64, i64)>,
+    exe: Option<PathBuf>,
+}
+
+impl SpawnResult {
+    pub fn read(child: &Child) -> Self {
+        let pid = child.id() as libc::pid_t;
+        Self {
+            pid,
+            pgid: cos::proc::pgid(pid),
+            start_time: cos::proc::start_time(pid),
+            exe: cos::proc::exe(pid),
+        }
+    }
+}
+
+/// `<data dir>/servers/<port>.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Record {
+    pub pid: libc::pid_t,
+    pub pgid: Option<libc::pid_t>,
+    pub start_time: Option<(i64, i64)>,
+    pub exe: Option<PathBuf>,
+    pub addr: SocketAddrV4,
+}
+
+/// `VERIFY(ownership)` for the record behind a pidfile removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ownership {
+    /// `exited`: the reaper has marked the slot Exited.
+    Owned {
+        exited: bool,
+    },
+    Starting {
+        exited: bool,
+    },
+    /// `stopped`: the leader failed the five checks after SIGTERM, or got the
+    /// deadline SIGKILL.
+    Leftover {
+        stopped: bool,
+    },
+    Stale,
+    Held,
+}
+
+#[derive(Debug)]
+pub enum StoreError {
+    /// `rule` is `pidfile_path` or `ownership`; the file is left in place.
+    Refused {
+        rule: &'static str,
+    },
+    Io(anyhow::Error),
+}
+
 type Emit = Box<dyn Fn(ExitNotice) + Send + Sync>;
 type Spawn = Box<dyn Fn(&Server, &Path) -> anyhow::Result<Child> + Send + Sync>;
 type Connect = Box<dyn Fn(SocketAddrV4) -> bool + Send + Sync>;
@@ -102,7 +163,6 @@ struct Slots {
 }
 
 pub struct Supervisor {
-    #[expect(dead_code)]
     data: PathBuf,
     #[expect(dead_code)]
     logs: PathBuf,
@@ -179,6 +239,68 @@ impl Supervisor {
                 }
             }
         }
+    }
+
+    /// `STORE(pidfile)` write: `<data dir>/servers/<port>.json`, atomically, from the
+    /// spawn result and the validated `addr`.
+    pub fn write_pidfile(&self, spawn: &SpawnResult, addr: SocketAddrV4) -> Result<(), StoreError> {
+        if addr.port() == 0 {
+            return Err(StoreError::Refused {
+                rule: "pidfile_path",
+            });
+        }
+        let record = Record {
+            pid: spawn.pid,
+            pgid: spawn.pgid,
+            start_time: spawn.start_time,
+            exe: spawn.exe.clone(),
+            addr,
+        };
+        let bytes = serde_json::to_vec(&record).map_err(|e| StoreError::Io(e.into()))?;
+        cos::state::atomic_write_bytes(&self.data.join(format!("{}.json", addr.port())), &bytes)
+            .map_err(StoreError::Io)
+    }
+
+    /// `STORE(pidfile)` removal, admitted by `VERIFY(pidfile_path)` and
+    /// `VERIFY(ownership)`. A pidfile already gone is not an error.
+    pub fn remove_pidfile(&self, file: &Path, ownership: &Ownership) -> Result<(), StoreError> {
+        if !self.pidfile_path(file) {
+            return Err(StoreError::Refused {
+                rule: "pidfile_path",
+            });
+        }
+        let admitted = match *ownership {
+            Ownership::Owned { exited } | Ownership::Starting { exited } => exited,
+            Ownership::Leftover { stopped } => stopped,
+            Ownership::Stale => true,
+            Ownership::Held => false,
+        };
+        if !admitted {
+            return Err(StoreError::Refused { rule: "ownership" });
+        }
+        match std::fs::remove_file(file) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(StoreError::Io(
+                anyhow::Error::new(e).context(format!("remove {}", file.display())),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// `VERIFY(pidfile_path)`: `file` is `<data dir>/servers/<port>.json` with `<port>`
+    /// the canonical decimal form of 1 to 65535, so the `.lock` beside it never matches.
+    fn pidfile_path(&self, file: &Path) -> bool {
+        if file.parent() != Some(self.data.as_path()) {
+            return false;
+        }
+        let Some(stem) = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".json"))
+        else {
+            return false;
+        };
+        stem.parse::<u16>()
+            .is_ok_and(|port| port != 0 && port.to_string() == stem)
     }
 
     fn lock(&self) -> MutexGuard<'_, Slots> {

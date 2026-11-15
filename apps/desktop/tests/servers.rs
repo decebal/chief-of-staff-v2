@@ -21,7 +21,9 @@ use cos::business::{Dirs, Sources};
 use cos::dashboards::{Dashboard, Probe, ProbeResult, Server};
 use cos::proc;
 use cos_desktop::Start;
-use cos_desktop::servers::{ExitNotice, Refusal, Running, Supervisor, real_connect};
+use cos_desktop::servers::{
+    ExitNotice, Ownership, Refusal, Running, SpawnResult, StoreError, Supervisor, real_connect,
+};
 use serde_json::{Value, json};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::{Listener, Manager};
@@ -58,6 +60,11 @@ const TESTS: &[(&str, fn())] = &[
         "waiter_on_reserved_embeds_external",
         waiter_on_reserved_embeds_external,
     ),
+    (
+        "pidfile_written_from_spawn_result",
+        pidfile_written_from_spawn_result,
+    ),
+    ("pidfile_removal_is_gated", pidfile_removal_is_gated),
 ];
 
 fn main() {
@@ -896,4 +903,102 @@ fn waiter_on_reserved_embeds_external() {
         matched(&get(addr, "/", MARKER_A)),
         "the External listener stopped answering"
     );
+}
+
+fn refused(r: Result<(), StoreError>) -> &'static str {
+    match r {
+        Err(StoreError::Refused { rule }) => rule,
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+fn pidfile_written_from_spawn_result() {
+    let root = scratch("pidfile-write");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let addr = free_addr();
+    let kid = spawn_mode("idle", addr);
+    let pid = kid.pid();
+    let file = root
+        .join("data")
+        .join("servers")
+        .join(format!("{}.json", addr.port()));
+    std::fs::write(&file, r#"{"pid":1,"pgid":1,"start_time":[0,0],"exe":"/x"}"#).unwrap();
+
+    sup.write_pidfile(&SpawnResult::read(&kid.0), addr)
+        .expect("write the pidfile");
+    let got: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let (secs, micros) = proc::start_time(pid).expect("start time");
+    assert_eq!(
+        got,
+        json!({
+            "pid": pid,
+            "pgid": proc::pgid(pid).expect("pgid"),
+            "start_time": [secs, micros],
+            "exe": proc::exe(pid).expect("exe"),
+            "addr": addr.to_string(),
+        })
+    );
+
+    let zero = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0);
+    assert_eq!(
+        refused(sup.write_pidfile(&SpawnResult::read(&kid.0), zero)),
+        "pidfile_path"
+    );
+    assert!(!root.join("data").join("servers").join("0.json").exists());
+}
+
+fn pidfile_removal_is_gated() {
+    let root = scratch("pidfile-remove");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let servers = root.join("data").join("servers");
+    let planted = |path: &Path| {
+        std::fs::write(path, "{}").unwrap();
+        path.to_owned()
+    };
+
+    for path in [
+        servers.join("04777.json"),
+        servers.join("70000.json"),
+        servers.join("abc.json"),
+        servers.join("4777.lock"),
+        root.join("4777.json"),
+    ] {
+        let path = planted(&path);
+        assert_eq!(
+            refused(sup.remove_pidfile(&path, &Ownership::Stale)),
+            "pidfile_path",
+            "{}",
+            path.display()
+        );
+        assert!(path.exists(), "{} removed", path.display());
+    }
+
+    let valid = planted(&servers.join("4777.json"));
+    for ownership in [
+        Ownership::Owned { exited: false },
+        Ownership::Starting { exited: false },
+        Ownership::Leftover { stopped: false },
+        Ownership::Held,
+    ] {
+        assert_eq!(
+            refused(sup.remove_pidfile(&valid, &ownership)),
+            "ownership",
+            "{ownership:?}"
+        );
+        assert!(valid.exists(), "{ownership:?} removed the pidfile");
+    }
+
+    for ownership in [
+        Ownership::Owned { exited: true },
+        Ownership::Starting { exited: true },
+        Ownership::Leftover { stopped: true },
+        Ownership::Stale,
+    ] {
+        let valid = planted(&valid);
+        sup.remove_pidfile(&valid, &ownership)
+            .unwrap_or_else(|e| panic!("{ownership:?}: {e:?}"));
+        assert!(!valid.exists(), "{ownership:?} kept the pidfile");
+    }
+    sup.remove_pidfile(&valid, &Ownership::Stale)
+        .expect("a pidfile already gone");
 }
