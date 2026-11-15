@@ -82,6 +82,16 @@ const TESTS: &[(&str, fn())] = &[
         "concurrent_first_opens_spawn_once",
         concurrent_first_opens_spawn_once,
     ),
+    (
+        "readiness_timeout_stops_the_group",
+        readiness_timeout_stops_the_group,
+    ),
+    ("open_during_epilogue_waits", open_during_epilogue_waits),
+    ("child_exits_at_once", child_exits_at_once),
+    (
+        "leader_target_signals_the_leader_alone",
+        leader_target_signals_the_leader_alone,
+    ),
 ];
 
 fn main() {
@@ -1318,4 +1328,276 @@ fn concurrent_first_opens_spawn_once() {
     assert_eq!(r, -1, "the reaper never reaped the child");
     // The group id is free again once reaped; killing it now could reach a stranger.
     std::mem::forget(group);
+}
+
+fn pidfile_of(root: &Path, addr: SocketAddrV4) -> PathBuf {
+    root.join("data")
+        .join("servers")
+        .join(format!("{}.json", addr.port()))
+}
+
+/// A supervisor with `real_connect`, so ensure: probe finds the free port and spawns.
+fn spawning(
+    root: &Path,
+    emit: impl Fn(ExitNotice) + Send + Sync + 'static,
+    spawn: impl Fn(&Server, &Path) -> anyhow::Result<Child> + Send + Sync + 'static,
+) -> Arc<Supervisor> {
+    Arc::new(
+        Supervisor::new(
+            &root.join("data"),
+            &root.join("logs"),
+            emit,
+            spawn,
+            real_connect,
+        )
+        .unwrap(),
+    )
+}
+
+/// Spawns `<self> <mode> <addr>` into group `group` (0: a group of its own), with stdout
+/// and stderr appended to the log after a `fake: spawning <mode>` line, and records its pid.
+fn fake_spawn(
+    mode: &'static str,
+    group: libc::pid_t,
+    pids: Arc<Mutex<Vec<libc::pid_t>>>,
+) -> impl Fn(&Server, &Path) -> anyhow::Result<Child> + Send + Sync + 'static {
+    move |server: &Server, log: &Path| {
+        let mut out = OpenOptions::new().create(true).append(true).open(log)?;
+        writeln!(out, "fake: spawning {mode}")?;
+        let err = out.try_clone()?;
+        let child = Command::new(std::env::current_exe()?)
+            .args([mode, &server.addr.to_string()])
+            .process_group(group)
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            .spawn()?;
+        pids.lock().unwrap().push(child.id() as libc::pid_t);
+        Ok(child)
+    }
+}
+
+/// An `emit` that forwards every notice to the returned receiver.
+fn recording() -> (
+    impl Fn(ExitNotice) + Send + Sync + 'static,
+    mpsc::Receiver<ExitNotice>,
+) {
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    (
+        move |n: ExitNotice| {
+            let _ = tx.lock().unwrap().send(n);
+        },
+        rx,
+    )
+}
+
+type Opened = (usize, Result<Running, Refusal>);
+
+/// Runs `ensure` on its own thread and sends `(i, result)` to `tx`.
+fn open_on_thread(
+    sup: &Arc<Supervisor>,
+    server: &Server,
+    d: &Dashboard,
+    i: usize,
+    tx: &mpsc::Sender<Opened>,
+) -> JoinHandle<()> {
+    let (sup, server, d, tx) = (sup.clone(), server.clone(), d.clone(), tx.clone());
+    std::thread::spawn(move || {
+        let _ = tx.send((i, sup.ensure(Some(&server), &d)));
+    })
+}
+
+fn collect(
+    rx: &mpsc::Receiver<Opened>,
+    threads: Vec<JoinHandle<()>>,
+    within: Duration,
+) -> Vec<Result<Running, Refusal>> {
+    let mut got: Vec<Option<Result<Running, Refusal>>> = vec![None; threads.len()];
+    for _ in 0..threads.len() {
+        let (i, r) = rx.recv_timeout(within).expect("an open hung");
+        got[i] = Some(r);
+    }
+    for t in threads {
+        t.join().unwrap();
+    }
+    got.into_iter().map(Option::unwrap).collect()
+}
+
+fn log_tail_has(r: &Result<Running, Refusal>, line: &str) {
+    match r {
+        Err(Refusal::FailedToStart { log_tail }) => {
+            assert!(log_tail.contains(line), "{line:?} not in {log_tail:?}")
+        }
+        other => panic!("not FailedToStart: {other:?}"),
+    }
+}
+
+fn readiness_timeout_stops_the_group() {
+    let root = scratch("ready-timeout");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, fake_spawn("idle", 0, pids.clone()));
+    let pidfile = pidfile_of(&root, addr);
+
+    let (tx, rx) = mpsc::channel();
+    let mut threads = vec![open_on_thread(&sup, &server, &d, 0, &tx)];
+    assert!(
+        until(Duration::from_secs(5), || pidfile.exists()),
+        "the spawn never wrote its pidfile"
+    );
+    threads.push(open_on_thread(&sup, &server, &d, 1, &tx));
+    let got = collect(&rx, threads, Duration::from_secs(25));
+
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 1, "one spawn");
+    log_tail_has(&got[0], "fake: spawning idle");
+    assert_eq!(got[1], got[0], "the waiter gets the same refusal");
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 15", "the group was sent SIGTERM");
+    assert!(!n.owned);
+    assert!(
+        !proc::group_alive(pids[0]),
+        "the group outlived the epilogue"
+    );
+    assert!(!pidfile.exists(), "the pidfile was kept");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+}
+
+fn open_during_epilogue_waits() {
+    let root = scratch("epilogue-open");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (exit_tx, exits) = mpsc::channel::<ExitNotice>();
+    let exit_tx = Mutex::new(exit_tx);
+    let sup = spawning(
+        &root,
+        move |n: ExitNotice| {
+            let owned = n.owned;
+            let _ = exit_tx.lock().unwrap().send(n);
+            if !owned {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        },
+        fake_spawn("idle", 0, pids.clone()),
+    );
+    let pidfile = pidfile_of(&root, addr);
+
+    let (tx, rx) = mpsc::channel();
+    let mut threads = vec![open_on_thread(&sup, &server, &d, 0, &tx)];
+    assert!(
+        until(Duration::from_secs(5), || pidfile.exists()),
+        "the spawn never wrote its pidfile"
+    );
+    let pid = pids.lock().unwrap()[0];
+    // SAFETY: `pid` is this process's unreaped child; its reaper has not run `waitpid`.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert!(!n.owned);
+    threads.push(open_on_thread(&sup, &server, &d, 1, &tx));
+    let got = collect(&rx, threads, Duration::from_secs(15));
+
+    assert_eq!(pids.lock().unwrap().len(), 1, "a second spawn");
+    log_tail_has(&got[0], "fake: spawning idle");
+    assert_eq!(
+        got[1], got[0],
+        "the open during the epilogue got another result"
+    );
+    assert!(
+        exits.try_iter().all(|n| !n.owned),
+        "dashboard-exited for a Starting slot"
+    );
+    assert!(!pidfile.exists(), "the pidfile was kept");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+}
+
+fn child_exits_at_once() {
+    for round in 0..3 {
+        let root = scratch(&format!("exits-at-once-{round}"));
+        let addr = free_addr();
+        let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let counted = spawns.clone();
+        let (emit, exits) = recording();
+        let sup = spawning(&root, emit, move |_: &Server, log: &Path| {
+            let mut out = OpenOptions::new().create(true).append(true).open(log)?;
+            writeln!(out, "fake: spawning sh")?;
+            let err = out.try_clone()?;
+            let child = Command::new("/bin/sh")
+                .args(["-c", "exit 3"])
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(out)
+                .stderr(err)
+                .spawn()?;
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(child)
+        });
+
+        let r = sup.ensure(Some(&server), &d);
+        log_tail_has(&r, "fake: spawning sh");
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        assert!(!pidfile_of(&root, addr).exists(), "a pidfile remains");
+        assert!(
+            take_lock(&root, addr.port()).is_some(),
+            "the port lock is still held after the epilogue"
+        );
+        let n = exits
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the reaper never reported the exit");
+        assert!(!n.owned);
+    }
+}
+
+fn leader_target_signals_the_leader_alone() {
+    let root = scratch("leader-target");
+    let mut group = spawn_mode("idle", free_addr());
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, fake_spawn("idle", group.pid(), pids.clone()));
+
+    let started = Instant::now();
+    let r = sup.ensure(Some(&server), &d);
+    log_tail_has(&r, "fake: spawning idle");
+    log_tail_has(&r, "cos: spawn result refused: pgid");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the leader needed SIGKILL"
+    );
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 1);
+    assert!(
+        group.0.try_wait().unwrap().is_none(),
+        "the group the child joined was signalled"
+    );
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 15", "the leader was sent SIGTERM");
+    assert!(!n.owned);
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(pids[0], std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "the reaper never reaped the leader");
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile was written");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
 }
