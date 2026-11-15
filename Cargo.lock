@@ -533,6 +533,7 @@ dependencies = [
  "hyper-util",
  "jiff",
  "libc",
+ "plist",
  "rmcp",
  "schemars 1.2.3",
  "serde",
