@@ -189,7 +189,7 @@ tasks:
       - rm -f out/.mcp-token
 
   schedule:
-    desc: Load the launchd jobs for BUSINESS=<name> (default the active business); weekday 08:30 brief, the dashboard kept running
+    desc: Load the launchd jobs for BUSINESS=<name> (default the active business); weekday 08:30 brief; `cos.dash` only when port 8790 is free
     vars:
       # Task-scoped: a global var would run cos (and its first-run registry write) on every task call.
       # Name on the `current:` line of `cos business list`; `explicit` when COS_HOME or a directory flag sets the triple.
@@ -251,6 +251,8 @@ tasks:
         held=$(printf '%s\n' "$held" | awk -v old="$old" 'NR > 1 && $2 != "" && $2 != old { print $1 " (pid " $2 ")"; exit }')
         if [ -n "$held" ]; then
           echo "cos.dash skipped: port {{.DASH_PORT}} held by $held"
+          # The plist has RunAtLoad and KeepAlive, so launchd would start it at the next login.
+          rm -f "{{.LAUNCHD}}/cos.dash.plist.new" "{{.LAUNCHD}}/cos.dash.plist"
           exit 0
         fi
         mv -f "{{.LAUNCHD}}/cos.dash.plist.new" "{{.LAUNCHD}}/cos.dash.plist"

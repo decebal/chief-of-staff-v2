@@ -655,6 +655,62 @@ fn several_listen_lines_give_one_held_with_first_non_old_pid() {
     );
 }
 
+#[test]
+fn held_port_skips_dash_names_holder_and_removes_its_plists() {
+    let sb = Sandbox::new("dash-held-remove");
+    let acme = make_biz(&sb.root.0, "acme");
+    write_registry(&sb.registry, "acme", &[("acme", &acme)]);
+    std::fs::write(sb.launchd.join("cos.dash.plist"), "sentinel dash").unwrap();
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = holder.local_addr().unwrap().port();
+
+    let out = run_task_on(&sb, "schedule", Some("acme"), port);
+    drop(holder);
+
+    assert!(out.status.success(), "task schedule: {}", stderr(&out));
+    assert_dash_not_installed(&sb, &out);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let pid = format!("(pid {})", std::process::id());
+    let line = text
+        .lines()
+        .find(|l| l.contains("cos.dash skipped") && l.contains(&pid))
+        .unwrap_or_else(|| panic!("holder pid not named: {text}"));
+    let command = line
+        .split(" held by ")
+        .nth(1)
+        .and_then(|r| r.strip_suffix(&format!(" {pid}")))
+        .unwrap_or_else(|| panic!("holder command not named: {line}"));
+    let exe = std::env::current_exe().unwrap();
+    let exe = exe.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        !command.is_empty() && exe.starts_with(command),
+        "holder command {command:?} is not this test binary {exe:?}: {line}"
+    );
+    let left: Vec<String> = sb
+        .plists()
+        .into_keys()
+        .filter(|n| n.starts_with("cos.dash"))
+        .collect();
+    assert!(
+        left.is_empty(),
+        "cos.dash plists left while the port is held: {left:?}"
+    );
+}
+
+#[test]
+fn schedule_desc_names_the_dash_port_condition() {
+    let text = std::fs::read_to_string(Path::new(REPO).join("Taskfile.yml")).unwrap();
+    let start = text.find("\n  schedule:\n").expect("schedule task");
+    let desc = text[start..]
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("desc: "))
+        .expect("schedule desc");
+    assert!(
+        desc.ends_with("weekday 08:30 brief; `cos.dash` only when port 8790 is free"),
+        "schedule desc: {desc}"
+    );
+}
+
 /// The `schedule` task's steps: a line at the step indent starts one, deeper lines continue it,
 /// comment lines are dropped.
 fn schedule_steps() -> Vec<String> {
