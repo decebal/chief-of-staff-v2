@@ -1,10 +1,16 @@
-//! `dashboards.toml`: location, parse, and every validation rule.
+//! `dashboards.toml`: location, parse, every validation rule, the identity probe, and the
+//! `cos business dashboards` output lines.
 
 use std::collections::BTreeMap;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use cos::business::{Business, Registry};
-use cos::dashboards::{self, Dashboards, Invalid};
+use cos::dashboards::{self, Dashboards, Invalid, Probe, ProbeResult};
 
 struct Dir(PathBuf);
 
@@ -489,4 +495,273 @@ fn wrong_types_refused_with_key_path() {
 #[test]
 fn syntax_error_is_an_error() {
     assert!(load_text("syntax", "[server.cr\n").is_err());
+}
+
+const MARKER: &str = "<title>Wolven portfolio control room";
+const CAP: usize = 64 * 1024;
+
+/// One served connection on a loopback port; the thread returns the request it read.
+struct Fixture {
+    port: u16,
+    handle: JoinHandle<Option<Vec<u8>>>,
+}
+
+impl Fixture {
+    fn request(self) -> String {
+        let bytes = self.handle.join().unwrap().expect("no connection accepted");
+        String::from_utf8(bytes).unwrap()
+    }
+}
+
+fn fixture(reply: impl FnOnce(&mut TcpStream) + Send + 'static) -> Fixture {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == ErrorKind::WouldBlock && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return None,
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            match stream.read(&mut byte) {
+                Ok(1) => request.push(byte[0]),
+                _ => break,
+            }
+        }
+        reply(&mut stream);
+        Some(request)
+    });
+    Fixture { port, handle }
+}
+
+/// Reads until the client closes, so the thread ends when the probe gives up.
+fn drain(stream: &mut TcpStream) {
+    let mut sink = [0u8; 4096];
+    while matches!(stream.read(&mut sink), Ok(n) if n > 0) {}
+}
+
+/// Answers with a `Content-Length` body and keeps the connection open until the client closes.
+fn answering(body: &'static str) -> Fixture {
+    fixture(move |s| {
+        let _ = write!(
+            s,
+            "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        drain(s);
+    })
+}
+
+fn silent() -> Fixture {
+    fixture(drain)
+}
+
+fn closed_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+fn at(port: u16) -> SocketAddrV4 {
+    SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)
+}
+
+fn probe_of(path: &str, contains: &str) -> Probe {
+    Probe {
+        path: path.to_owned(),
+        contains: contains.to_owned(),
+    }
+}
+
+const PAGE: &str =
+    "<!doctype html><html><head><title>Wolven portfolio control room</title></head></html>";
+
+#[test]
+fn probe_matches_and_sends_only_host_and_connection_close() {
+    let f = answering(PAGE);
+    let port = f.port;
+    let got = dashboards::probe(
+        at(port),
+        &probe_of("/sales", MARKER),
+        Duration::from_secs(2),
+    );
+    match got {
+        ProbeResult::Response {
+            status,
+            head,
+            matched,
+        } => {
+            assert_eq!(status, "HTTP/1.0 200 OK");
+            assert!(head.starts_with("HTTP/1.0 200 OK\r\n"), "{head:?}");
+            assert!(head.len() <= 200, "{}", head.len());
+            assert!(matched);
+        }
+        other => panic!("expected a matched response, got {other:?}"),
+    }
+    assert_eq!(
+        f.request(),
+        format!("GET /sales HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+    );
+}
+
+#[test]
+fn probe_marker_past_the_first_64_kib_is_not_matched() {
+    let f = fixture(|s| {
+        let _ = s.write_all(b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n");
+        let _ = s.write_all(&vec![b'x'; CAP + 4096]);
+        let _ = s.write_all(MARKER.as_bytes());
+    });
+    let got = dashboards::probe(at(f.port), &probe_of("/", MARKER), Duration::from_secs(3));
+    match got {
+        ProbeResult::Response {
+            status, matched, ..
+        } => {
+            assert_eq!(status, "HTTP/1.0 200 OK");
+            assert!(!matched);
+        }
+        other => panic!("expected an unmatched response, got {other:?}"),
+    }
+    f.request();
+}
+
+#[test]
+fn probe_close_without_a_status_line_is_no_response() {
+    let f = fixture(|_| {});
+    let got = dashboards::probe(at(f.port), &probe_of("/", MARKER), Duration::from_secs(2));
+    assert_eq!(got, ProbeResult::NoResponse);
+    f.request();
+}
+
+#[test]
+fn probe_closed_port_is_no_listener() {
+    let got = dashboards::probe(
+        at(closed_port()),
+        &probe_of("/", MARKER),
+        Duration::from_secs(2),
+    );
+    assert_eq!(got, ProbeResult::NoListener);
+}
+
+#[test]
+fn probe_listener_that_never_replies_is_no_response() {
+    let f = silent();
+    let start = Instant::now();
+    let got = dashboards::probe(
+        at(f.port),
+        &probe_of("/", MARKER),
+        Duration::from_millis(300),
+    );
+    assert_eq!(got, ProbeResult::NoResponse);
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        start.elapsed()
+    );
+    f.request();
+}
+
+#[test]
+fn business_dashboards_prints_each_probe_outcome_orphans_last() {
+    let dir = scratch("cli-outcomes");
+    let cfg = dir.0.join("cfg");
+    let home = dir.0.join("acme");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&cfg).unwrap();
+    let registry = cfg.join("businesses.toml");
+    std::fs::write(
+        &registry,
+        format!(
+            "active = \"acme\"\n\n[business.acme]\nhome = {h:?}\nworkspace = {h:?}\nprojects = {h:?}\n",
+            h = home.display().to_string()
+        ),
+    )
+    .unwrap();
+
+    let answers = answering(PAGE);
+    let missing = answering(PAGE);
+    let silent = silent();
+    let closed = closed_port();
+    let entry = |business: &str, name: &str, port: u16, server: Option<&str>, contains: &str| {
+        let server = server.map_or(String::new(), |s| format!("server = {s:?}\n"));
+        format!(
+            "[[business.{business}]]\nname = {name:?}\nurl = \"http://127.0.0.1:{port}/\"\n{server}probe = {{ path = \"/\", contains = {contains:?} }}\n"
+        )
+    };
+    let text = [
+        server(
+            "control-room",
+            "/opt/control-room/portfolio-control-room",
+            &format!("127.0.0.1:{}", answers.port),
+            "/health",
+        ),
+        entry(
+            "acme",
+            "Control room",
+            answers.port,
+            Some("control-room"),
+            MARKER,
+        ),
+        entry(
+            "acme",
+            "Other page",
+            missing.port,
+            None,
+            "<title>Something else entirely",
+        ),
+        entry("acme", "Silent", silent.port, None, MARKER),
+        entry("acme", "Closed", closed, None, MARKER),
+        entry("ghost", "Gazette", closed, None, MARKER),
+    ]
+    .concat();
+    std::fs::write(cfg.join("dashboards.toml"), text).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_cos"))
+        .args(["business", "dashboards"])
+        .current_dir(&dir.0)
+        .env_remove("COS_DASHBOARDS")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("HOME", dir.0.join("user-home"))
+        .env("COS_BUSINESSES", &registry)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    let p = |port: u16| format!("http://127.0.0.1:{port}/");
+    assert_eq!(
+        lines,
+        vec![
+            format!(
+                "acme  Control room  {}  control-room  answers",
+                p(answers.port)
+            ),
+            format!(
+                "acme  Other page  {}  unmanaged  answers, marker missing",
+                p(missing.port)
+            ),
+            format!("acme  Silent  {}  unmanaged  no response", p(silent.port)),
+            format!("acme  Closed  {}  unmanaged  no listener", p(closed)),
+            format!("ghost  Gazette  {}  unmanaged  no listener", p(closed)),
+            "orphaned: ghost".to_owned(),
+        ],
+        "{stdout}"
+    );
+    answers.request();
+    missing.request();
+    silent.request();
 }

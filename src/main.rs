@@ -151,6 +151,9 @@ enum BusinessCmd {
     Home { name: Option<String> },
     /// Unregister a business. Refuses the active one; deletes no directory.
     Remove { name: String },
+    /// Each dashboard in `dashboards.toml` (`COS_DASHBOARDS`, else beside the registry),
+    /// its server, and whether its URL answers its probe now. Starts and writes nothing.
+    Dashboards { name: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -499,6 +502,9 @@ fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<(
 /// commands that read it.
 fn business_cmd(cli: &Cli, cmd: &BusinessCmd) -> Result<()> {
     let path = business::location()?;
+    if let BusinessCmd::Dashboards { name } = cmd {
+        return business_dashboards(&path, name.as_deref());
+    }
     let inputs = inputs(cli);
     let default = business::builtin(&inputs)?;
     match cmd {
@@ -609,7 +615,47 @@ fn business_cmd(cli: &Cli, cmd: &BusinessCmd) -> Result<()> {
             eprintln!("removed {name} from {}", path.display());
             Ok(())
         }
+        BusinessCmd::Dashboards { .. } => unreachable!("handled before the built-in defaults"),
     }
+}
+
+/// `cos business dashboards`. Calls no `first_run`: the registry is read only for the orphan
+/// report, and a missing one is empty.
+fn business_dashboards(registry: &std::path::Path, name: Option<&str>) -> Result<()> {
+    use cos::dashboards::{self, ProbeResult};
+
+    let explicit = std::env::var_os("COS_DASHBOARDS").filter(|v| !v.is_empty());
+    let file = dashboards::location(registry, explicit.as_deref().map(std::path::Path::new));
+    let loaded = dashboards::load(&file)?;
+    if let Some(name) = name
+        && loaded.for_business(name).is_empty()
+    {
+        println!("no dashboards for {name}");
+        return Ok(());
+    }
+    let reg = business::load(registry)?;
+    let selected = |business: &str| name.is_none_or(|n| n == business);
+    for (business, list) in loaded.businesses.iter().filter(|(b, _)| selected(b)) {
+        for d in list {
+            let addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, d.port);
+            let result = match dashboards::probe(addr, &d.probe, Duration::from_secs(3)) {
+                ProbeResult::Response { matched: true, .. } => "answers",
+                ProbeResult::Response { matched: false, .. } => "answers, marker missing",
+                ProbeResult::NoResponse => "no response",
+                ProbeResult::NoListener => "no listener",
+            };
+            println!(
+                "{business}  {}  {}  {}  {result}",
+                d.name,
+                d.url,
+                d.server.as_deref().unwrap_or("unmanaged")
+            );
+        }
+    }
+    for orphan in loaded.orphans(&reg).iter().filter(|b| selected(b)) {
+        println!("orphaned: {orphan}");
+    }
+    Ok(())
 }
 
 fn announce_first_run(fresh: bool, path: &std::path::Path, default: &Business) {

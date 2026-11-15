@@ -63,6 +63,7 @@ fn cos(root: &Path, registry: &Path, env: &[(&str, &Path)], args: &[&str]) -> Ou
         .env_remove("COS_PROJECTS")
         .env_remove("COS_BUSINESS")
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("COS_DASHBOARDS")
         .env("HOME", root.join("user-home"))
         .env("COS_BUSINESSES", registry);
     for (key, value) in env {
@@ -522,6 +523,98 @@ fn add_keeps_existing_context() {
         std::fs::read_to_string(acme.home.join("context/goals.md")).unwrap(),
         "mine\n"
     );
+}
+
+/// A loopback port with no listener, so a probe of it answers `no listener` at once.
+fn closed_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+fn write_dashboards(cfg: &Path, businesses: &[&str]) {
+    std::fs::create_dir_all(cfg).unwrap();
+    let port = closed_port();
+    let text: String = businesses
+        .iter()
+        .map(|b| {
+            format!(
+                "[[business.{b}]]\nname = \"Gazette\"\nurl = \"http://127.0.0.1:{port}/\"\nprobe = {{ path = \"/\", contains = \"<h1>Longhand gazette\" }}\n"
+            )
+        })
+        .collect();
+    std::fs::write(cfg.join("dashboards.toml"), text).unwrap();
+}
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn dashboards_for_a_name_with_no_entry() {
+    let root = scratch("dash-no-entry");
+    let registry = root.0.join("cfg/businesses.toml");
+    let acme = make_biz(&root.0, "acme");
+    write_registry(&registry, "acme", &[("acme", &acme)]);
+    write_dashboards(&root.0.join("cfg"), &["acme"]);
+
+    let out = business(&root.0, &registry, &["dashboards", "beta"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "no dashboards for beta\n");
+}
+
+#[test]
+fn dashboards_without_registry_orphans_every_key_and_writes_nothing() {
+    let root = scratch("dash-no-registry");
+    let registry = root.0.join("cfg/businesses.toml");
+    write_dashboards(&root.0.join("cfg"), &["acme", "longhand"]);
+
+    let out = business(&root.0, &registry, &["dashboards"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        &lines[lines.len() - 2..],
+        ["orphaned: acme", "orphaned: longhand"],
+        "{text}"
+    );
+    assert!(!registry.exists(), "no businesses.toml written");
+    assert!(
+        !root.0.join("user-home").exists(),
+        "nothing written: {text}"
+    );
+}
+
+#[test]
+fn dashboards_with_unparseable_registry_exits_1() {
+    let root = scratch("dash-bad-registry");
+    let registry = root.0.join("cfg/businesses.toml");
+    write_dashboards(&root.0.join("cfg"), &["acme"]);
+    std::fs::write(&registry, "active = [[[\n").unwrap();
+
+    let out = business(&root.0, &registry, &["dashboards"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains(&registry.display().to_string()), "{err}");
+}
+
+#[test]
+fn dashboards_invalid_file_exits_1_before_name_lookup() {
+    let root = scratch("dash-invalid");
+    let registry = root.0.join("cfg/businesses.toml");
+    let acme = make_biz(&root.0, "acme");
+    write_registry(&registry, "acme", &[("acme", &acme)]);
+    std::fs::write(
+        root.0.join("cfg/dashboards.toml"),
+        "[[business.longhand]]\nname = \"Gazette\"\nurl = \"https://127.0.0.1:8790/\"\nprobe = { path = \"/\", contains = \"<h1>Longhand gazette\" }\n",
+    )
+    .unwrap();
+
+    let out = business(&root.0, &registry, &["dashboards", "beta"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("business.longhand[0].url"), "{err}");
+    assert!(err.contains("must be http://127.0.0.1:<port>/"), "{err}");
+    assert!(!stdout(&out).contains("no dashboards"), "{}", stdout(&out));
 }
 
 #[test]
