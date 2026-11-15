@@ -4,14 +4,14 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use cos::dashboards::{Dashboard, Probe, ProbeResult, Server};
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const UNMANAGED_HINT: &str = "its owner (for example launchd) is not running it";
 const LOCK_HELD_HINT: &str = "another app instance is starting it; open the dashboard again";
+const EXITING_HINT: &str =
+    "the previous server on this port is still exiting; open the dashboard again";
+const READY_EVERY: Duration = Duration::from_millis(250);
+const READY_WITHIN: Duration = Duration::from_secs(10);
+const TERM_GRACE: Duration = Duration::from_secs(5);
+const EXITED_WAIT: Duration = Duration::from_secs(5);
+const LOG_TAIL_LINES: usize = 20;
 
 /// A dashboard `ensure` verified: its URL, and whether this app instance owns the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -145,15 +152,85 @@ type Emit = Box<dyn Fn(ExitNotice) + Send + Sync>;
 type Spawn = Box<dyn Fn(&Server, &Path) -> anyhow::Result<Child> + Send + Sync>;
 type Connect = Box<dyn Fn(SocketAddrV4) -> bool + Send + Sync>;
 
+/// What the failure epilogue, the stop path and the reaper signal, fixed once after the
+/// spawn: the group when the child leads its own, the leader alone otherwise.
+#[derive(Debug, Clone, Copy)]
+enum Target {
+    Group(libc::pid_t),
+    Leader(libc::pid_t),
+}
+
+impl Target {
+    fn of(spawn: &SpawnResult) -> Self {
+        match spawn.pgid {
+            Some(pgid) if pgid == spawn.pid => Self::Group(pgid),
+            _ => Self::Leader(spawn.pid),
+        }
+    }
+
+    fn signal(self, signal: libc::c_int) {
+        match self {
+            Self::Group(pgid) => cos::proc::signal_group(pgid, signal),
+            Self::Leader(pid) => cos::proc::signal_pid(pid, signal),
+        }
+    }
+}
+
+/// Set by a child's reaper once it has reaped the child and released the port lock.
+#[derive(Default)]
+struct Notice {
+    set: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Notice {
+    fn set(&self) {
+        *self.set.lock().expect("notice lock") = true;
+        self.changed.notify_all();
+    }
+
+    fn is_set(&self) -> bool {
+        *self.set.lock().expect("notice lock")
+    }
+
+    /// Whether the notice was set within `timeout`; `None` waits for as long as it takes.
+    fn wait(&self, timeout: Option<Duration>) -> bool {
+        let end = timeout.map(|t| Instant::now() + t);
+        let mut set = self.set.lock().expect("notice lock");
+        while !*set {
+            set = match end {
+                None => self.changed.wait(set).expect("notice lock"),
+                Some(end) => {
+                    let left = end.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return false;
+                    }
+                    self.changed.wait_timeout(set, left).expect("notice lock").0
+                }
+            };
+        }
+        true
+    }
+}
+
+/// A spawn recorded in its slot.
+#[derive(Clone)]
+struct Recorded {
+    target: Target,
+    notice: Arc<Notice>,
+}
+
 /// One per key, the host and port of a dashboard's `url`. An External listener has none.
 enum State {
     /// Inserted at lookup, before any probe, lock or spawn.
     Reserved,
-    /// Holds `<port>.lock` until the slot is replaced.
-    Starting {
-        #[expect(dead_code, reason = "held for its flock, released on drop")]
-        lock: File,
-    },
+    /// Holds `<port>.lock`, and the child once its spawn is recorded.
+    Starting { lock: File, spawn: Option<Recorded> },
+    /// Passed readiness and identity; the target is always a group.
+    Owned { lock: File, spawn: Recorded },
+    /// The reaper saw the child exit and holds the lock until its notice is set.
+    /// `starting` while the `ensure` that spawned it has not finished its epilogue.
+    Exited { spawn: Recorded, starting: bool },
     /// Returned to every waiter; the next open drops it.
     Refused(Refusal),
 }
@@ -170,18 +247,19 @@ struct Slots {
     by_key: HashMap<SocketAddrV4, Slot>,
 }
 
-pub struct Supervisor {
+/// Shared with each child's reaper thread.
+pub struct Supervisor(Arc<Inner>);
+
+struct Inner {
     data: PathBuf,
-    #[expect(dead_code)]
     logs: PathBuf,
-    #[expect(dead_code)]
     emit: Emit,
-    #[expect(dead_code)]
     spawn: Spawn,
     connect: Connect,
-    /// Guards lookup, insert and every slot transition; probes run outside it.
+    /// Guards lookup, insert and every slot transition; probes, the spawn and
+    /// readiness run outside it.
     slots: Mutex<Slots>,
-    /// Woken on every transition out of Reserved or Starting.
+    /// Woken on every transition out of Reserved or Starting, and on the spawn record.
     changed: Condvar,
 }
 
@@ -201,7 +279,7 @@ impl Supervisor {
             std::fs::create_dir_all(dir)
                 .map_err(|e| io::Error::new(e.kind(), format!("create {}: {e}", dir.display())))?;
         }
-        Ok(Self {
+        Ok(Self(Arc::new(Inner {
             data,
             logs,
             emit: Box::new(emit),
@@ -209,13 +287,42 @@ impl Supervisor {
             connect: Box::new(connect),
             slots: Mutex::default(),
             changed: Condvar::new(),
-        })
+        })))
     }
 
     /// `server` is `None` for an unmanaged dashboard. Running only after the
     /// dashboard's own identity probe passed.
     pub fn ensure(
         &self,
+        server: Option<&Server>,
+        dashboard: &Dashboard,
+    ) -> Result<Running, Refusal> {
+        self.0.ensure(server, dashboard)
+    }
+
+    /// `STORE(pidfile)` write: `<data dir>/servers/<port>.json`, atomically, from the
+    /// spawn result and the validated `addr`.
+    pub fn write_pidfile(&self, spawn: &SpawnResult, addr: SocketAddrV4) -> Result<(), StoreError> {
+        self.0.write_pidfile(spawn, addr)
+    }
+
+    /// `STORE(pidfile)` removal, admitted by `VERIFY(pidfile_path)` and
+    /// `VERIFY(ownership)`. A pidfile already gone is not an error.
+    pub fn remove_pidfile(&self, file: &Path, ownership: &Ownership) -> Result<(), StoreError> {
+        self.0.remove_pidfile(file, ownership)
+    }
+}
+
+/// What `ensure` does with the slot it found at its key.
+enum Found {
+    Wait,
+    Owned,
+    Exiting(Arc<Notice>),
+}
+
+impl Inner {
+    fn ensure(
+        self: &Arc<Self>,
         server: Option<&Server>,
         dashboard: &Dashboard,
     ) -> Result<Running, Refusal> {
@@ -235,23 +342,51 @@ impl Supervisor {
                 drop(slots);
                 return self.probe(key, id, server, dashboard);
             };
-            match slot.state {
+            let id = slot.id;
+            let found = match &slot.state {
                 State::Refused(_) => {
                     slots.by_key.remove(&key);
+                    continue;
                 }
-                State::Reserved | State::Starting { .. } => {
-                    let id = slot.id;
+                State::Exited {
+                    spawn,
+                    starting: false,
+                } => {
+                    if spawn.notice.is_set() {
+                        slots.by_key.remove(&key);
+                        continue;
+                    }
+                    Found::Exiting(spawn.notice.clone())
+                }
+                State::Owned { .. } => Found::Owned,
+                State::Reserved | State::Starting { .. } | State::Exited { .. } => Found::Wait,
+            };
+            match found {
+                Found::Wait => {
                     if let Some(refusal) = self.wait(slots, key, id) {
                         return Err(refusal);
+                    }
+                }
+                Found::Owned => {
+                    drop(slots);
+                    return identity(key, &dashboard.probe, true, false).map(|()| Running {
+                        url: dashboard.url.clone(),
+                        owned: true,
+                    });
+                }
+                Found::Exiting(notice) => {
+                    drop(slots);
+                    if !notice.wait(Some(EXITED_WAIT)) {
+                        return Err(Refusal::NotRunning {
+                            hint: EXITING_HINT.to_owned(),
+                        });
                     }
                 }
             }
         }
     }
 
-    /// `STORE(pidfile)` write: `<data dir>/servers/<port>.json`, atomically, from the
-    /// spawn result and the validated `addr`.
-    pub fn write_pidfile(&self, spawn: &SpawnResult, addr: SocketAddrV4) -> Result<(), StoreError> {
+    fn write_pidfile(&self, spawn: &SpawnResult, addr: SocketAddrV4) -> Result<(), StoreError> {
         if addr.port() == 0 {
             return Err(StoreError::Refused {
                 rule: "pidfile_path",
@@ -269,9 +404,7 @@ impl Supervisor {
             .map_err(StoreError::Io)
     }
 
-    /// `STORE(pidfile)` removal, admitted by `VERIFY(pidfile_path)` and
-    /// `VERIFY(ownership)`. A pidfile already gone is not an error.
-    pub fn remove_pidfile(&self, file: &Path, ownership: &Ownership) -> Result<(), StoreError> {
+    fn remove_pidfile(&self, file: &Path, ownership: &Ownership) -> Result<(), StoreError> {
         if !self.pidfile_path(file) {
             return Err(StoreError::Refused {
                 rule: "pidfile_path",
@@ -315,8 +448,9 @@ impl Supervisor {
         self.slots.lock().expect("supervisor lock")
     }
 
-    /// Waits while slot `id` at `key` is Reserved or Starting. A copy of its refusal when
-    /// it ends Refused; `None` when it was removed, so the caller runs `ensure` again.
+    /// Waits while slot `id` at `key` is Reserved, Starting, or Exited with its `ensure`
+    /// still running. A copy of its refusal when it ends Refused; `None` otherwise, so
+    /// the caller runs `ensure` again.
     fn wait(
         &self,
         mut slots: MutexGuard<'_, Slots>,
@@ -328,7 +462,8 @@ impl Supervisor {
             match slots.by_key.get(&key) {
                 Some(Slot {
                     id: now,
-                    state: State::Reserved | State::Starting { .. },
+                    state:
+                        State::Reserved | State::Starting { .. } | State::Exited { starting: true, .. },
                 }) if *now == id => {}
                 Some(Slot {
                     id: now,
@@ -363,37 +498,42 @@ impl Supervisor {
     }
 
     fn probe(
-        &self,
+        self: &Arc<Self>,
         key: SocketAddrV4,
         id: u64,
         server: Option<&Server>,
         dashboard: &Dashboard,
     ) -> Result<Running, Refusal> {
-        let result = if (self.connect)(key) {
-            identity(key, &dashboard.probe, false, false).map(|()| Running {
-                url: dashboard.url.clone(),
-                owned: false,
-            })
-        } else {
-            Err(self.start(key, id, server))
-        };
-        match &result {
-            Ok(_) => self.settle(key, id, None),
-            Err(r) => self.settle(key, id, Some(r.clone())),
+        if !(self.connect)(key) {
+            return self.start(key, id, server, dashboard);
         }
+        let result = identity(key, &dashboard.probe, false, false).map(|()| Running {
+            url: dashboard.url.clone(),
+            owned: false,
+        });
+        self.settle(key, id, result.as_ref().err().cloned());
         result
     }
 
-    /// ensure: start, reached only when `connect` found no listener. The caller's settle
-    /// replaces the slot with Refused, which drops a lock the slot still holds.
-    fn start(&self, key: SocketAddrV4, id: u64, server: Option<&Server>) -> Refusal {
+    /// ensure: start, reached only when `connect` found no listener.
+    fn start(
+        self: &Arc<Self>,
+        key: SocketAddrV4,
+        id: u64,
+        server: Option<&Server>,
+        dashboard: &Dashboard,
+    ) -> Result<Running, Refusal> {
+        let refuse = |refusal: Refusal| {
+            self.settle(key, id, Some(refusal.clone()));
+            Err(refusal)
+        };
         let Some(server) = server else {
-            return Refusal::NotRunning {
+            return refuse(Refusal::NotRunning {
                 hint: UNMANAGED_HINT.to_owned(),
-            };
+            });
         };
         if let Err(refusal) = binary_admissible(server, start_time_supported()) {
-            return refusal;
+            return refuse(refusal);
         }
         let path = self.data.join(format!("{}.lock", server.addr.port()));
         let mut slots = self.lock();
@@ -408,28 +548,313 @@ impl Supervisor {
         let lock = match taken {
             Ok(Some(lock)) => lock,
             Ok(None) => {
-                return Refusal::NotRunning {
+                drop(slots);
+                return refuse(Refusal::NotRunning {
                     hint: LOCK_HELD_HINT.to_owned(),
-                };
+                });
             }
             Err(e) => {
-                return Refusal::Internal {
+                drop(slots);
+                return refuse(Refusal::Internal {
                     message: format!("lock {}: {e}", path.display()),
-                };
+                });
             }
         };
         match slots.by_key.get_mut(&key) {
-            Some(slot) if slot.id == id => slot.state = State::Starting { lock },
+            Some(slot) if slot.id == id => slot.state = State::Starting { lock, spawn: None },
             _ => {
-                return Refusal::Internal {
+                drop(slots);
+                return refuse(Refusal::Internal {
                     message: format!("slot for {key} replaced while reserved"),
-                };
+                });
             }
         }
         drop(slots);
-        Refusal::Internal {
-            message: "starting a managed server is not implemented".to_owned(),
+
+        let log = self.log_path(server.addr);
+        let child = match (self.spawn)(server, &log) {
+            Ok(child) => child,
+            Err(e) => {
+                append_log(&log, &format!("spawn {}: {e:#}", server.binary.display()));
+                return Err(self.epilogue(key, id, None, failed_to_start(&log)));
+            }
+        };
+        let result = SpawnResult::read(&child);
+        let recorded = Recorded {
+            target: Target::of(&result),
+            notice: Arc::default(),
+        };
+        self.record(key, id, child, &recorded);
+        if let Err(field) = spawn_result_admissible(&result) {
+            append_log(&log, &format!("spawn result refused: {field}"));
+            return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
         }
+        {
+            let slots = self.lock();
+            if !matches!(
+                slots.by_key.get(&key),
+                Some(Slot { id: now, state: State::Starting { .. } }) if *now == id
+            ) {
+                drop(slots);
+                return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
+            }
+            if let Err(e) = self.write_pidfile(&result, server.addr) {
+                drop(slots);
+                append_log(&log, &format!("pidfile: {e:?}"));
+                return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
+            }
+        }
+        if !self.ready(key, id, server) {
+            return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
+        }
+        if let Err(refusal) = identity(key, &dashboard.probe, false, true) {
+            return Err(self.epilogue(key, id, Some(recorded), refusal));
+        }
+        let mut slots = self.lock();
+        let Some(slot) = slots.by_key.get_mut(&key).filter(|s| s.id == id) else {
+            drop(slots);
+            return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
+        };
+        let state = std::mem::replace(&mut slot.state, State::Reserved);
+        let State::Starting {
+            lock,
+            spawn: Some(spawn),
+        } = state
+        else {
+            slot.state = state;
+            drop(slots);
+            return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
+        };
+        slot.state = State::Owned { lock, spawn };
+        self.changed.notify_all();
+        Ok(Running {
+            url: dashboard.url.clone(),
+            owned: true,
+        })
+    }
+
+    /// Spawn step 2: records the spawn in this `ensure`'s Starting slot and starts its
+    /// reaper in the same critical section, so no Starting slot has an unrecorded child.
+    fn record(self: &Arc<Self>, key: SocketAddrV4, id: u64, child: Child, recorded: &Recorded) {
+        let mut slots = self.lock();
+        if let Some(Slot {
+            state: State::Starting { spawn, .. },
+            ..
+        }) = slots.by_key.get_mut(&key).filter(|s| s.id == id)
+        {
+            *spawn = Some(recorded.clone());
+        }
+        let (inner, notice) = (Arc::clone(self), recorded.notice.clone());
+        std::thread::spawn(move || inner.reap(key, id, child, &notice));
+        self.changed.notify_all();
+    }
+
+    /// `VERIFY(readiness)`: two consecutive passing `ready` probes, 250 ms apart, within
+    /// 10 s, with no exit reported by the reaper before the first or after the second.
+    fn ready(&self, key: SocketAddrV4, id: u64, server: &Server) -> bool {
+        let end = Instant::now() + READY_WITHIN;
+        let mut passes = 0;
+        loop {
+            if self.exited(key, id) {
+                return false;
+            }
+            match cos::dashboards::probe(server.addr, &server.ready, PROBE_TIMEOUT) {
+                ProbeResult::Response { matched: true, .. } => passes += 1,
+                _ => passes = 0,
+            }
+            if passes >= 2 {
+                return !self.exited(key, id);
+            }
+            if Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(READY_EVERY);
+        }
+    }
+
+    fn exited(&self, key: SocketAddrV4, id: u64) -> bool {
+        exited_in(&self.lock(), key, id)
+    }
+
+    /// The failure epilogue of every refusal after the port lock is taken. Signals are
+    /// sent under the supervisor lock and skipped once the reaper marked the slot Exited.
+    fn epilogue(
+        &self,
+        key: SocketAddrV4,
+        id: u64,
+        spawn: Option<Recorded>,
+        refusal: Refusal,
+    ) -> Refusal {
+        if let Some(spawn) = &spawn {
+            let signal = |signal| {
+                let slots = self.lock();
+                if !exited_in(&slots, key, id) {
+                    spawn.target.signal(signal);
+                }
+            };
+            signal(libc::SIGTERM);
+            if !spawn.notice.wait(Some(TERM_GRACE)) {
+                signal(libc::SIGKILL);
+                spawn.notice.wait(None);
+            }
+            let _ = self.remove_pidfile(
+                &self.pidfile(key),
+                &Ownership::Starting {
+                    exited: self.exited(key, id),
+                },
+            );
+        }
+        let mut slots = self.lock();
+        if let Some(slot) = slots.by_key.get_mut(&key).filter(|s| {
+            s.id == id && matches!(s.state, State::Starting { .. } | State::Exited { .. })
+        }) {
+            slot.state = State::Refused(refusal.clone());
+        }
+        self.changed.notify_all();
+        refusal
+    }
+
+    fn pidfile(&self, key: SocketAddrV4) -> PathBuf {
+        self.data.join(format!("{}.json", key.port()))
+    }
+
+    /// The child's only waiter: reports its exit, reaps it, then frees the port lock.
+    fn reap(&self, key: SocketAddrV4, id: u64, mut child: Child, notice: &Notice) {
+        let status = wait_exited(child.id() as libc::pid_t);
+        let (lock, owned) = {
+            let mut slots = self.lock();
+            let mut taken = (None, false);
+            if let Some(slot) = slots.by_key.get_mut(&key).filter(|s| s.id == id) {
+                let state = std::mem::replace(&mut slot.state, State::Reserved);
+                slot.state = match state {
+                    State::Starting {
+                        lock,
+                        spawn: Some(spawn),
+                    } => {
+                        taken = (Some(lock), false);
+                        State::Exited {
+                            spawn,
+                            starting: true,
+                        }
+                    }
+                    State::Owned { lock, spawn } => {
+                        taken = (Some(lock), true);
+                        State::Exited {
+                            spawn,
+                            starting: false,
+                        }
+                    }
+                    other => other,
+                };
+                let ownership = match taken {
+                    (Some(_), true) => Some(Ownership::Owned { exited: true }),
+                    (Some(_), false) => Some(Ownership::Starting { exited: true }),
+                    (None, _) => None,
+                };
+                if let Some(ownership) = ownership {
+                    let _ = self.remove_pidfile(&self.pidfile(key), &ownership);
+                }
+            }
+            self.changed.notify_all();
+            taken
+        };
+        (self.emit)(ExitNotice {
+            addr: key,
+            status,
+            log_tail: log_tail(&self.log_path(key)),
+            owned,
+        });
+        let _ = child.wait();
+        drop(lock);
+        notice.set();
+    }
+
+    /// `VERIFY(log_path)`: built from the parsed port alone, so it always admits.
+    fn log_path(&self, addr: SocketAddrV4) -> PathBuf {
+        self.logs.join(format!("{}.log", addr.port()))
+    }
+}
+
+/// Whether slot `id` at `key` is Exited.
+fn exited_in(slots: &Slots, key: SocketAddrV4, id: u64) -> bool {
+    matches!(
+        slots.by_key.get(&key),
+        Some(Slot { id: now, state: State::Exited { .. } }) if *now == id
+    )
+}
+
+/// `VERIFY(spawn_result)`; the error names the failing field.
+fn spawn_result_admissible(spawn: &SpawnResult) -> Result<(), &'static str> {
+    if spawn.pid <= 0 {
+        return Err("pid");
+    }
+    if spawn.pgid != Some(spawn.pid) {
+        return Err("pgid");
+    }
+    if spawn.exe.as_ref().is_none_or(|e| e.as_os_str().is_empty()) {
+        return Err("exe");
+    }
+    if spawn.start_time.is_none() {
+        return Err("start_time");
+    }
+    Ok(())
+}
+
+/// `waitid(P_PID, pid, WEXITED | WNOWAIT)`: returns while the leader is an unreaped
+/// zombie, which keeps its group id in use. Darwin's `waitid` has been reported to
+/// return for a stopped child (golang/go#19314), so any other code waits again.
+fn wait_exited(pid: libc::pid_t) -> String {
+    loop {
+        // SAFETY: `siginfo_t` is plain data; all-zero is a valid value.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a writable `siginfo_t`; WNOWAIT leaves the child unreaped.
+        let r = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if r == -1 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return format!("wait failed: {e}");
+        }
+        // SAFETY: `waitid` filled `info` for a child state change.
+        let code = unsafe { info.si_status() };
+        match info.si_code {
+            libc::CLD_EXITED => return format!("exit {code}"),
+            libc::CLD_KILLED | libc::CLD_DUMPED => return format!("signal {code}"),
+            _ => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+fn failed_to_start(log: &Path) -> Refusal {
+    Refusal::FailedToStart {
+        log_tail: log_tail(log),
+    }
+}
+
+/// The last 20 lines of `log`, empty when it cannot be read.
+fn log_tail(log: &Path) -> String {
+    let text = std::fs::read(log).unwrap_or_default();
+    let text = String::from_utf8_lossy(&text);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut tail = lines[lines.len().saturating_sub(LOG_TAIL_LINES)..].join("\n");
+    if !tail.is_empty() {
+        tail.push('\n');
+    }
+    tail
+}
+
+/// Appends one `cos:` line to the server log, so the log tail names what failed.
+fn append_log(log: &Path, line: &str) {
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log) {
+        let _ = writeln!(f, "cos: {line}");
     }
 }
 

@@ -26,7 +26,7 @@ use cos::proc;
 use cos_desktop::Start;
 use cos_desktop::servers::{
     ExitNotice, Ownership, Refusal, Running, SpawnResult, StoreError, Supervisor,
-    binary_admissible, real_connect,
+    binary_admissible, real_connect, real_spawn,
 };
 use serde_json::{Value, json};
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -77,6 +77,10 @@ const TESTS: &[(&str, fn())] = &[
     (
         "answering_port_is_never_spawned_on",
         answering_port_is_never_spawned_on,
+    ),
+    (
+        "concurrent_first_opens_spawn_once",
+        concurrent_first_opens_spawn_once,
     ),
 ];
 
@@ -161,6 +165,8 @@ fn answer(s: &mut TcpStream) -> io::Result<()> {
         req.extend_from_slice(&chunk[..n]);
     }
     let req = String::from_utf8_lossy(&req);
+    // Under `real_spawn` stdout is the server log, so a test can count the requests.
+    println!("{}", req.lines().next().unwrap_or(""));
     let (status, body) = match req.split_whitespace().nth(1).unwrap_or("") {
         "/health" => ("200 OK", format!("{{{READY}}}")),
         "/" => (
@@ -1180,4 +1186,136 @@ fn answering_port_is_never_spawned_on() {
         kid.0.try_wait().unwrap().is_none(),
         "the listener was signalled"
     );
+}
+
+fn concurrent_first_opens_spawn_once() {
+    let root = scratch("first-opens");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (gate_tx, gate_rx) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate_rx);
+    let connects = Arc::new(AtomicUsize::new(0));
+    let spawned = Arc::new(Mutex::new(Vec::<libc::pid_t>::new()));
+    let (exit_tx, exit_rx) = mpsc::channel::<ExitNotice>();
+    let exit_tx = Mutex::new(exit_tx);
+    let (counted, recorded) = (connects.clone(), spawned.clone());
+    let sup = Arc::new(
+        Supervisor::new(
+            &root.join("data"),
+            &root.join("logs"),
+            move |n: ExitNotice| {
+                let _ = exit_tx.lock().unwrap().send(n);
+            },
+            move |server: &Server, log: &Path| -> anyhow::Result<Child> {
+                let child = real_spawn(server, log)?;
+                recorded.lock().unwrap().push(child.id() as libc::pid_t);
+                Ok(child)
+            },
+            move |a: SocketAddrV4| {
+                if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let _ = gate.lock().unwrap().recv();
+                }
+                real_connect(a)
+            },
+        )
+        .unwrap(),
+    );
+
+    let (tx, rx) = mpsc::channel();
+    let mut threads = Vec::new();
+    for i in 0..2 {
+        if i == 1 {
+            assert!(
+                until(Duration::from_secs(2), || connects.load(Ordering::SeqCst)
+                    == 1),
+                "the first open never reached connect"
+            );
+        }
+        let (sup, server, d, tx) = (sup.clone(), server.clone(), d.clone(), tx.clone());
+        threads.push(std::thread::spawn(move || {
+            let _ = tx.send((i, sup.ensure(Some(&server), &d)));
+        }));
+    }
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "an open returned while the first probe was blocked"
+    );
+    gate_tx.send(()).unwrap();
+    let mut got: [Option<Result<Running, Refusal>>; 2] = [None, None];
+    for _ in 0..2 {
+        let (i, r) = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("an open hung");
+        got[i] = Some(r);
+    }
+    for t in threads {
+        t.join().unwrap();
+    }
+    let pids = spawned.lock().unwrap().clone();
+    let group = pids.first().map(|&pid| Leftover(pid));
+    let want = Ok(Running {
+        url: d.url.clone(),
+        owned: true,
+    });
+    assert_eq!(got[0].as_ref(), Some(&want), "first open");
+    assert_eq!(got[1].as_ref(), Some(&want), "second open");
+    assert_eq!(pids.len(), 1, "one spawn");
+    assert_eq!(
+        connects.load(Ordering::SeqCst),
+        1,
+        "the waiter connected instead of reusing the slot"
+    );
+    assert!(
+        take_lock(&root, addr.port()).is_none(),
+        "the port lock is not held"
+    );
+
+    let pid = pids[0];
+    let pidfile = root
+        .join("data")
+        .join("servers")
+        .join(format!("{}.json", addr.port()));
+    let got: Value = serde_json::from_slice(&std::fs::read(&pidfile).unwrap()).unwrap();
+    let (secs, micros) = proc::start_time(pid).expect("start time");
+    assert_eq!(
+        got,
+        json!({
+            "pid": pid,
+            "pgid": pid,
+            "start_time": [secs, micros],
+            "exe": proc::exe(pid).expect("exe"),
+            "addr": addr.to_string(),
+        })
+    );
+    let log = root
+        .join("logs")
+        .join("servers")
+        .join(format!("{}.log", addr.port()));
+    let text = std::fs::read_to_string(&log).expect("the server log");
+    assert!(text.contains("GET /health HTTP/1.0"), "{text}");
+    assert_eq!(
+        text.lines().filter(|l| *l == "GET / HTTP/1.0").count(),
+        2,
+        "one identity probe per open: {text}"
+    );
+
+    proc::kill_group(pid);
+    let n = exit_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.addr, addr);
+    assert_eq!(n.status, "signal 9");
+    assert!(n.owned, "an Owned server's exit");
+    assert!(n.log_tail.contains("GET / HTTP/1.0"), "{}", n.log_tail);
+    assert!(
+        until(Duration::from_secs(5), || take_lock(&root, addr.port())
+            .is_some()),
+        "the reaper never released the port lock"
+    );
+    assert!(!pidfile.exists(), "the reaper left the pidfile");
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let r = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(r, -1, "the reaper never reaped the child");
+    // The group id is free again once reaped; killing it now could reach a stranger.
+    std::mem::forget(group);
 }
