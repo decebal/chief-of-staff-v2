@@ -556,6 +556,39 @@ async fn brief_seen<R: Runtime>(
     .await
 }
 
+/// One dashboard tab of the app business.
+#[derive(Serialize)]
+struct DashboardTab {
+    name: String,
+    url: String,
+    managed: bool,
+}
+
+/// The app business's dashboards, from `dashboards.toml` read on every call.
+#[tauri::command]
+async fn dashboards<R: Runtime>(app: AppHandle<R>, business: String) -> Res<Vec<DashboardTab>> {
+    let checked = check_business(&app, &business)?;
+    // The defaults layer is labelled `default`, which a registered business may also be named.
+    let Some(name) = checked.business else {
+        return Ok(Vec::new());
+    };
+    blocking(move || {
+        let start = app.state::<Start>();
+        let file = cos::dashboards::location(&start.registry, start.dashboards_file.as_deref());
+        let loaded = cos::dashboards::load(&file)?;
+        Ok(loaded
+            .for_business(&name)
+            .iter()
+            .map(|d| DashboardTab {
+                name: d.name.clone(),
+                url: d.url.clone(),
+                managed: d.server.is_some(),
+            })
+            .collect())
+    })
+    .await
+}
+
 /// What the row builder reads, copied from the managed `Start` and the App lock.
 struct RowSource {
     registry: PathBuf,
@@ -1367,6 +1400,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             switch_business,
             businesses,
             brief_seen,
+            dashboards,
             agents_list,
             agents_fit,
             agents_spawn,
