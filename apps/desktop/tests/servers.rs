@@ -138,6 +138,14 @@ const TESTS: &[(&str, fn())] = &[
         cleanup_removes_a_record_for_another_port,
     ),
     ("cleanup_removes_a_dead_pid", cleanup_removes_a_dead_pid),
+    (
+        "cleanup_removes_a_mismatching_leftover",
+        cleanup_removes_a_mismatching_leftover,
+    ),
+    (
+        "cleanup_removes_a_leftover_of_another_binary",
+        cleanup_removes_a_leftover_of_another_binary,
+    ),
 ];
 
 fn main() {
@@ -196,7 +204,8 @@ fn fake(args: &[String]) {
                 _ => {}
             }
         }
-        [leftover, mode, addr] if leftover == "leftover" => detach(mode, addr),
+        [leftover, mode, addr] if leftover == "leftover" => detach(mode, addr, true),
+        [leftover, mode, addr] if leftover == "leftover-member" => detach(mode, addr, false),
         _ => {}
     }
 }
@@ -263,10 +272,14 @@ fn idle() -> ! {
 
 /// The intermediate of a leftover: starts `<self> <mode> <addr>` as the leader of its own
 /// group, prints its pid and exits without waiting, so the leader is reparented away.
-fn detach(mode: &str, addr: &str) -> ! {
-    let child = Command::new(std::env::current_exe().unwrap())
+/// Without `own_group` the child stays in the intermediate's group.
+fn detach(mode: &str, addr: &str, own_group: bool) -> ! {
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    if own_group {
+        cmd.process_group(0);
+    }
+    let child = cmd
         .args([mode, addr])
-        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -362,6 +375,33 @@ fn leftover(mode: &str, addr: SocketAddrV4) -> Leftover {
         .unwrap();
     assert!(out.status.success(), "leftover intermediate: {out:?}");
     Leftover(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap(),
+    )
+}
+
+/// A leftover that is a member of a group it does not lead: the intermediate leads its
+/// own group, and the leftover stays in it after the intermediate exits.
+struct Member(libc::pid_t);
+
+impl Drop for Member {
+    fn drop(&mut self) {
+        proc::signal_pid(self.0, libc::SIGKILL);
+    }
+}
+
+fn leftover_member(mode: &str, addr: SocketAddrV4) -> Member {
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["leftover-member", mode, &addr.to_string()])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "leftover intermediate: {out:?}");
+    Member(
         String::from_utf8(out.stdout)
             .unwrap()
             .trim()
@@ -2415,4 +2455,61 @@ fn cleanup_removes_a_dead_pid() {
         take_lock(&root, addr.port()).is_some(),
         "cleanup kept the port lock"
     );
+}
+
+/// Each case differs from a record passing all five checks in one field, so only the
+/// check under test can remove it.
+fn cleanup_removes_a_mismatching_leftover() {
+    let root = scratch("cleanup-mismatch");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let addr = free_addr();
+    let declared = declaring(addr, std::env::current_exe().unwrap());
+    let name = format!("{}.json", addr.port());
+    let left = leftover("idle", addr);
+
+    for case in ["start time", "executable", "record pgid"] {
+        let file = plant_record(&root, &name, left.0, addr);
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        match case {
+            "start time" => {
+                record["start_time"][0] = json!(record["start_time"][0].as_i64().unwrap() - 1)
+            }
+            "executable" => record["exe"] = json!("/bin/sleep"),
+            _ => record["pgid"] = json!(left.0 + 1),
+        }
+        std::fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+        sup.launch_cleanup(&declared);
+        assert!(!file.exists(), "{case}: the pidfile was kept");
+        assert_unsignalled(left.0, case);
+    }
+
+    let member = leftover_member("idle", addr);
+    assert_ne!(
+        proc::pgid(member.0),
+        Some(member.0),
+        "the member leads a group"
+    );
+    let file = plant_record(&root, &name, member.0, addr);
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    record["pgid"] = json!(member.0);
+    std::fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    sup.launch_cleanup(&declared);
+    assert!(!file.exists(), "process group: the pidfile was kept");
+    assert_unsignalled(member.0, "process group");
+    assert_unsignalled(left.0, "process group");
+}
+
+fn cleanup_removes_a_leftover_of_another_binary() {
+    let root = scratch("cleanup-binary");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let addr = free_addr();
+    let other = root.join("other-server");
+    std::fs::write(&other, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let left = leftover("idle", addr);
+
+    let file = plant_record(&root, &format!("{}.json", addr.port()), left.0, addr);
+    sup.launch_cleanup(&declaring(addr, other));
+    assert!(!file.exists(), "the pidfile of another binary was kept");
+    assert_unsignalled(left.0, "declared binary is another file");
 }
