@@ -4,6 +4,7 @@ pub mod business;
 pub mod claude;
 pub mod context;
 pub mod dash;
+pub mod dashboards;
 pub mod design;
 pub mod docs;
 pub mod flows;
