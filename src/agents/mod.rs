@@ -551,8 +551,10 @@ pub fn classify(spec: &Spec, state: &State) -> Liveness {
 /// Run counts under one home, for the picker's badge.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
+    /// Includes the runs counted in `starting`.
     pub live: usize,
     pub lost: usize,
+    pub starting: usize,
     /// Runs whose spec or state cannot be read, or whose id is refused.
     pub unreadable: usize,
 }
@@ -560,34 +562,62 @@ pub struct Counts {
 /// Counts runs without reconciling them: nothing is written and no process is signalled.
 pub fn count(home: &Path) -> Result<Counts> {
     let mut counts = Counts::default();
+    for run in open_runs(home) {
+        let Some((spec, state)) = run else {
+            counts.unreadable += 1;
+            continue;
+        };
+        match classify(&spec, &state) {
+            Liveness::Live => counts.live += 1,
+            Liveness::Starting => {
+                counts.live += 1;
+                counts.starting += 1;
+            }
+            Liveness::Lost => counts.lost += 1,
+        }
+    }
+    Ok(counts)
+}
+
+/// Supervisor pids of the runs `count` classifies Live, read the same way:
+/// nothing is written and no process is signalled.
+pub fn live_supervisors(home: &Path) -> Vec<i32> {
+    open_runs(home)
+        .into_iter()
+        .flatten()
+        .filter(|(spec, state)| classify(spec, state) == Liveness::Live)
+        .filter_map(|(_, state)| state.supervisor)
+        .collect()
+}
+
+/// Runs under `home` that have not ended, without reconciling them; `None` for
+/// a run whose spec or state cannot be read, or whose id is refused.
+fn open_runs(home: &Path) -> Vec<Option<(Spec, State)>> {
     let Ok(root) = std::fs::canonicalize(root(home)) else {
-        return Ok(counts);
+        return Vec::new();
     };
+    let mut runs = Vec::new();
     for id in run_ids(home) {
         let path = root.join(&id);
         if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
-            counts.unreadable += 1;
+            runs.push(None);
             continue;
         }
         let spec: Result<Spec> = read_json(&path.join("spec.json"));
         let state: Result<State> = read_json(&path.join("state.json"));
         let (Ok(spec), Ok(state)) = (spec, state) else {
-            counts.unreadable += 1;
+            runs.push(None);
             continue;
         };
         if spec.id != id {
-            counts.unreadable += 1;
+            runs.push(None);
             continue;
         }
-        if state.status.terminal() {
-            continue;
-        }
-        match classify(&spec, &state) {
-            Liveness::Live | Liveness::Starting => counts.live += 1,
-            Liveness::Lost => counts.lost += 1,
+        if !state.status.terminal() {
+            runs.push(Some((spec, state)));
         }
     }
-    Ok(counts)
+    runs
 }
 
 /// A running state whose supervisor is gone becomes `lost`, and the harness
@@ -791,19 +821,9 @@ fn age(timestamp: &str) -> Duration {
         .unwrap_or_default()
 }
 
-fn comm(pid: i32) -> Option<String> {
-    let out = Command::new("ps")
-        .args(["-o", "comm=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    (!s.is_empty()).then_some(s)
-}
-
 /// `pid` is alive and is a `cos` binary, not a recycled pid.
 fn is_cos(pid: i32) -> bool {
-    proc::alive(pid)
-        && comm(pid).is_some_and(|c| Path::new(&c).file_name().is_some_and(|f| f == "cos"))
+    proc::alive(pid) && proc::exe(pid).is_some_and(|p| p.file_name().is_some_and(|f| f == "cos"))
 }
 
 /// When `pid` started, as `ps` prints it; with the pid, this names one process.

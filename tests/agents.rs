@@ -686,6 +686,7 @@ fn count_is_read_only() {
         agents::Counts {
             live: 1,
             lost: 0,
+            starting: 0,
             unreadable: 0
         }
     );
@@ -704,6 +705,7 @@ fn count_is_read_only() {
         agents::Counts {
             live: 0,
             lost: 1,
+            starting: 0,
             unreadable: 0
         }
     );
@@ -721,6 +723,7 @@ fn count_is_read_only() {
         agents::Counts {
             live: 0,
             lost: 1,
+            starting: 0,
             unreadable: 1
         }
     );
@@ -756,6 +759,7 @@ fn count_refuses_a_symlinked_run() {
         agents::Counts {
             live: 0,
             lost: 0,
+            starting: 0,
             unreadable: 1
         }
     );
@@ -764,6 +768,81 @@ fn count_refuses_a_symlinked_run() {
         before,
         "count wrote a record"
     );
+}
+
+#[test]
+fn count_reports_a_starting_run_as_starting_and_live() {
+    let root = scratch("count-starting");
+    let home = root.join("home");
+    let id = finished(&home);
+    let starting = State {
+        status: Status::Running,
+        ..State::default()
+    };
+    std::fs::write(
+        home.join("out/agents").join(&id).join("state.json"),
+        serde_json::to_vec(&starting).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        agents::count(&home).unwrap(),
+        agents::Counts {
+            live: 1,
+            lost: 0,
+            starting: 1,
+            unreadable: 0
+        }
+    );
+}
+
+#[test]
+fn live_supervisors_holds_live_pids_only_and_writes_nothing() {
+    let root = scratch("supervisors");
+    let home = root.join("home");
+    let live = agents::spawn(
+        &at(&home),
+        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
+        Path::new(COS),
+    )
+    .unwrap();
+    let lost = agents::spawn(
+        &at(&home),
+        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
+        Path::new(COS),
+    )
+    .unwrap();
+    let live_st = wait_for(&home, &live.id, |s| s.status == Status::Running);
+    let lost_st = wait_for(&home, &lost.id, |s| s.status == Status::Running);
+    let live_sleeper = sleeper(&live.workdir);
+    let lost_sleeper = sleeper(&lost.workdir);
+
+    let dead = lost_st.supervisor.unwrap();
+    // SAFETY: the supervisor this test spawned; no memory is touched.
+    unsafe {
+        libc::kill(dead, libc::SIGKILL);
+    }
+    wait_dead(dead);
+
+    let before = (state_bytes(&home, &live.id), state_bytes(&home, &lost.id));
+    assert_eq!(
+        agents::live_supervisors(&home),
+        vec![live_st.supervisor.unwrap()]
+    );
+    assert_eq!(
+        (state_bytes(&home, &live.id), state_bytes(&home, &lost.id)),
+        before,
+        "live_supervisors wrote a record"
+    );
+    assert!(
+        cos::proc::alive(lost_sleeper),
+        "live_supervisors stopped the harness"
+    );
+
+    agents::read(&home, &lost.id).unwrap();
+    wait_dead(lost_sleeper);
+    agents::stop(&home, &live.id, Duration::from_secs(10)).unwrap();
+    wait_dead(live_sleeper);
 }
 
 #[test]

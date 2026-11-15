@@ -48,7 +48,7 @@ fn flock(file: &File, nonblocking: bool) -> bool {
 }
 
 /// Blocks until the exclusive lock on `path` is held; the file is created if missing.
-pub(crate) fn lock_exclusive(path: &Path) -> Result<Held> {
+pub fn lock_exclusive(path: &Path) -> Result<Held> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
