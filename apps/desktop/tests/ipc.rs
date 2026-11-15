@@ -10,13 +10,13 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use cos::business::{Business, Dirs, Sources};
-use cos_desktop::Start;
+use cos_desktop::{Checked, Start};
 use serde_json::{Value, json};
-use tauri::WebviewWindowBuilder;
 use tauri::test::{
     INVOKE_KEY, MockRuntime, get_ipc_response, mock_builder, mock_context, noop_assets,
 };
 use tauri::webview::InvokeRequest;
+use tauri::{Manager, WebviewWindowBuilder};
 
 type Win = tauri::WebviewWindow<MockRuntime>;
 
@@ -91,6 +91,10 @@ fn start(root: &Path, cos: PathBuf, slots: usize, pins: Sources) -> Start {
         user_home: Some(root.join("user")),
         registry: root.join("businesses.toml"),
         settings_file: root.join("settings.json"),
+        data_dir: root.join("data"),
+        log_dir: root.join("logs"),
+        ui_state_file: root.join("ui-state.json"),
+        dashboards_file: None,
         sources: pins,
         cos_bin: Some(cos),
         slots: Some(slots),
@@ -105,9 +109,12 @@ fn register(start: &Start, name: &str, b: &Business, active: bool) {
 }
 
 fn open(start: Start) -> (tauri::App<MockRuntime>, Win) {
-    let app = cos_desktop::builder(mock_builder(), Some(start))
+    let mut app = cos_desktop::builder(mock_builder(), Some(start))
         .build(mock_context(noop_assets()))
         .unwrap();
+    // `build` does not run `setup`; on the mock runtime one iteration runs it and nothing else.
+    #[allow(deprecated)]
+    app.run_iteration(|_, _| {});
     let w = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
@@ -1416,4 +1423,85 @@ fn run_spawned_before_switch_survives() {
         json!({ "business": "default", "id": id, "force": true }),
     )
     .unwrap();
+}
+
+#[test]
+fn setup_manages_the_start_it_was_given() {
+    let cos = cos_bin();
+    let root = scratch("managed");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let start = start(&root, cos, 2, Sources::default());
+    assert_eq!(start.data_dir, root.join("data"));
+    assert_eq!(start.log_dir, root.join("logs"));
+    assert_eq!(start.ui_state_file, root.join("ui-state.json"));
+    assert_eq!(start.dashboards_file, None);
+    register(&start, "default", &a, true);
+    let (app, _w) = open(start.clone());
+
+    let managed = app.try_state::<Start>().expect("setup manages the Start");
+    assert_eq!(managed.data_dir, start.data_dir);
+    assert_eq!(managed.log_dir, start.log_dir);
+    assert_eq!(managed.ui_state_file, start.ui_state_file);
+    assert_eq!(managed.dashboards_file, None);
+    assert_eq!(managed.registry, start.registry);
+    assert_eq!(managed.user_home, start.user_home);
+}
+
+#[test]
+fn business_check_refuses_a_stale_label_and_copies_under_one_lock() {
+    let cos = cos_bin();
+    let root = scratch("check");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let b = dirs(&root, "acme");
+    seed(&b.workspace, Some("Acme launch goal"));
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &a, true);
+    register(&start, "acme", &b, false);
+    let (app, w) = open(start);
+    let handle = app.handle().clone();
+
+    let ok = cos_desktop::check_business(&handle, "default").unwrap();
+    assert_eq!(
+        ok,
+        Checked {
+            business: Some("default".into()),
+            home: a.home.clone(),
+        }
+    );
+    let stale = cos_desktop::check_business(&handle, "acme").unwrap_err();
+    let named = call(&w, "agents_stop", json!({ "business": "acme", "id": "x" })).unwrap_err();
+    assert_eq!(stale, error_text(&named));
+
+    let home_of = |name: &str| if name == "default" { &a.home } else { &b.home };
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (mut admitted, mut refused) = (0, 0);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            for i in 0..100 {
+                switch(&w, if i % 2 == 0 { "acme" } else { "default" }).unwrap();
+            }
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        while !done.load(std::sync::atomic::Ordering::SeqCst) {
+            for name in ["default", "acme"] {
+                match cos_desktop::check_business(&handle, name) {
+                    Ok(c) => {
+                        admitted += 1;
+                        assert_eq!(c.business.as_deref(), Some(name));
+                        assert_eq!(&c.home, home_of(name), "home copied from another business");
+                    }
+                    Err(e) => {
+                        refused += 1;
+                        assert!(e.contains("nothing written, run or killed"), "{e}");
+                    }
+                }
+            }
+        }
+    });
+    assert!(
+        admitted > 0 && refused > 0,
+        "{admitted} admitted, {refused} refused"
+    );
 }
