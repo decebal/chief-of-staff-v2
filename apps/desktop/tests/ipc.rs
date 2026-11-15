@@ -2332,3 +2332,49 @@ fn brief_seen_publishes_the_cleared_dot_through_the_shared_cache() {
         "a new brief did not re-light the dot within one tick"
     );
 }
+
+/// A cache missing a registered business is what `brief_seen` meets before the watcher's
+/// first tick. Registering `charlie` behind an unchanged registry mtime leaves the
+/// watcher's cache without it for good, so only `brief_seen`'s fill can emit its row.
+#[test]
+fn brief_seen_fills_a_cache_missing_a_registered_business() {
+    let root = scratch("seen-fill");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let b = dirs(&root, "bravo");
+    let c = dirs(&root, "charlie");
+    let mtime = write_brief(&a.home, "2026-11-14");
+    write_brief(&c.home, "2026-11-14");
+    let start = start(&root, cos_bin(), 2, Sources::default());
+    register(&start, "default", &a, true);
+    register(&start, "bravo", &b, false);
+
+    let (_app, w, rx) = open_listening(start.clone(), &[BUSINESSES_CHANGED]);
+    let first = next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |_| true)
+        .expect("the first tick emitted nothing");
+    assert_eq!(names(&first), ["bravo", "default"]);
+
+    let staged = root.join("staged.toml");
+    std::fs::copy(&start.registry, &staged).unwrap();
+    cos::business::add(&staged, "charlie", c.clone(), false).unwrap();
+    let registry_mtime = std::fs::metadata(&start.registry)
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&staged)
+        .unwrap()
+        .set_modified(registry_mtime)
+        .unwrap();
+    std::fs::rename(&staged, &start.registry).unwrap();
+
+    brief_seen(&w, "default", "2026-11-14.json", mtime).unwrap();
+    let cleared = next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |rows| {
+        row(rows, "default")["unread"] == false
+    })
+    .expect("brief_seen emitted no cleared dot");
+    assert_eq!(names(&cleared), ["bravo", "charlie", "default"]);
+    assert_eq!(row(&cleared, "charlie")["unread"], true);
+    assert_eq!(row(&cleared, "default")["app"], true);
+}
