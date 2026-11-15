@@ -7,8 +7,10 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use toml::{Table, Value};
@@ -110,6 +112,123 @@ impl Dashboards {
             .cloned()
             .collect()
     }
+}
+
+/// The outcome of one probe attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeResult {
+    /// The connect failed.
+    NoListener,
+    /// Connected, but a close or the timeout came before a complete response.
+    NoResponse,
+    /// `head` is at most the first [`HEAD`] bytes of the response; `matched` is whether the
+    /// body within the first [`READ_CAP`] bytes holds the marker.
+    Response {
+        status: String,
+        head: String,
+        matched: bool,
+    },
+}
+
+pub const READ_CAP: usize = 64 * 1024;
+pub const HEAD: usize = 200;
+
+/// One HTTP/1.0 GET of `probe.path`; `timeout` bounds the connect and the whole exchange.
+pub fn probe(addr: SocketAddrV4, probe: &Probe, timeout: Duration) -> ProbeResult {
+    let deadline = Instant::now() + timeout;
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr.into(), timeout) else {
+        return ProbeResult::NoListener;
+    };
+    let request = format!(
+        "GET {} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        probe.path,
+        addr.port()
+    );
+    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+        return ProbeResult::NoResponse;
+    };
+    if stream.set_write_timeout(Some(remaining)).is_err()
+        || stream.write_all(request.as_bytes()).is_err()
+    {
+        return ProbeResult::NoResponse;
+    }
+
+    let mut buf = Vec::with_capacity(8 * 1024);
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        if buf.len() >= READ_CAP || body_complete(&buf) {
+            break;
+        }
+        let remaining = match deadline.checked_duration_since(Instant::now()) {
+            Some(d) if !d.is_zero() => d,
+            _ => return ProbeResult::NoResponse,
+        };
+        if stream.set_read_timeout(Some(remaining)).is_err() {
+            return ProbeResult::NoResponse;
+        }
+        let want = chunk.len().min(READ_CAP - buf.len());
+        match stream.read(&mut chunk[..want]) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return ProbeResult::NoResponse,
+        }
+    }
+    response(&buf, &probe.contains)
+}
+
+fn response(buf: &[u8], marker: &str) -> ProbeResult {
+    let Some(end) = buf.iter().position(|&b| b == b'\n') else {
+        return ProbeResult::NoResponse;
+    };
+    let line = buf[..end].strip_suffix(b"\r").unwrap_or(&buf[..end]);
+    if !line.starts_with(b"HTTP/") {
+        return ProbeResult::NoResponse;
+    }
+    let mut head = String::from_utf8_lossy(&buf[..buf.len().min(HEAD)]).into_owned();
+    while head.len() > HEAD {
+        head.pop();
+    }
+    let matched = body(buf).is_some_and(|body| contains(body, marker.as_bytes()));
+    ProbeResult::Response {
+        status: String::from_utf8_lossy(line).into_owned(),
+        head,
+        matched,
+    }
+}
+
+/// The bytes after the header block, cut to `Content-Length` when it is given.
+fn body(buf: &[u8]) -> Option<&[u8]> {
+    let (headers, body) = split_headers(buf)?;
+    Some(match content_length(headers) {
+        Some(n) if n < body.len() => &body[..n],
+        _ => body,
+    })
+}
+
+fn body_complete(buf: &[u8]) -> bool {
+    split_headers(buf)
+        .and_then(|(headers, body)| content_length(headers).map(|n| body.len() >= n))
+        .unwrap_or(false)
+}
+
+fn split_headers(buf: &[u8]) -> Option<(&[u8], &[u8])> {
+    let at = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    Some((&buf[..at], &buf[at + 4..]))
+}
+
+fn content_length(headers: &[u8]) -> Option<usize> {
+    headers.split(|&b| b == b'\n').skip(1).find_map(|line| {
+        let line = std::str::from_utf8(line).ok()?;
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse().ok())?
+    })
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty() || haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn validate(root: &Table) -> Result<Dashboards, Invalid> {
