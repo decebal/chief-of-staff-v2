@@ -1435,6 +1435,16 @@ pub fn emit_exited<R: Runtime>(app: &AppHandle<R>, notice: &servers::ExitNotice)
     }
 }
 
+/// The callback `.run()` takes: quit stops every server this instance started. Both
+/// events reach it on ⌘Q; the second `stop_owned` is a no-op.
+pub fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event
+        && let Some(supervisor) = app.try_state::<servers::Supervisor>()
+    {
+        supervisor.stop_owned();
+    }
+}
+
 /// The app on any runtime: the report scheme, the state (given, or read from the
 /// environment and the config directory at setup), the watcher, the commands.
 pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder<R> {
