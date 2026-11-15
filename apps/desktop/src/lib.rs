@@ -1028,6 +1028,12 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
                 servers::real_spawn,
                 servers::real_connect,
             )?;
+            let file = cos::dashboards::location(&start.registry, start.dashboards_file.as_deref());
+            let dashboards = cos::dashboards::load(&file).unwrap_or_else(|e| {
+                eprintln!("dashboards: {e:#}; launch cleanup declares no servers");
+                cos::dashboards::Dashboards::default()
+            });
+            supervisor.launch_cleanup(&dashboards);
             app.manage(supervisor);
             app.manage(App::new(&start));
             app.manage(start);
