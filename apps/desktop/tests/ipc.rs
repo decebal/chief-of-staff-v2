@@ -2378,3 +2378,88 @@ fn brief_seen_fills_a_cache_missing_a_registered_business() {
     assert_eq!(row(&cleared, "charlie")["unread"], true);
     assert_eq!(row(&cleared, "default")["app"], true);
 }
+
+const DASHBOARDS_TOML: &str = r#"
+[server.control-room]
+binary = "/opt/control-room/portfolio-control-room"
+addr = "127.0.0.1:4777"
+ready = { path = "/health", contains = "\"status\":\"ok\"" }
+
+[[business.default]]
+name = "Control room"
+url = "http://127.0.0.1:4777/"
+server = "control-room"
+probe = { path = "/", contains = "<title>Wolven portfolio control room" }
+
+[[business.bravo]]
+name = "Bravo board"
+url = "http://127.0.0.1:4800/"
+probe = { path = "/", contains = "<title>Bravo board</title>" }
+"#;
+
+fn dashboards(w: &Win, business: &str) -> Result<Value, Value> {
+    call(w, "dashboards", json!({ "business": business }))
+}
+
+/// Two registered businesses, `default` the app's, with `dashboards.toml` beside the registry.
+fn dashboards_app(name: &str, file: &str) -> (Start, PathBuf, tauri::App<MockRuntime>, Win) {
+    let root = scratch(name);
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let b = dirs(&root, "bravo");
+    let start = start(&root, cos_bin(), 2, Sources::default());
+    register(&start, "default", &a, true);
+    register(&start, "bravo", &b, false);
+    let path = root.join("dashboards.toml");
+    std::fs::write(&path, file).unwrap();
+    let (app, w) = open(start.clone());
+    (start, path, app, w)
+}
+
+#[test]
+fn dashboards_returns_the_app_business_and_loads_the_file_fresh() {
+    let (_start, path, _app, w) = dashboards_app("dash-fresh", DASHBOARDS_TOML);
+    assert_eq!(
+        dashboards(&w, "default").unwrap(),
+        json!([{ "name": "Control room", "url": "http://127.0.0.1:4777/", "managed": true }])
+    );
+
+    let added = format!(
+        "{DASHBOARDS_TOML}
+[[business.default]]
+name = \"Gazette\"
+url = \"http://127.0.0.1:8790/#staff\"
+probe = {{ path = \"/\", contains = \"<h1>Chief of staff gazette\" }}
+"
+    );
+    std::fs::write(&path, added).unwrap();
+    assert_eq!(
+        dashboards(&w, "default").unwrap(),
+        json!([
+            { "name": "Control room", "url": "http://127.0.0.1:4777/", "managed": true },
+            { "name": "Gazette", "url": "http://127.0.0.1:8790/#staff", "managed": false },
+        ]),
+        "a dashboard added after launch is missing from the next call"
+    );
+}
+
+#[test]
+fn dashboards_refuses_an_invalid_file_and_a_stale_business() {
+    let bad = DASHBOARDS_TOML.replace(
+        "url = \"http://127.0.0.1:4777/\"",
+        "url = \"https://127.0.0.1:4777/\"",
+    );
+    let (_start, _path, _app, w) = dashboards_app("dash-refused", &bad);
+
+    let e = dashboards(&w, "default").unwrap_err();
+    assert!(
+        error_text(&e).contains("business.default[0].url: must be http://127.0.0.1:<port>/"),
+        "{e}"
+    );
+
+    let stale = dashboards(&w, "bravo").unwrap_err();
+    assert_eq!(
+        error_text(&stale),
+        "this call names business \"bravo\" but the window is on \"default\": nothing written, run or killed"
+    );
+}
