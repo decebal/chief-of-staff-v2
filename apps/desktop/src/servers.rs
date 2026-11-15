@@ -658,7 +658,12 @@ impl Inner {
             notice: Arc::default(),
         };
         self.record(key, id, child, &recorded);
-        if let Err(field) = spawn_result_admissible(&result) {
+        if let Err(field) = spawn_result_admissible(
+            result.pid,
+            result.pgid,
+            result.start_time,
+            result.exe.as_deref(),
+        ) {
             append_log(&log, &format!("spawn result refused: {field}"));
             return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
         }
@@ -856,18 +861,24 @@ fn exited_in(slots: &Slots, key: SocketAddrV4, id: u64) -> bool {
     )
 }
 
-/// `VERIFY(spawn_result)`; the error names the failing field.
-fn spawn_result_admissible(spawn: &SpawnResult) -> Result<(), &'static str> {
-    if spawn.pid <= 0 {
+/// `VERIFY(spawn_result)` over the values `SpawnResult::read` takes from the kernel;
+/// the error names the first failing field.
+pub fn spawn_result_admissible(
+    pid: libc::pid_t,
+    pgid: Option<libc::pid_t>,
+    start_time: Option<(i64, i64)>,
+    exe: Option<&Path>,
+) -> Result<(), &'static str> {
+    if pid <= 0 {
         return Err("pid");
     }
-    if spawn.pgid != Some(spawn.pid) {
+    if pgid != Some(pid) {
         return Err("pgid");
     }
-    if spawn.exe.as_ref().is_none_or(|e| e.as_os_str().is_empty()) {
+    if exe.is_none_or(|e| e.as_os_str().is_empty()) {
         return Err("exe");
     }
-    if spawn.start_time.is_none() {
+    if start_time.is_none() {
         return Err("start_time");
     }
     Ok(())

@@ -26,7 +26,7 @@ use cos::proc;
 use cos_desktop::Start;
 use cos_desktop::servers::{
     ExitNotice, Ownership, Refusal, Running, SpawnResult, StoreError, Supervisor,
-    binary_admissible, real_connect, real_spawn,
+    binary_admissible, real_connect, real_spawn, spawn_result_admissible,
 };
 use serde_json::{Value, json};
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -91,6 +91,10 @@ const TESTS: &[(&str, fn())] = &[
     (
         "leader_target_signals_the_leader_alone",
         leader_target_signals_the_leader_alone,
+    ),
+    (
+        "spawn_result_admissible_names_the_field",
+        spawn_result_admissible_names_the_field,
     ),
     (
         "server_log_truncated_before_spawn",
@@ -1226,6 +1230,44 @@ fn binary_admissible_refuses_before_spawn() {
     );
     assert_eq!(binary_admissible(&server, true), Ok(()));
     assert_eq!(spawns.load(Ordering::SeqCst), 0, "nothing spawned");
+}
+
+fn spawn_result_admissible_names_the_field() {
+    let exe = Path::new("/usr/local/bin/control-room");
+    let started = Some((1_700_000_000, 0));
+
+    assert_eq!(
+        spawn_result_admissible(0, Some(0), started, Some(exe)),
+        Err("pid")
+    );
+    assert_eq!(
+        spawn_result_admissible(-1, Some(-1), started, Some(exe)),
+        Err("pid")
+    );
+    assert_eq!(
+        spawn_result_admissible(4242, Some(4241), started, Some(exe)),
+        Err("pgid")
+    );
+    assert_eq!(
+        spawn_result_admissible(4242, None, started, Some(exe)),
+        Err("pgid")
+    );
+    assert_eq!(
+        spawn_result_admissible(4242, Some(4242), started, None),
+        Err("exe")
+    );
+    assert_eq!(
+        spawn_result_admissible(4242, Some(4242), started, Some(Path::new(""))),
+        Err("exe")
+    );
+    assert_eq!(
+        spawn_result_admissible(4242, Some(4242), None, Some(exe)),
+        Err("start_time")
+    );
+    assert_eq!(
+        spawn_result_admissible(4242, Some(4242), started, Some(exe)),
+        Ok(())
+    );
 }
 
 fn held_port_lock_refuses() {
