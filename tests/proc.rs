@@ -1,5 +1,4 @@
 use std::io::{BufRead, BufReader};
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -52,11 +51,20 @@ fn gone_within(pid: libc::pid_t, limit: Duration) -> bool {
     true
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn exe_is_the_canonical_binary_path() {
     let child = sleeper();
-    let want = Path::new("/bin/sleep").canonicalize().unwrap();
+    let want = std::path::Path::new("/bin/sleep").canonicalize().unwrap();
     assert_eq!(proc::exe(child.pid()), Some(want));
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn exe_is_the_command_name() {
+    let child = sleeper();
+    let exe = proc::exe(child.pid()).unwrap();
+    assert_eq!(exe.file_name().unwrap(), "sleep");
 }
 
 #[cfg(target_os = "macos")]
