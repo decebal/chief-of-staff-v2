@@ -92,6 +92,10 @@ const TESTS: &[(&str, fn())] = &[
         "leader_target_signals_the_leader_alone",
         leader_target_signals_the_leader_alone,
     ),
+    (
+        "server_log_truncated_before_spawn",
+        server_log_truncated_before_spawn,
+    ),
 ];
 
 fn main() {
@@ -1600,4 +1604,55 @@ fn leader_target_signals_the_leader_alone() {
         take_lock(&root, addr.port()).is_some(),
         "the port lock is still held"
     );
+}
+
+fn server_log_truncated_before_spawn() {
+    const MIB: usize = 1024 * 1024;
+    let root = scratch("server-log");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let want = root
+        .join("logs")
+        .join("servers")
+        .join(format!("{}.log", addr.port()));
+    let mut old = vec![b'x'; 4096];
+    old.extend(std::iter::repeat_n(b'y', MIB - "last line\n".len()));
+    old.extend_from_slice(b"last line\n");
+    std::fs::create_dir_all(want.parent().unwrap()).unwrap();
+    std::fs::write(&want, &old).unwrap();
+
+    let seen = Arc::new(Mutex::new(None::<(PathBuf, Vec<u8>)>));
+    let saw = seen.clone();
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, move |_: &Server, log: &Path| {
+        *saw.lock().unwrap() = Some((log.to_owned(), std::fs::read(log)?));
+        let mut out = OpenOptions::new().create(true).append(true).open(log)?;
+        writeln!(out, "fake: spawning sh")?;
+        let err = out.try_clone()?;
+        let child = Command::new("/bin/sh")
+            .args(["-c", "echo child output; exit 3"])
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            .spawn()?;
+        Ok(child)
+    });
+
+    let r = sup.ensure(Some(&server), &d);
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert!(!n.owned);
+    log_tail_has(&r, "fake: spawning sh");
+
+    let (path, before) = seen.lock().unwrap().take().expect("the spawn never ran");
+    assert_eq!(path, want, "the log path");
+    assert_eq!(before.len(), MIB, "the log before the spawn");
+    assert!(before[..] == old[old.len() - MIB..], "not the last 1 MiB");
+    let after = std::fs::read(&want).unwrap();
+    assert!(after[..MIB] == before[..], "the spawn did not append");
+    let appended = String::from_utf8_lossy(&after[MIB..]);
+    assert!(appended.starts_with("fake: spawning sh\n"), "{appended}");
+    assert!(appended.contains("child output\n"), "{appended}");
 }

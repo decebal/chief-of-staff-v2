@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -27,6 +27,7 @@ const READY_WITHIN: Duration = Duration::from_secs(10);
 const TERM_GRACE: Duration = Duration::from_secs(5);
 const EXITED_WAIT: Duration = Duration::from_secs(5);
 const LOG_TAIL_LINES: usize = 20;
+const LOG_KEEP: u64 = 1024 * 1024;
 
 /// A dashboard `ensure` verified: its URL, and whether this app instance owns the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -572,6 +573,7 @@ impl Inner {
         drop(slots);
 
         let log = self.log_path(server.addr);
+        store_server_log(&log);
         let child = match (self.spawn)(server, &log) {
             Ok(child) => child,
             Err(e) => {
@@ -849,6 +851,30 @@ fn log_tail(log: &Path) -> String {
         tail.push('\n');
     }
     tail
+}
+
+/// `STORE(server_log)`: cuts `log` to its last 1 MiB, creating it if absent. Best effort:
+/// a log that cannot be cut does not stop the spawn.
+fn store_server_log(log: &Path) {
+    let cut = || -> io::Result<()> {
+        let mut f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(log)?;
+        let len = f.metadata()?.len();
+        if len <= LOG_KEEP {
+            return Ok(());
+        }
+        f.seek(SeekFrom::Start(len - LOG_KEEP))?;
+        let mut tail = Vec::with_capacity(LOG_KEEP as usize);
+        (&f).take(LOG_KEEP).read_to_end(&mut tail)?;
+        f.set_len(0)?;
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&tail)
+    };
+    let _ = cut();
 }
 
 /// Appends one `cos:` line to the server log, so the log tail names what failed.
