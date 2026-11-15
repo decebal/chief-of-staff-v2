@@ -4,6 +4,8 @@ vars:
   AGENTS: [tactician]
   LAUNCHD: "{{.HOME}}/Library/LaunchAgents"
   LAUNCHCTL: launchctl
+  # Test seam for the port check in `schedule` only; the cos.dash plist always serves 8790.
+  DASH_PORT: 8790
   COS: cos
   BIN: "{{.HOME}}/.cargo/bin/cos"
   # Apps started from the Dock hand MCP servers a minimal PATH; cos needs
@@ -207,19 +209,28 @@ tasks:
       - '{{.COS}} --business {{.BUSINESS}} business home'
       - mkdir -p "{{.HOME_DIR}}/out/logs"
       - task: unload-retired
-      # Both render before either replaces a live plist: a failed sed (a `|` in a path) leaves the loaded jobs and their files as they were.
-      - for: [brief, dash]
+      # cos.brief renders before it replaces its live plist: a failed sed (a `|` in a path) leaves the loaded job and its file as they were.
+      - for: [brief]
         cmd: >-
           sed -e "s|@HOME@|$HOME|g" -e "s|@BUSINESS@|{{.BUSINESS}}|g" -e "s|@HOME_DIR@|{{.HOME_DIR}}|g"
           -e "s|@REGISTRY@|{{.REGISTRY}}|g"
           launchd/cos.{{.ITEM}}.plist > "{{.LAUNCHD}}/cos.{{.ITEM}}.plist.new"
-      - for: [brief, dash]
+      - for: [brief]
         cmd: 'mv -f "{{.LAUNCHD}}/cos.{{.ITEM}}.plist.new" "{{.LAUNCHD}}/cos.{{.ITEM}}.plist"'
       # A loaded label refuses bootstrap; booting out first is what lets a reschedule move the jobs.
-      - for: [brief, dash]
+      - for: [brief]
         cmd: "{{.LAUNCHCTL}} bootout gui/$(id -u)/cos.{{.ITEM}} 2>/dev/null || true"
-      - for: [brief, dash]
+      - for: [brief]
         cmd: '{{.LAUNCHCTL}} bootstrap gui/$(id -u) "{{.LAUNCHD}}/cos.{{.ITEM}}.plist"'
+      # The redirect creates .new before sed can fail; the installed cos.dash plist is only replaced by the move below.
+      - >-
+        sed -e "s|@HOME@|$HOME|g" -e "s|@BUSINESS@|{{.BUSINESS}}|g" -e "s|@HOME_DIR@|{{.HOME_DIR}}|g"
+        -e "s|@REGISTRY@|{{.REGISTRY}}|g"
+        launchd/cos.dash.plist > "{{.LAUNCHD}}/cos.dash.plist.new"
+        || { rm -f "{{.LAUNCHD}}/cos.dash.plist.new"; exit 1; }
+      - "{{.LAUNCHCTL}} bootout gui/$(id -u)/cos.dash 2>/dev/null || true"
+      - 'mv -f "{{.LAUNCHD}}/cos.dash.plist.new" "{{.LAUNCHD}}/cos.dash.plist"'
+      - '{{.LAUNCHCTL}} bootstrap gui/$(id -u) "{{.LAUNCHD}}/cos.dash.plist"'
 
   unschedule:
     desc: Unload the launchd jobs

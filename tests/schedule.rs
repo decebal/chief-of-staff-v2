@@ -102,6 +102,39 @@ impl Sandbox {
         self.bin.join("launchctl")
     }
 
+    /// The stub also copies both `cos.dash` plists into `snap/` when `cos.dash` is booted out,
+    /// the last call before the move.
+    fn snapshot_dash_at_bootout(&self) -> PathBuf {
+        let snap = self.root.0.join("snap");
+        std::fs::create_dir_all(&snap).unwrap();
+        let (log, dir, s) = (
+            self.stub_log.display(),
+            self.launchd.display(),
+            snap.display(),
+        );
+        std::fs::write(
+            self.stub(),
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncase \"$*\" in bootout*/cos.dash)\n  \
+                 cp '{dir}/cos.dash.plist' '{s}/installed' 2>/dev/null\n  \
+                 cp '{dir}/cos.dash.plist.new' '{s}/new' 2>/dev/null\n;; esac\nexit 0\n"
+            ),
+        )
+        .unwrap();
+        snap
+    }
+
+    /// A `sed` ahead of the real one on PATH that fails only the `cos.dash` render.
+    fn fail_dash_render(&self) {
+        let sed = self.bin.join("sed");
+        std::fs::write(
+            &sed,
+            "#!/bin/sh\ncase \"$*\" in *cos.dash.plist*) echo 'sed: dash render failed' >&2; exit 1 ;; esac\nexec /usr/bin/sed \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&sed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     fn plists(&self) -> BTreeMap<String, Vec<u8>> {
         std::fs::read_dir(&self.launchd)
             .unwrap()
@@ -132,6 +165,7 @@ fn run_task(sb: &Sandbox, task: &str, business: Option<&str>) -> Output {
         cmd.arg(format!("BUSINESS={b}"));
     }
     cmd.arg(format!("LAUNCHCTL={}", sb.stub().display()))
+        .arg(format!("DASH_PORT={}", free_port()))
         .arg(format!("COS={COS}"))
         .env("PATH", path_with(&sb.bin))
         .env("HOME", &sb.home)
@@ -142,6 +176,12 @@ fn run_task(sb: &Sandbox, task: &str, business: Option<&str>) -> Output {
         .env_remove("COS_PROJECTS")
         .env_remove("XDG_CONFIG_HOME");
     cmd.output().expect("run task (go-task) from PATH")
+}
+
+/// A port with no listener, so the run never meets whatever holds 8790 on this machine.
+fn free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
 }
 
 fn path_with(first: &Path) -> String {
@@ -272,6 +312,205 @@ fn failed_render_keeps_live_plists() {
     assert!(
         touched.is_empty(),
         "jobs reloaded after a failed render: {touched:?}"
+    );
+}
+
+#[test]
+fn dash_renders_new_before_replacing_installed() {
+    let sb = Sandbox::new("dash-new");
+    let acme = make_biz(&sb.root.0, "acme");
+    write_registry(&sb.registry, "acme", &[("acme", &acme)]);
+    std::fs::write(sb.launchd.join("cos.dash.plist"), "sentinel dash").unwrap();
+    let snap = sb.snapshot_dash_at_bootout();
+
+    let out = schedule(&sb, Some("acme"));
+    assert_bound_to(&sb, &out, "acme", &acme.home);
+
+    let installed = std::fs::read_to_string(snap.join("installed"))
+        .expect("installed cos.dash.plist present when cos.dash is booted out");
+    assert_eq!(
+        installed, "sentinel dash",
+        "installed cos.dash.plist replaced before the move"
+    );
+    let new = std::fs::read_to_string(snap.join("new"))
+        .expect("cos.dash.plist.new written before cos.dash is booted out");
+    assert!(
+        new.contains("<string>acme</string>"),
+        "cos.dash.plist.new not rendered: {new}"
+    );
+    assert!(
+        !sb.launchd.join("cos.dash.plist.new").exists(),
+        "cos.dash.plist.new left after the move"
+    );
+}
+
+#[test]
+fn failed_dash_render_removes_new_only() {
+    let sb = Sandbox::new("dash-render-fail");
+    let acme = make_biz(&sb.root.0, "acme");
+    write_registry(&sb.registry, "acme", &[("acme", &acme)]);
+    std::fs::write(sb.launchd.join("cos.dash.plist"), "sentinel dash").unwrap();
+    sb.fail_dash_render();
+
+    let out = schedule(&sb, Some("acme"));
+
+    assert!(
+        !out.status.success(),
+        "a failed cos.dash render must fail the task"
+    );
+    let plists = sb.plists();
+    assert!(
+        !plists.contains_key("cos.dash.plist.new"),
+        "cos.dash.plist.new left after a failed render: {:?}",
+        plists.keys()
+    );
+    assert_eq!(
+        plists.get("cos.dash.plist").map(Vec::as_slice),
+        Some(&b"sentinel dash"[..]),
+        "installed cos.dash.plist changed by a failed render"
+    );
+    let brief = String::from_utf8_lossy(
+        plists
+            .get("cos.brief.plist")
+            .expect("cos.brief.plist installed"),
+    )
+    .into_owned();
+    assert!(
+        brief.contains("<string>acme</string>"),
+        "cos.brief.plist not rendered: {brief}"
+    );
+    let log = sb.launchctl_log();
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("bootstrap ") && l.contains("cos.brief.plist")),
+        "cos.brief not loaded: {log:?}"
+    );
+    assert!(
+        !log.contains("cos.dash"),
+        "cos.dash touched after a failed render: {log:?}"
+    );
+}
+
+/// The `schedule` task's steps: a line at the step indent starts one, deeper lines continue it,
+/// comment lines are dropped.
+fn schedule_steps() -> Vec<String> {
+    let text = std::fs::read_to_string(Path::new(REPO).join("Taskfile.yml")).unwrap();
+    let start = text.find("\n  schedule:\n").expect("schedule task");
+    let body = &text[start + 1..];
+    let end = body[1..]
+        .find("\n  unschedule:\n")
+        .expect("unschedule task")
+        + 1;
+    let cmds = body[..end]
+        .split("\n    cmds:\n")
+        .nth(1)
+        .expect("schedule cmds");
+    let mut steps: Vec<String> = Vec::new();
+    for line in cmds.lines() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if line.starts_with("      - ") {
+            steps.push(line.trim().to_string());
+        } else if let Some(last) = steps.last_mut() {
+            last.push('\n');
+            last.push_str(line.trim());
+        }
+    }
+    steps
+}
+
+/// Every `cos.`-prefixed name in `step`, up to the first character outside `[a-z.]`.
+fn cos_names(step: &str) -> Vec<&str> {
+    step.match_indices("cos.")
+        .map(|(i, _)| {
+            let rest = &step[i..];
+            let n = rest
+                .find(|c: char| !(c.is_ascii_lowercase() || c == '.'))
+                .unwrap_or(rest.len());
+            rest[..n].trim_end_matches('.')
+        })
+        .collect()
+}
+
+#[test]
+fn taskfile_dash_steps_name_only_dash_targets() {
+    let steps = schedule_steps();
+    for step in &steps {
+        if let Some(line) = step.lines().find(|l| l.starts_with("- for:")) {
+            assert_eq!(
+                line, "- for: [brief]",
+                "a loop still covers cos.dash: {step}"
+            );
+        }
+    }
+    let dash: Vec<&String> = steps.iter().filter(|s| s.contains("cos.dash")).collect();
+    assert!(!dash.is_empty(), "no cos.dash steps in schedule");
+    for step in &dash {
+        assert!(
+            !step.contains("{{.ITEM}}"),
+            "cos.dash step in a loop: {step}"
+        );
+        for name in cos_names(step) {
+            assert!(
+                ["cos.dash", "cos.dash.plist", "cos.dash.plist.new"].contains(&name),
+                "cos.dash step names {name}: {step}"
+            );
+        }
+        for (i, _) in step.match_indices("{{.LAUNCHD}}/") {
+            let path = &step[i..];
+            let path = &path[..path.find(['"', ' ', '\n']).unwrap_or(path.len())];
+            assert!(
+                [
+                    "{{.LAUNCHD}}/cos.dash.plist",
+                    "{{.LAUNCHD}}/cos.dash.plist.new"
+                ]
+                .contains(&path),
+                "cos.dash step names path {path}: {step}"
+            );
+        }
+        for (i, _) in step.match_indices("gui/$(id -u)/") {
+            let label = &step[i + "gui/$(id -u)/".len()..];
+            assert!(
+                label.starts_with("cos.dash ") || label == "cos.dash",
+                "cos.dash step names another label: {step}"
+            );
+        }
+    }
+
+    let render: Vec<&&String> = dash
+        .iter()
+        .filter(|s| s.contains("launchd/cos.dash.plist"))
+        .collect();
+    assert_eq!(render.len(), 1, "one cos.dash render step: {render:?}");
+    let render = render[0];
+    let redirects: Vec<&str> = render
+        .match_indices("> ")
+        .map(|(i, _)| {
+            let t = &render[i + 2..];
+            &t[..t.find([' ', '\n']).unwrap_or(t.len())]
+        })
+        .collect();
+    assert_eq!(
+        redirects,
+        ["\"{{.LAUNCHD}}/cos.dash.plist.new\""],
+        "the render writes only cos.dash.plist.new: {render}"
+    );
+    let fallback = render
+        .split_once("||")
+        .map(|(_, f)| f)
+        .unwrap_or_else(|| panic!("render has no failure branch: {render}"));
+    assert!(
+        fallback.contains("rm -f \"{{.LAUNCHD}}/cos.dash.plist.new\""),
+        "a failed render does not remove .new: {render}"
+    );
+    assert!(
+        !fallback.contains("\"{{.LAUNCHD}}/cos.dash.plist\""),
+        "a failed render removes the installed plist: {render}"
+    );
+    assert!(
+        fallback.contains("exit 1"),
+        "a failed render does not fail the task: {render}"
     );
 }
 
