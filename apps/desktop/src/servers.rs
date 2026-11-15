@@ -312,6 +312,13 @@ impl Supervisor {
     pub fn remove_pidfile(&self, file: &Path, ownership: &Ownership) -> Result<(), StoreError> {
         self.0.remove_pidfile(file, ownership)
     }
+
+    /// `STORE(port_lock)` open: `flock(LOCK_EX | LOCK_NB)` on `<data dir>/servers/<port>.lock`,
+    /// admitted by `VERIFY(pidfile_path)`. `None` while another open file description
+    /// holds it; dropping the file releases it.
+    pub fn open_port_lock(&self, file: &Path) -> Result<Option<File>, StoreError> {
+        self.0.open_port_lock(file)
+    }
 }
 
 /// What `ensure` does with the slot it found at its key.
@@ -406,7 +413,7 @@ impl Inner {
     }
 
     fn remove_pidfile(&self, file: &Path, ownership: &Ownership) -> Result<(), StoreError> {
-        if !self.pidfile_path(file) {
+        if !self.pidfile_path(file, "json") {
             return Err(StoreError::Refused {
                 rule: "pidfile_path",
             });
@@ -428,16 +435,40 @@ impl Inner {
         }
     }
 
-    /// `VERIFY(pidfile_path)`: `file` is `<data dir>/servers/<port>.json` with `<port>`
-    /// the canonical decimal form of 1 to 65535, so the `.lock` beside it never matches.
-    fn pidfile_path(&self, file: &Path) -> bool {
+    /// Opened through `std::fs`, so close-on-exec: a spawned server never inherits the
+    /// lock, which would otherwise outlive a crash in a leftover. Never unlinked: a second
+    /// instance would then lock a new inode at the same path.
+    fn open_port_lock(&self, file: &Path) -> Result<Option<File>, StoreError> {
+        if !self.pidfile_path(file, "lock") {
+            return Err(StoreError::Refused {
+                rule: "pidfile_path",
+            });
+        }
+        let io = |what: &str, e: io::Error| {
+            StoreError::Io(anyhow::Error::new(e).context(format!("{what} {}", file.display())))
+        };
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(file)
+            .map_err(|e| io("open", e))?;
+        let taken = try_flock(&lock).map_err(|e| io("lock", e))?;
+        Ok(taken.then_some(lock))
+    }
+
+    /// `VERIFY(pidfile_path)`: `file` is `<data dir>/servers/<port>.<ext>` with `<port>`
+    /// the canonical decimal form of 1 to 65535.
+    fn pidfile_path(&self, file: &Path, ext: &str) -> bool {
         if file.parent() != Some(self.data.as_path()) {
             return false;
         }
         let Some(stem) = file
             .file_name()
             .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_suffix(".json"))
+            .and_then(|n| n.strip_suffix(ext))
+            .and_then(|n| n.strip_suffix('.'))
         else {
             return false;
         };
@@ -538,15 +569,7 @@ impl Inner {
         }
         let path = self.data.join(format!("{}.lock", server.addr.port()));
         let mut slots = self.lock();
-        // Opened through `std::fs`, so close-on-exec: a spawned server never inherits it.
-        let taken = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .and_then(|file| Ok(try_flock(&file)?.then_some(file)));
-        let lock = match taken {
+        let lock = match self.open_port_lock(&path) {
             Ok(Some(lock)) => lock,
             Ok(None) => {
                 drop(slots);
@@ -556,9 +579,11 @@ impl Inner {
             }
             Err(e) => {
                 drop(slots);
-                return refuse(Refusal::Internal {
-                    message: format!("lock {}: {e}", path.display()),
-                });
+                let message = match e {
+                    StoreError::Refused { rule } => format!("lock {}: {rule}", path.display()),
+                    StoreError::Io(e) => format!("{e:#}"),
+                };
+                return refuse(Refusal::Internal { message });
             }
         };
         match slots.by_key.get_mut(&key) {
