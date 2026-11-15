@@ -80,7 +80,7 @@ fn briefs(home: &Path) -> PathBuf {
     home.join("out/briefs")
 }
 
-fn latest_brief(home: &Path) -> Option<Brief> {
+pub fn latest_brief(home: &Path) -> Option<Brief> {
     let dir = briefs(home);
     let file = std::fs::read_dir(&dir)
         .ok()?

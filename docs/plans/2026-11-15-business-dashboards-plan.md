@@ -483,10 +483,10 @@ As the sidebar, I want each `businesses` row to carry `unread` and `scheduled` f
 Covers: design item 9 (`businesses` rows and the synchronous row builder), 25 cases: `businesses` rows for three businesses with the unread dot set; `businesses` does not spawn `ps`. ISA rows: none.
 Blocked by: US-007, US-014. Priority: p1.
 
-- [ ] Test (contract): `businesses` rows for three businesses carry `unread` and `scheduled`, with the dot set for a business with a brief and no stored pair (file: `apps/desktop/tests/ipc.rs`), written first and failing.
-- [ ] Test: `businesses` spawns no `ps`, through the child-process mechanism of item 20, macOS only (file: `apps/desktop/tests/ipc.rs`), written first and failing.
-- [ ] The plist path comes from `Start.user_home`; `None` gives no clock.
-- [ ] All tests green: `cargo test -p cos-desktop --test ipc`
+- [x] Test (contract): `businesses` rows for three businesses carry `unread` and `scheduled`, with the dot set for a business with a brief and no stored pair (file: `apps/desktop/tests/ipc.rs`), written first and failing.
+- [x] Test: `businesses` spawns no `ps`, through the child-process mechanism of item 20, macOS only (file: `apps/desktop/tests/ipc.rs`), written first and failing.
+- [x] The plist path comes from `Start.user_home`; `None` gives no clock.
+- [x] All tests green: `cargo test -p cos-desktop --test ipc`
 
 Mark each item [x] as you complete it. Only close when all are checked.
 
