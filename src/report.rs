@@ -49,6 +49,9 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
     });
 
     let run = brief.as_ref().and_then(|b| brief_run(home, &b.day));
+    let brief_ref = brief
+        .as_ref()
+        .map(|b| json!({ "file": format!("{}.json", b.day), "mtime": b.mtime_ms }));
     Ok(json!({
         "generated_at": now.strftime("%Y-%m-%d %H:%M %Z").to_string(),
         "today": today,
@@ -61,6 +64,7 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
             .map(|s| s.value),
         "live": live,
         "name": profile_name(home, ws),
+        "briefRef": brief_ref,
         "brief": brief.map(|s| json!({ "day": s.day, "report": s.value })),
         "facts": store::latest::<Facts>(home, Kind::Facts)?.map(|s| s.value),
         "history": history::load(home),

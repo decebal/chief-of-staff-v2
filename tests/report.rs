@@ -32,6 +32,62 @@ fn saved_weekly_reviews_on_disk_are_ignored() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The data object a rendered page embeds.
+fn embedded(html: &str) -> serde_json::Value {
+    let at = html.find("const DATA = ").unwrap() + "const DATA = ".len();
+    serde_json::Deserializer::from_str(&html[at..])
+        .into_iter::<serde_json::Value>()
+        .next()
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn archived_render_names_its_brief_but_posts_none() {
+    let home = std::env::temp_dir().join(format!("cos-brief-ref-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("out/briefs")).unwrap();
+    let file = home.join("out/briefs/2030-04-09.json");
+    std::fs::write(
+        &file,
+        json!({ "headline": "Rendered.", "needs_you": [] }).to_string(),
+    )
+    .unwrap();
+    let mtime = cos::signals::mtime_ms(&std::fs::metadata(&file).unwrap());
+
+    let archived = cos::report::build(&home, &home).unwrap();
+    let html = std::fs::read_to_string(archived).unwrap();
+    let data = embedded(&html);
+    assert_eq!(
+        data["briefRef"],
+        json!({ "file": "2030-04-09.json", "mtime": mtime })
+    );
+    assert!(
+        data.get("hostBrief").is_none(),
+        "archived render has hostBrief"
+    );
+
+    let posts: Vec<&str> = html
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains("\"cos-report-ready\""))
+        .collect();
+    assert_eq!(
+        posts,
+        [
+            "tellHost(hostRef ? { type: \"cos-report-ready\", brief: hostRef.file, mtime: hostRef.mtime } : { type: \"cos-report-ready\" });"
+        ],
+        "the ready message must carry brief only through hostRef"
+    );
+    assert_eq!(
+        html.matches("const hostRef = DATA.hostBrief === true && DATA.briefRef;")
+            .count(),
+        1,
+        "hostRef must be gated on hostBrief"
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[test]
 fn toon_rows_parse_even_with_a_pipe_in_the_title() {
     let out = "[id|type|title|pri|status|claimed|blocked_by|parent|archived]\n\

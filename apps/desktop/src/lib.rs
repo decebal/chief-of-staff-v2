@@ -484,7 +484,10 @@ pub fn report_response<R: Runtime>(
     let s = app.state::<App>().get();
     let body = match path {
         "/" | "" => cos::report::data(&s.home, &s.workspace, false)
-            .and_then(|d| cos::report::render(&d))
+            .and_then(|mut d| {
+                d["hostBrief"] = true.into();
+                cos::report::render(&d)
+            })
             .map(String::into_bytes)
             .map_err(|e| format!("{e:#}")),
         "/flows" => Ok(cos::flows::page_cached(&s.workspace, &s.projects).into_bytes()),
