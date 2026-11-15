@@ -327,7 +327,7 @@ Blocked by: US-042. Priority: p1.
 - [ ] Test: with the `emit` closure delaying 200 ms on `owned: false`, a new `ensure` during the epilogue waits and returns the same refusal, no second lock or spawn, no `dashboard-exited` (file: `apps/desktop/tests/servers.rs`), written first and failing.
 - [ ] Test: a child that exits at once leaves no pidfile, returns `failed to start` with the log tail, and frees the lock after the reap (file: `apps/desktop/tests/servers.rs`), written first and failing.
 - [ ] Test: a child whose pgid differs from its pid: the epilogue signals the leader alone, the reaper skips the group kill, the lock is released after the reap, no pidfile, `failed to start` (file: `apps/desktop/tests/servers.rs`), written first and failing.
-- [ ] Test: with the injected spawn function returning a spawn result with `pid <= 0`, with an empty `exe`, and with no `start_time`, each `ensure` returns `failed to start`, logs the failing field, writes no pidfile and releases the lock; for `pid <= 0` nothing is signalled (file: `apps/desktop/tests/servers.rs`), written first and failing.
+- [ ] Test: `spawn_result_admissible` refuses `pid <= 0` with `pid`, a pgid other than the pid with `pgid`, an absent or empty `exe` with `exe`, an absent start time with `start_time`, and admits a pid equal to its pgid with a non-empty `exe` and a start time (design item 8; file: `apps/desktop/tests/servers.rs`), written first and failing. `ensure` calls it on `SpawnResult::read`, which stays the only `SpawnResult` constructor; the pgid case above covers the `ensure` path, the log line and the release.
 - [ ] All tests green: `cargo test -p cos-desktop --test servers`
 
 Mark each item [x] as you complete it. Only close when all are checked.
