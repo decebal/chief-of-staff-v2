@@ -80,17 +80,23 @@ impl Sandbox {
         }
         // Like launchctl, `print` exits non-zero for a job that is not loaded; `cos.dash` is
         // loaded while `dash.pid` exists, and booting it out unloads it without touching the pid.
+        // A `cos.dash` bootstrap while the pid in `old.pid` is alive logs `old pid alive`.
         let stub = bin.join("launchctl");
         let state = root.0.join("dash.pid");
+        let old = root.0.join("old.pid");
         std::fs::write(
             &stub,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncase \"$*\" in\n  \
                  'print gui/'*/cos.dash)\n    [ -f '{st}' ] || exit 113\n    \
                  printf 'gui/%s/cos.dash = {{\\n\\tstate = running\\n\\tpid = %s\\n}}\\n' \"$(id -u)\" \"$(cat '{st}')\" ;;\n  \
-                 'bootout gui/'*/cos.dash) rm -f '{st}' ;;\nesac\nexit 0\n",
+                 'bootout gui/'*/cos.dash) rm -f '{st}' ;;\n  \
+                 'bootstrap gui/'*/cos.dash.plist*)\n    \
+                 [ -f '{old}' ] && ps -p \"$(cat '{old}')\" >/dev/null 2>&1 && echo 'old pid alive' >> '{log}' ;;\n\
+                 esac\nexit 0\n",
                 log = stub_log.display(),
                 st = state.display(),
+                old = old.display(),
             ),
         )
         .unwrap();
@@ -112,6 +118,31 @@ impl Sandbox {
     /// Marks `cos.dash` loaded in the fake launchctl, which then prints `pid = <pid>` for it.
     fn load_dash(&self, pid: u32) {
         std::fs::write(self.root.0.join("dash.pid"), pid.to_string()).unwrap();
+        std::fs::write(self.root.0.join("old.pid"), pid.to_string()).unwrap();
+    }
+
+    /// An `lsof` ahead of the real one on PATH that logs `lsof <args>` to the launchctl log, then
+    /// prints a header and `lines` and exits 0, or, given no lines, prints nothing and exits 1.
+    fn fake_lsof(&self, lines: &[&str]) {
+        let lsof = self.bin.join("lsof");
+        let mut text = format!(
+            "#!/bin/sh\nprintf 'lsof %s\\n' \"$*\" >> '{}'\n",
+            self.stub_log.display()
+        );
+        if lines.is_empty() {
+            text.push_str("exit 1\n");
+        } else {
+            text.push_str(
+                "cat <<'EOF'\nCOMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n",
+            );
+            for l in lines {
+                text.push_str(l);
+                text.push('\n');
+            }
+            text.push_str("EOF\n");
+        }
+        std::fs::write(&lsof, text).unwrap();
+        std::fs::set_permissions(&lsof, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     /// The stub also copies both `cos.dash` plists into `snap/` when `cos.dash` is booted out,
@@ -168,6 +199,10 @@ fn schedule(sb: &Sandbox, business: Option<&str>) -> Output {
 }
 
 fn run_task(sb: &Sandbox, task: &str, business: Option<&str>) -> Output {
+    run_task_on(sb, task, business, free_port())
+}
+
+fn run_task_on(sb: &Sandbox, task: &str, business: Option<&str>, dash_port: u16) -> Output {
     let mut cmd = Command::new("task");
     cmd.current_dir(&sb.root.0)
         .arg("--taskfile")
@@ -177,7 +212,7 @@ fn run_task(sb: &Sandbox, task: &str, business: Option<&str>) -> Output {
         cmd.arg(format!("BUSINESS={b}"));
     }
     cmd.arg(format!("LAUNCHCTL={}", sb.stub().display()))
-        .arg(format!("DASH_PORT={}", free_port()))
+        .arg(format!("DASH_PORT={dash_port}"))
         .arg(format!("COS={COS}"))
         .env("PATH", path_with(&sb.bin))
         .env("HOME", &sb.home)
@@ -495,6 +530,128 @@ fn unloaded_dash_skips_the_wait() {
     assert!(
         matches!((print, bootout), (Some(a), Some(b)) if a < b),
         "old cos.dash pid not read before bootout: {log:?}"
+    );
+}
+
+/// An old `cos.dash` that exits about 1 s after its bootout, reaped by a thread the moment it does,
+/// so `ps -p` stops finding it; drop joins that thread.
+struct Exiting(Option<std::thread::JoinHandle<()>>);
+
+impl Exiting {
+    fn spawn() -> (Self, u32) {
+        let mut child = Command::new("sleep").arg("1").spawn().unwrap();
+        let pid = child.id();
+        let reaper = std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        (Exiting(Some(reaper)), pid)
+    }
+}
+
+impl Drop for Exiting {
+    fn drop(&mut self) {
+        if let Some(h) = self.0.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+#[test]
+fn free_port_installs_and_bootstraps_dash_after_old_pid_exits() {
+    let sb = Sandbox::new("dash-free");
+    let acme = make_biz(&sb.root.0, "acme");
+    write_registry(&sb.registry, "acme", &[("acme", &acme)]);
+    std::fs::write(sb.launchd.join("cos.dash.plist"), "sentinel dash").unwrap();
+    let (_old, pid) = Exiting::spawn();
+    sb.load_dash(pid);
+    sb.fake_lsof(&[]);
+    let port = free_port();
+
+    let out = run_task_on(&sb, "schedule", Some("acme"), port);
+
+    assert_bound_to(&sb, &out, "acme", &acme.home);
+    let log = sb.launchctl_log();
+    let at = |p: &dyn Fn(&str) -> bool| log.lines().position(p);
+    let bootout = at(&|l| l.starts_with("bootout ") && l.ends_with("/cos.dash"));
+    let check = at(&|l| l == format!("lsof -nP -iTCP:{port} -sTCP:LISTEN"));
+    let bootstrap = at(&|l| l.starts_with("bootstrap ") && l.contains("cos.dash.plist"));
+    assert!(
+        matches!((bootout, check, bootstrap), (Some(a), Some(b), Some(c)) if a < b && b < c),
+        "cos.dash not bootstrapped after bootout and a port check: {log:?}"
+    );
+    assert!(
+        !log.contains("old pid alive"),
+        "cos.dash bootstrapped before its old pid exited: {log:?}"
+    );
+    assert!(
+        !sb.launchd.join("cos.dash.plist.new").exists(),
+        "cos.dash.plist.new left after the move"
+    );
+}
+
+/// The installed `cos.dash.plist` never holds the rendered acme plist: it was not moved into place.
+fn assert_dash_not_installed(sb: &Sandbox, out: &Output) {
+    let installed = std::fs::read_to_string(sb.launchd.join("cos.dash.plist")).unwrap_or_default();
+    assert!(
+        !installed.contains("<string>acme</string>"),
+        "cos.dash.plist moved into place while the port is held: {} {installed}",
+        stderr(out)
+    );
+    let log = sb.launchctl_log();
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("bootstrap ") && l.contains("cos.brief.plist")),
+        "cos.brief not loaded: {log:?}"
+    );
+    assert!(
+        !log.lines()
+            .any(|l| l.starts_with("bootstrap ") && l.contains("cos.dash.plist")),
+        "cos.dash bootstrapped while the port is held: {log:?}"
+    );
+}
+
+#[test]
+fn held_port_neither_moves_nor_bootstraps_dash() {
+    let sb = Sandbox::new("dash-held");
+    let acme = make_biz(&sb.root.0, "acme");
+    write_registry(&sb.registry, "acme", &[("acme", &acme)]);
+    std::fs::write(sb.launchd.join("cos.dash.plist"), "sentinel dash").unwrap();
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = holder.local_addr().unwrap().port();
+
+    let out = run_task_on(&sb, "schedule", Some("acme"), port);
+
+    assert!(out.status.success(), "task schedule: {}", stderr(&out));
+    assert_dash_not_installed(&sb, &out);
+    drop(holder);
+}
+
+#[test]
+fn several_listen_lines_give_one_held_with_first_non_old_pid() {
+    let sb = Sandbox::new("dash-held-lines");
+    let acme = make_biz(&sb.root.0, "acme");
+    write_registry(&sb.registry, "acme", &[("acme", &acme)]);
+    let mut gone = Command::new("true").spawn().unwrap();
+    let old = gone.id();
+    gone.wait().unwrap();
+    sb.load_dash(old);
+    sb.fake_lsof(&[
+        &format!("cos     {old} me    9u  IPv4 0x1      0t0  TCP 127.0.0.1:8790 (LISTEN)"),
+        "longhand  4242 me   10u  IPv4 0x2      0t0  TCP 127.0.0.1:8790 (LISTEN)",
+        "longhand  4242 me   11u  IPv6 0x3      0t0  TCP [::1]:8790 (LISTEN)",
+        "other     5151 me   12u  IPv4 0x4      0t0  TCP 127.0.0.1:8790 (LISTEN)",
+    ]);
+
+    let out = schedule(&sb, Some("acme"));
+
+    assert!(out.status.success(), "task schedule: {}", stderr(&out));
+    assert_dash_not_installed(&sb, &out);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let held: Vec<&str> = text.lines().filter(|l| l.contains("held by")).collect();
+    assert_eq!(held.len(), 1, "one Held report: {text}");
+    assert!(
+        held[0].contains("longhand") && held[0].contains("4242"),
+        "Held names the first non-old listener: {text}"
     );
 }
 
