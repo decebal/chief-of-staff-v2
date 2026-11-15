@@ -815,6 +815,56 @@ pub fn report_response<R: Runtime>(
         .expect("static response parts")
 }
 
+/// The whole `cosreport` scheme: the Origin rule, then the docs room or the report.
+pub fn cosreport_response<R: Runtime>(
+    app: &AppHandle<R>,
+    req: &tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let path = req.uri().path();
+    if !origin_allowed(req) {
+        let origin = req
+            .headers()
+            .get("origin")
+            .map(|o| o.to_str().unwrap_or("?"));
+        eprintln!(
+            "cosreport: refused {} {path} from origin {origin:?}",
+            req.method()
+        );
+        return tauri::http::Response::builder()
+            .status(403)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .header("Cache-Control", "no-store")
+            .body(b"origin not allowed: nothing written".to_vec())
+            .expect("static response parts");
+    }
+    if path.starts_with("/docs") {
+        docs_response(app, req)
+    } else {
+        report_response(app, path)
+    }
+}
+
+/// The app's own origins. A dashboard frame is `http://127.0.0.1:*`, and a frame
+/// nested in one sends `null`, so neither may write through `x-cos-business`.
+const APP_ORIGINS: [&str; 4] = [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "cosreport://localhost",
+    "http://cosreport.localhost",
+];
+
+/// GET admits no Origin, `null` (the opaque report frames) or an app origin;
+/// every other method needs an app origin.
+fn origin_allowed(req: &tauri::http::Request<Vec<u8>>) -> bool {
+    let origin = req.headers().get("origin").map(|o| o.to_str().ok());
+    let app = matches!(origin, Some(Some(o)) if APP_ORIGINS.contains(&o));
+    if *req.method() == tauri::http::Method::GET {
+        app || matches!(origin, None | Some(Some("null")))
+    } else {
+        app
+    }
+}
+
 /// `cosreport://localhost/docs…`: the documentation room, through the same
 /// handler `cos dash` uses, so reading and saving behave alike in both.
 pub fn docs_response<R: Runtime>(
@@ -1391,15 +1441,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
     builder
         .register_asynchronous_uri_scheme_protocol("cosreport", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
-                let path = req.uri().path().to_owned();
-                let res = if path.starts_with("/docs") {
-                    docs_response(&app, &req)
-                } else {
-                    report_response(&app, &path)
-                };
-                responder.respond(res)
-            });
+            std::thread::spawn(move || responder.respond(cosreport_response(&app, &req)));
         })
         .setup(move |app| {
             let start = match start {

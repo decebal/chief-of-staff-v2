@@ -1330,15 +1330,123 @@ fn post_organize(
     business: Option<&str>,
     body: &Value,
 ) -> tauri::http::Response<Vec<u8>> {
+    organize_request(app, "POST", business, Some("tauri://localhost"), body)
+}
+
+fn organize_request(
+    app: &tauri::AppHandle<MockRuntime>,
+    method: &str,
+    business: Option<&str>,
+    origin: Option<&str>,
+    body: &Value,
+) -> tauri::http::Response<Vec<u8>> {
     let mut b = tauri::http::Request::builder()
-        .method("POST")
+        .method(method)
         .uri("cosreport://localhost/docs/organize")
         .header("x-cos", "docs");
     if let Some(name) = business {
         b = b.header("x-cos-business", name);
     }
+    if let Some(o) = origin {
+        b = b.header("origin", o);
+    }
     let req = b.body(body.to_string().into_bytes()).unwrap();
-    cos_desktop::docs_response(app, &req)
+    cos_desktop::cosreport_response(app, &req)
+}
+
+fn get_root(
+    app: &tauri::AppHandle<MockRuntime>,
+    origin: Option<&str>,
+) -> tauri::http::Response<Vec<u8>> {
+    let mut b = tauri::http::Request::builder()
+        .method("GET")
+        .uri("cosreport://localhost/");
+    if let Some(o) = origin {
+        b = b.header("origin", o);
+    }
+    cos_desktop::cosreport_response(app, &b.body(Vec::new()).unwrap())
+}
+
+#[test]
+fn cosreport_post_needs_an_app_origin() {
+    let cos = cos_bin();
+    let root = scratch("origin-post");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &a, true);
+    let (app, _w) = open(start);
+    let org = json!({ "topics": {}, "links": [], "marks": {} });
+    let before = tree(&a.home);
+
+    for origin in [Some("http://127.0.0.1:4777"), Some("null"), None] {
+        let r = organize_request(app.handle(), "POST", Some("default"), origin, &org);
+        let body = String::from_utf8_lossy(r.body()).into_owned();
+        assert_eq!(r.status(), 403, "{origin:?}: {body}");
+        assert!(
+            !body.contains("missing or stale X-Cos-Business header"),
+            "{origin:?}: {body}"
+        );
+    }
+    assert_eq!(tree(&a.home), before, "a refused POST wrote");
+
+    for origin in [
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "cosreport://localhost",
+        "http://cosreport.localhost",
+    ] {
+        let r = organize_request(app.handle(), "POST", Some("default"), Some(origin), &org);
+        assert_eq!(
+            r.status(),
+            200,
+            "{origin}: {}",
+            String::from_utf8_lossy(r.body())
+        );
+    }
+}
+
+#[test]
+fn cosreport_get_and_other_methods_follow_the_origin_rule() {
+    let cos = cos_bin();
+    let root = scratch("origin-get");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &a, true);
+    let (app, _w) = open(start);
+    let org = json!({ "topics": {}, "links": [], "marks": {} });
+
+    let framed = get_root(app.handle(), Some("http://127.0.0.1:4777"));
+    assert_eq!(
+        framed.status(),
+        403,
+        "{}",
+        String::from_utf8_lossy(framed.body())
+    );
+    for origin in [Some("null"), None, Some("tauri://localhost")] {
+        let r = get_root(app.handle(), origin);
+        assert_eq!(
+            r.status(),
+            200,
+            "{origin:?}: {}",
+            String::from_utf8_lossy(r.body())
+        );
+    }
+
+    let before = tree(&a.home);
+    for method in ["OPTIONS", "PUT", "DELETE"] {
+        for origin in [Some("http://127.0.0.1:4777"), None] {
+            let r = organize_request(app.handle(), method, Some("default"), origin, &org);
+            let body = String::from_utf8_lossy(r.body()).into_owned();
+            assert_eq!(r.status(), 403, "{method} {origin:?}: {body}");
+            assert!(
+                !body.contains("missing or stale X-Cos-Business header"),
+                "{method} {origin:?}: {body}"
+            );
+        }
+    }
+    assert_eq!(tree(&a.home), before, "a refused request wrote");
 }
 
 #[test]
