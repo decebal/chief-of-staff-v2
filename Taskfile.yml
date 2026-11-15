@@ -228,7 +228,23 @@ tasks:
         -e "s|@REGISTRY@|{{.REGISTRY}}|g"
         launchd/cos.dash.plist > "{{.LAUNCHD}}/cos.dash.plist.new"
         || { rm -f "{{.LAUNCHD}}/cos.dash.plist.new"; exit 1; }
-      - "{{.LAUNCHCTL}} bootout gui/$(id -u)/cos.dash 2>/dev/null || true"
+      # The old pid is read before the bootout, which unloads the job and leaves print nothing to report.
+      # A pid still alive 10 s after the bootout keeps the installed plist; cos.dash stays unloaded until a rerun.
+      - |
+        old=$({{.LAUNCHCTL}} print gui/$(id -u)/cos.dash 2>/dev/null || true)
+        old=$(printf '%s\n' "$old" | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p')
+        {{.LAUNCHCTL}} bootout gui/$(id -u)/cos.dash 2>/dev/null || true
+        i=0
+        # Task's shell has no kill builtin, so `kill -0` cannot test the pid.
+        while [ -n "$old" ] && ps -p "$old" >/dev/null 2>&1; do
+          if [ "$i" -ge 40 ]; then
+            echo "cos.dash: old pid $old still running 10 s after bootout; installed plist kept, cos.dash not reloaded" >&2
+            rm -f "{{.LAUNCHD}}/cos.dash.plist.new"
+            exit 1
+          fi
+          sleep 0.25
+          i=$((i + 1))
+        done
       - 'mv -f "{{.LAUNCHD}}/cos.dash.plist.new" "{{.LAUNCHD}}/cos.dash.plist"'
       - '{{.LAUNCHCTL}} bootstrap gui/$(id -u) "{{.LAUNCHD}}/cos.dash.plist"'
 
