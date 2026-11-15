@@ -2092,3 +2092,243 @@ fn dashboards_changed_skips_the_first_tick_and_carries_no_payload() {
         "no payload-free dashboards-changed"
     );
 }
+
+fn brief_seen(w: &Win, business: &str, file: &str, mtime: i64) -> Result<Value, Value> {
+    call(
+        w,
+        "brief_seen",
+        json!({ "business": business, "file": file, "mtime": mtime }),
+    )
+}
+
+fn unread(w: &Win) -> BTreeMap<String, Value> {
+    row_flags(w)
+        .into_iter()
+        .map(|(name, (unread, _))| (name, unread))
+        .collect()
+}
+
+fn ui_state(start: &Start) -> Value {
+    serde_json::from_slice(&std::fs::read(&start.ui_state_file).unwrap()).unwrap()
+}
+
+fn seen_pair(file: &str, mtime: i64) -> Value {
+    json!({ "file": file, "mtime": mtime })
+}
+
+#[test]
+fn brief_seen_refusals_leave_the_stored_pair() {
+    let cos = cos_bin();
+    let root = scratch("seen-refused");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let b = dirs(&root, "bravo");
+    let mtime = write_brief(&a.home, "2026-11-14");
+    std::fs::write(a.home.join("out/briefs/notes.json"), "{}").unwrap();
+    std::fs::write(a.home.join("out/2026-11-15.json"), "{}").unwrap();
+    write_brief(&b.home, "2026-11-14");
+
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &a, true);
+    register(&start, "bravo", &b, false);
+    let stored =
+        json!({ "lastSeenBrief": { "default": seen_pair("2026-11-13.json", 5) } }).to_string();
+    std::fs::write(&start.ui_state_file, &stored).unwrap();
+    let (_app, w) = open(start.clone());
+
+    let stale = brief_seen(&w, "bravo", "2026-11-14.json", mtime).unwrap_err();
+    assert!(
+        error_text(&stale).contains("nothing written, run or killed"),
+        "{stale}"
+    );
+    for (file, mtime, why) in [
+        ("notes.json", 0, "a non-date filename"),
+        ("2026-11-15.json", 0, "a filename outside out/briefs"),
+        ("../2026-11-15.json", 0, "a path"),
+        ("2026-11-14.json", mtime + 1, "an mtime past the file's"),
+        ("2026-11-14.json", -1, "a negative mtime"),
+    ] {
+        let e = brief_seen(&w, "default", file, mtime).expect_err(why);
+        assert!(error_text(&e).starts_with("brief_seen: "), "{why}: {e}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&start.ui_state_file).unwrap(),
+        stored,
+        "a refusal changed the stored pair"
+    );
+    assert_eq!(unread(&w)["default"], true);
+}
+
+#[test]
+fn brief_seen_refuses_the_defaults_layer_window_labelled_default() {
+    let cos = cos_bin();
+    let root = scratch("seen-defaults");
+    let registered = dirs(&root, "registered");
+    seed(&registered.workspace, None);
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &registered, false);
+    write_brief(&registered.home, "2026-11-14");
+    let mtime = write_brief(&start.install, "2026-11-14");
+    let stored =
+        json!({ "lastSeenBrief": { "default": seen_pair("2026-11-13.json", 5) } }).to_string();
+    std::fs::write(&start.ui_state_file, &stored).unwrap();
+    let (_app, w) = open(start.clone());
+    let paths = call(&w, "paths", json!({})).unwrap();
+    assert_eq!(paths["business"], "default", "{paths}");
+    assert_eq!(
+        paths["home"],
+        json!(start.install),
+        "not the defaults layer"
+    );
+
+    let e = brief_seen(&w, "default", "2026-11-14.json", mtime).unwrap_err();
+    assert!(error_text(&e).contains("no registry business"), "{e}");
+    assert_eq!(
+        std::fs::read_to_string(&start.ui_state_file).unwrap(),
+        stored,
+        "the defaults layer stored a pair for the registered default"
+    );
+}
+
+#[test]
+fn brief_seen_clears_the_dot_and_never_lowers_the_pair() {
+    let cos = cos_bin();
+    let root = scratch("seen-clears");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let b = dirs(&root, "bravo");
+    let c = dirs(&root, "charlie");
+    let older = write_brief(&a.home, "2026-11-13");
+    let mtime = write_brief(&a.home, "2026-11-14");
+    write_brief(&b.home, "2026-11-14");
+    write_brief(&c.home, "2026-11-14");
+
+    let mut start = start(&root, cos, 2, Sources::default());
+    start.ui_state_file = root.join("config/nested/ui-state.json");
+    register(&start, "default", &a, true);
+    register(&start, "bravo", &b, false);
+    register(&start, "charlie", &c, false);
+    let (_app, w) = open(start.clone());
+    let all_unread = BTreeMap::from([
+        ("bravo".to_owned(), json!(true)),
+        ("charlie".to_owned(), json!(true)),
+        ("default".to_owned(), json!(true)),
+    ]);
+    assert_eq!(unread(&w), all_unread);
+
+    brief_seen(&w, "default", "2026-11-14.json", mtime).unwrap();
+    let mut cleared = all_unread.clone();
+    cleared.insert("default".to_owned(), json!(false));
+    assert_eq!(unread(&w), cleared);
+    assert!(
+        root.join("config/nested/ui-state.json.lock").is_file(),
+        "no lock beside the ui-state file"
+    );
+    assert_eq!(
+        ui_state(&start)["lastSeenBrief"]["default"],
+        seen_pair("2026-11-14.json", mtime)
+    );
+
+    brief_seen(&w, "default", "2026-11-13.json", older).unwrap();
+    brief_seen(&w, "default", "2026-11-14.json", mtime - 1).unwrap();
+    assert_eq!(
+        ui_state(&start)["lastSeenBrief"]["default"],
+        seen_pair("2026-11-14.json", mtime),
+        "the stored pair was lowered"
+    );
+
+    let (_again, w2) = open(start);
+    assert_eq!(unread(&w2), cleared, "a new App lost the cleared dot");
+}
+
+#[test]
+fn an_unparseable_ui_state_reads_empty_and_unregistered_entries_drop() {
+    let cos = cos_bin();
+    let root = scratch("seen-unparseable");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let b = dirs(&root, "bravo");
+    let mtime = write_brief(&a.home, "2026-11-14");
+    let bravo = write_brief(&b.home, "2026-11-14");
+
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &a, true);
+    register(&start, "bravo", &b, false);
+    std::fs::write(&start.ui_state_file, "{ not json").unwrap();
+    let (_app, w) = open(start.clone());
+    assert_eq!(
+        unread(&w),
+        BTreeMap::from([
+            ("bravo".to_owned(), json!(true)),
+            ("default".to_owned(), json!(true)),
+        ])
+    );
+    brief_seen(&w, "default", "2026-11-14.json", mtime).unwrap();
+    assert_eq!(
+        ui_state(&start),
+        json!({ "lastSeenBrief": { "default": seen_pair("2026-11-14.json", mtime) } })
+    );
+
+    std::fs::write(
+        &start.ui_state_file,
+        json!({ "lastSeenBrief": {
+            "ghost": seen_pair("2026-11-14.json", 1),
+            "bravo": seen_pair("2026-11-14.json", bravo),
+        } })
+        .to_string(),
+    )
+    .unwrap();
+    brief_seen(&w, "default", "2026-11-14.json", mtime).unwrap();
+    assert_eq!(
+        ui_state(&start),
+        json!({ "lastSeenBrief": {
+            "bravo": seen_pair("2026-11-14.json", bravo),
+            "default": seen_pair("2026-11-14.json", mtime),
+        } }),
+        "an unregistered entry survived the write"
+    );
+}
+
+#[test]
+fn brief_seen_publishes_the_cleared_dot_through_the_shared_cache() {
+    let root = scratch("seen-publish");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let b = dirs(&root, "bravo");
+    let c = dirs(&root, "charlie");
+    let mtime = write_brief(&a.home, "2026-11-14");
+    write_brief(&c.home, "2026-11-14");
+    let start = start(&root, cos_bin(), 2, Sources::default());
+    register(&start, "default", &a, true);
+    register(&start, "bravo", &b, false);
+    register(&start, "charlie", &c, false);
+
+    let (_app, w, rx) = open_listening(start, &[BUSINESSES_CHANGED]);
+    brief_seen(&w, "default", "2026-11-14.json", mtime).unwrap();
+    let cleared = next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |rows| {
+        row(rows, "default")["unread"] == false
+    })
+    .expect("brief_seen emitted no cleared dot");
+    assert_eq!(names(&cleared), ["bravo", "charlie", "default"]);
+    assert_eq!(row(&cleared, "default")["app"], true);
+
+    write_brief(&b.home, "2026-11-14");
+    let elsewhere = next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |rows| {
+        row(rows, "bravo")["unread"] == true
+    })
+    .expect("a stamp change in bravo emitted nothing");
+    assert_eq!(
+        row(&elsewhere, "default")["unread"],
+        false,
+        "the watcher's emit brought the dot back"
+    );
+
+    write_brief(&a.home, "2026-11-15");
+    assert!(
+        next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |rows| {
+            row(rows, "default")["unread"] == true
+        })
+        .is_some(),
+        "a new brief did not re-light the dot within one tick"
+    );
+}
