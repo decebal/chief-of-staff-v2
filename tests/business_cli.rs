@@ -478,6 +478,37 @@ fn add_seeds_context() {
 }
 
 #[test]
+fn add_nested_home_warns_and_succeeds() {
+    let root = scratch("nested-home");
+    let registry = root.0.join("cfg/businesses.toml");
+    let outer = make_biz(&root.0, "outer");
+    let inner = Biz {
+        home: outer.home.join("inner"),
+        workspace: root.0.join("inner-ws"),
+        projects: outer.projects.clone(),
+    };
+    for d in [&inner.home, &inner.workspace] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+
+    let out = add(&root.0, &registry, "outer", &outer);
+    assert!(out.status.success(), "add outer: {}", stderr(&out));
+    assert!(!stderr(&out).contains("warning:"), "{}", stderr(&out));
+
+    let out = add(&root.0, &registry, "inner", &inner);
+    assert!(out.status.success(), "add inner: {}", stderr(&out));
+    let warning = format!(
+        "warning: {} is inside outer's home",
+        inner.home.canonicalize().unwrap().display()
+    );
+    assert!(
+        stderr(&out).contains(&warning),
+        "`{warning}`: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn add_keeps_existing_context() {
     let root = scratch("keep-context");
     let registry = root.0.join("cfg/businesses.toml");
