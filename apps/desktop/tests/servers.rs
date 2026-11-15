@@ -97,6 +97,19 @@ const TESTS: &[(&str, fn())] = &[
         spawn_result_admissible_names_the_field,
     ),
     (
+        "foreign_listener_before_the_child_binds",
+        foreign_listener_before_the_child_binds,
+    ),
+    (
+        "spawned_page_without_the_marker_is_stopped",
+        spawned_page_without_the_marker_is_stopped,
+    ),
+    (
+        "spawned_page_with_the_marker_is_owned",
+        spawned_page_with_the_marker_is_owned,
+    ),
+    ("owned_child_exit_is_reported", owned_child_exit_is_reported),
+    (
         "server_log_truncated_before_spawn",
         server_log_truncated_before_spawn,
     ),
@@ -1736,6 +1749,188 @@ fn leader_target_signals_the_leader_alone() {
         take_lock(&root, addr.port()).is_some(),
         "the port lock is still held"
     );
+}
+
+/// Asserts an `identity` refusal from the probe after readiness of a spawned server.
+fn refused_as_spawned(r: &Result<Running, Refusal>) {
+    match r {
+        Err(Refusal::Identity {
+            status,
+            owned: false,
+            spawned: true,
+            ..
+        }) => assert!(status.starts_with("HTTP/1.0 200"), "{status}"),
+        other => panic!("not Identity marked spawned: {other:?}"),
+    }
+}
+
+/// Asserts that `pid`'s reaper reported a non-owned exit, reaped it and left its group
+/// empty.
+fn stopped(pid: libc::pid_t, exits: &mpsc::Receiver<ExitNotice>) {
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 15", "the child was sent SIGTERM");
+    assert!(!n.owned, "dashboard-exited for a Starting slot");
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "the reaper never reaped the child");
+    assert!(!proc::group_alive(pid), "the child's group outlived it");
+}
+
+const READY_ONLY: &str = r#"{"status":"ok"}"#;
+
+fn foreign_listener_before_the_child_binds() {
+    let root = scratch("foreign-before-bind");
+    let foreign = Fixture::new(|_| Act::Reply(READY_ONLY));
+    let addr = foreign.addr;
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = Supervisor::new(
+        &root.join("data"),
+        &root.join("logs"),
+        emit,
+        fake_spawn("idle", 0, pids.clone()),
+        |_: SocketAddrV4| false,
+    )
+    .unwrap();
+
+    let r = sup.ensure(Some(&server), &d);
+    refused_as_spawned(&r);
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 1, "the free port was not spawned on");
+    assert!(
+        foreign.accepts() >= 3,
+        "readiness and identity never reached the listener: {}",
+        foreign.accepts()
+    );
+    stopped(pids[0], &exits);
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile remains");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+    assert!(
+        matched(&get(addr, "/health", READY)),
+        "the foreign listener stopped answering"
+    );
+}
+
+fn spawned_page_without_the_marker_is_stopped() {
+    let root = scratch("spawned-no-marker");
+    let addr = free_addr();
+    let (server, d) = managed(
+        addr,
+        std::env::current_exe().unwrap(),
+        "<title>Never served",
+    );
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, fake_spawn("serve", 0, pids.clone()));
+
+    let r = sup.ensure(Some(&server), &d);
+    refused_as_spawned(&r);
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 1);
+    stopped(pids[0], &exits);
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile remains");
+    assert!(
+        TcpListener::bind(addr).is_ok(),
+        "the port is still bound after the epilogue"
+    );
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+}
+
+fn spawned_page_with_the_marker_is_owned() {
+    let root = scratch("spawned-marker");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, fake_spawn("serve", 0, pids.clone()));
+    let want = Ok(Running {
+        url: d.url.clone(),
+        owned: true,
+    });
+
+    assert_eq!(sup.ensure(Some(&server), &d), want);
+    let pid = pids.lock().unwrap()[0];
+    assert!(pidfile_of(&root, addr).exists(), "the pidfile was not kept");
+    assert!(
+        exits.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the owned server exited"
+    );
+    assert!(proc::alive(pid), "the owned server was signalled");
+    assert!(
+        take_lock(&root, addr.port()).is_none(),
+        "the Owned slot gave up its port lock"
+    );
+    assert_eq!(sup.ensure(Some(&server), &d), want, "the Owned slot reused");
+    assert_eq!(pids.lock().unwrap().len(), 1, "a second spawn");
+    assert!(pidfile_of(&root, addr).exists(), "the pidfile was removed");
+    kill_and_reap(&root, addr, pid, &exits);
+}
+
+fn owned_child_exit_is_reported() {
+    let root = scratch("owned-exit");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, fake_spawn("serve", 0, pids.clone()));
+    let pidfile = pidfile_of(&root, addr);
+    let want = Ok(Running {
+        url: d.url.clone(),
+        owned: true,
+    });
+
+    assert_eq!(sup.ensure(Some(&server), &d), want);
+    let pid = pids.lock().unwrap()[0];
+    let record: Value = serde_json::from_slice(&std::fs::read(&pidfile).unwrap()).unwrap();
+    assert_eq!(record["pgid"], json!(pid), "the stop target is not a group");
+    proc::signal_pid(pid, libc::SIGKILL);
+
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert!(n.owned, "an Owned server's exit");
+    assert_eq!(n.addr, addr);
+    assert_eq!(n.status, "signal 9");
+    assert!(
+        n.log_tail.contains("fake: spawning serve") && n.log_tail.contains("GET / HTTP/1.0"),
+        "{}",
+        n.log_tail
+    );
+    assert!(!pidfile.exists(), "the reaper left the pidfile");
+    assert!(
+        until(Duration::from_secs(5), || take_lock(&root, addr.port())
+            .is_some()),
+        "the reaper never released the port lock"
+    );
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "the reaper never reaped the child");
+    assert!(
+        !proc::group_alive(pid),
+        "a member of the reaped leader's group is left"
+    );
+    assert!(
+        exits.recv_timeout(Duration::from_millis(300)).is_err(),
+        "a second exit notice"
+    );
+
+    assert_eq!(
+        sup.ensure(Some(&server), &d),
+        want,
+        "the reopen after the Exited slot"
+    );
+    let pids = pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 2, "the Exited slot was reused, not replaced");
+    kill_and_reap(&root, addr, pids[1], &exits);
 }
 
 fn server_log_truncated_before_spawn() {

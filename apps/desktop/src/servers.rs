@@ -722,8 +722,8 @@ impl Inner {
         {
             *spawn = Some(recorded.clone());
         }
-        let (inner, notice) = (Arc::clone(self), recorded.notice.clone());
-        std::thread::spawn(move || inner.reap(key, id, child, &notice));
+        let (inner, recorded) = (Arc::clone(self), recorded.clone());
+        std::thread::spawn(move || inner.reap(key, id, child, &recorded));
         self.changed.notify_all();
     }
 
@@ -796,8 +796,9 @@ impl Inner {
         self.data.join(format!("{}.json", key.port()))
     }
 
-    /// The child's only waiter: reports its exit, reaps it, then frees the port lock.
-    fn reap(&self, key: SocketAddrV4, id: u64, mut child: Child, notice: &Notice) {
+    /// The child's only waiter: reports its exit, reaps it, kills a group member left
+    /// behind, then frees the port lock.
+    fn reap(&self, key: SocketAddrV4, id: u64, mut child: Child, recorded: &Recorded) {
         let status = wait_exited(child.id() as libc::pid_t);
         let (lock, owned) = {
             let mut slots = self.lock();
@@ -842,14 +843,27 @@ impl Inner {
             log_tail: log_tail(&self.log_path(key)),
             owned,
         });
-        let _ = child.wait();
+        let reaped = child.wait().is_ok();
+        if let Some(pgid) = group_after_reap(recorded.target, reaped) {
+            cos::proc::kill_group(pgid);
+        }
         drop(lock);
-        notice.set();
+        recorded.notice.set();
     }
 
     /// `VERIFY(log_path)`: built from the parsed port alone, so it always admits.
     fn log_path(&self, addr: SocketAddrV4) -> PathBuf {
         self.logs.join(format!("{}.log", addr.port()))
+    }
+}
+
+/// `VERIFY(group_after_reap)`: the group to SIGKILL after the reap of its leader, only
+/// while a member is left. A pgid stays reserved while any member lives, so a group that
+/// still has one is the server's; a leader target is never a group the app created.
+fn group_after_reap(target: Target, reaped: bool) -> Option<libc::pid_t> {
+    match target {
+        Target::Group(pgid) if reaped && cos::proc::group_alive(pgid) => Some(pgid),
+        _ => None,
     }
 }
 
