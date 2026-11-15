@@ -446,9 +446,9 @@ As the owner, I want launch cleanup to remove without a signal every pidfile who
 Covers: design item 8 (`launch_cleanup` step 3, the five checks), 23 cases: wrong start time, executable, process group or record `pgid`; four kernel checks pass but the declared `binary` is another file (the five-check leg of that case). ISA rows: `signal_group` refused entries "pidfile whose pid is alive but start time differs", "pidfile whose executable differs", "pidfile whose process group differs from its pid", "pidfile whose record `pgid` differs from its pid while the live group equals the pid", "pidfile whose executable matches the record but is not the declared `binary` for its port". The admitted entries of `signal_group` for launch cleanup are in US-026.
 Blocked by: US-025. Priority: p1.
 
-- [ ] Test: each mismatching pidfile (start time, executable, process group, record `pgid`) is removed without a signal (file: `apps/desktop/tests/servers.rs`), written first and failing.
-- [ ] Test: a pidfile passing the four kernel checks whose declared `binary` is another file is removed without a signal (file: `apps/desktop/tests/servers.rs`), written first and failing.
-- [ ] All tests green: `cargo test -p cos-desktop --test servers`
+- [x] Test: each mismatching pidfile (start time, executable, process group, record `pgid`) is removed without a signal (file: `apps/desktop/tests/servers.rs`), written first and failing.
+- [x] Test: a pidfile passing the four kernel checks whose declared `binary` is another file is removed without a signal (file: `apps/desktop/tests/servers.rs`), written first and failing.
+- [x] All tests green: `cargo test -p cos-desktop --test servers`
 
 Mark each item [x] as you complete it. Only close when all are checked.
 

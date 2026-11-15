@@ -432,11 +432,10 @@ impl Inner {
                 .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok());
             let stale = match &record {
                 None => true,
-                Some(r) => {
-                    r.addr.port() != port
-                        || !declared.contains_key(&port)
-                        || !cos::proc::alive(r.pid)
-                }
+                Some(r) => match declared.get(&port) {
+                    Some(binary) if r.addr.port() == port => !five_checks(r, binary),
+                    _ => true,
+                },
             };
             if stale {
                 let _ = self.remove_pidfile(&file, &Ownership::Stale);
@@ -990,6 +989,32 @@ pub fn binary_admissible(server: &Server, start_time_supported: bool) -> Result<
         return refuse("platform");
     }
     Ok(())
+}
+
+/// Launch cleanup's five checks of a leftover `record` against the kernel and the declared
+/// `binary` for its port. A read or a `canonicalize` that fails is a mismatch.
+fn five_checks(record: &Record, binary: &Path) -> bool {
+    let pid = record.pid;
+    if !cos::proc::alive(pid) {
+        return false;
+    }
+    let start_time = cos::proc::start_time(pid);
+    if start_time.is_none() || start_time != record.start_time {
+        return false;
+    }
+    let Some(exe) = cos::proc::exe(pid) else {
+        return false;
+    };
+    if record.exe.as_ref() != Some(&exe) {
+        return false;
+    }
+    if cos::proc::pgid(pid) != Some(pid) || record.pgid != Some(pid) {
+        return false;
+    }
+    match (std::fs::canonicalize(&exe), std::fs::canonicalize(binary)) {
+        (Ok(live), Ok(declared)) => live == declared,
+        _ => false,
+    }
 }
 
 fn start_time_supported() -> bool {
