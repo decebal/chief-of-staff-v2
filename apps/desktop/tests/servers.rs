@@ -96,6 +96,13 @@ const TESTS: &[(&str, fn())] = &[
         "server_log_truncated_before_spawn",
         server_log_truncated_before_spawn,
     ),
+    ("port_lock_open_is_gated", port_lock_open_is_gated),
+    ("port_lock_not_inherited", port_lock_not_inherited),
+    ("port_lock_keeps_its_inode", port_lock_keeps_its_inode),
+    (
+        "second_supervisor_locks_after_the_reap",
+        second_supervisor_locks_after_the_reap,
+    ),
 ];
 
 fn main() {
@@ -938,7 +945,7 @@ fn waiter_on_reserved_embeds_external() {
     );
 }
 
-fn refused(r: Result<(), StoreError>) -> &'static str {
+fn refused<T: std::fmt::Debug>(r: Result<T, StoreError>) -> &'static str {
     match r {
         Err(StoreError::Refused { rule }) => rule,
         other => panic!("not refused: {other:?}"),
@@ -1655,4 +1662,242 @@ fn server_log_truncated_before_spawn() {
     let appended = String::from_utf8_lossy(&after[MIB..]);
     assert!(appended.starts_with("fake: spawning sh\n"), "{appended}");
     assert!(appended.contains("child output\n"), "{appended}");
+}
+
+fn port_lock_open_is_gated() {
+    let root = scratch("lock-open");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let servers = root.join("data").join("servers");
+    let mut kid = spawn_mode("idle", free_addr());
+
+    for path in [
+        servers.join("04777.lock"),
+        servers.join("70000.lock"),
+        servers.join("0.lock"),
+        servers.join("abc.lock"),
+        servers.join("4777.json"),
+        root.join("4777.lock"),
+    ] {
+        assert_eq!(
+            refused(sup.open_port_lock(&path)),
+            "pidfile_path",
+            "{}",
+            path.display()
+        );
+        assert!(!path.exists(), "{} created", path.display());
+    }
+    assert_eq!(
+        std::fs::read_dir(&servers).unwrap().count(),
+        0,
+        "a refused open created a file under servers/"
+    );
+    assert!(
+        kid.0.try_wait().unwrap().is_none(),
+        "a refused open signalled"
+    );
+
+    let valid = servers.join("4777.lock");
+    let lock = sup
+        .open_port_lock(&valid)
+        .expect("open 4777.lock")
+        .expect("4777.lock is free");
+    assert!(take_lock(&root, 4777).is_none(), "the lock is not held");
+    assert!(
+        sup.open_port_lock(&valid)
+            .expect("reopen 4777.lock")
+            .is_none(),
+        "a second open took a held lock"
+    );
+    drop(lock);
+    assert!(valid.exists(), "the lock file was unlinked");
+    assert!(take_lock(&root, 4777).is_some(), "dropping kept the lock");
+}
+
+/// A supervisor whose spawn is `real_spawn`; the returned list records each child's pid.
+fn real_spawning(
+    root: &Path,
+    emit: impl Fn(ExitNotice) + Send + Sync + 'static,
+) -> (Arc<Supervisor>, Arc<Mutex<Vec<libc::pid_t>>>) {
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let recorded = pids.clone();
+    let sup = spawning(root, emit, move |server: &Server, log: &Path| {
+        let child = real_spawn(server, log)?;
+        recorded.lock().unwrap().push(child.id() as libc::pid_t);
+        Ok(child)
+    });
+    (sup, pids)
+}
+
+fn lock_path(root: &Path, addr: SocketAddrV4) -> PathBuf {
+    root.join("data")
+        .join("servers")
+        .join(format!("{}.lock", addr.port()))
+}
+
+fn lsof(pid: u32) -> String {
+    let out = Command::new("lsof")
+        .args(["-n", "-P", "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run lsof");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Kills an owned child's group and waits until its reaper has released the port lock.
+fn kill_and_reap(
+    root: &Path,
+    addr: SocketAddrV4,
+    pid: libc::pid_t,
+    exits: &mpsc::Receiver<ExitNotice>,
+) {
+    proc::kill_group(pid);
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert!(n.owned, "an Owned server's exit");
+    assert!(
+        until(Duration::from_secs(5), || take_lock(root, addr.port())
+            .is_some()),
+        "the reaper never released the port lock"
+    );
+}
+
+fn port_lock_not_inherited() {
+    let root = scratch("lock-cloexec");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (emit, exits) = recording();
+    let (sup, pids) = real_spawning(&root, emit);
+
+    assert_eq!(
+        sup.ensure(Some(&server), &d),
+        Ok(Running {
+            url: d.url.clone(),
+            owned: true
+        })
+    );
+    let pid = pids.lock().unwrap()[0];
+    let lock = lock_path(&root, addr);
+    let lock_name = format!("{}.lock", addr.port());
+    let log = root
+        .join("logs")
+        .join("servers")
+        .join(format!("{}.log", addr.port()));
+
+    let ours = lsof(std::process::id());
+    assert!(
+        ours.contains(lock.to_str().unwrap()),
+        "lsof does not list the lock this process holds:\n{ours}"
+    );
+    let theirs = lsof(pid as u32);
+    assert!(
+        theirs.contains(log.to_str().unwrap()),
+        "lsof did not list the child's log:\n{theirs}"
+    );
+    assert!(
+        !theirs.contains(&lock_name),
+        "the child inherited {lock_name}:\n{theirs}"
+    );
+
+    kill_and_reap(&root, addr, pid, &exits);
+}
+
+fn port_lock_keeps_its_inode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let root = scratch("lock-inode");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (emit, exits) = recording();
+    let (sup, pids) = real_spawning(&root, emit);
+    let lock = lock_path(&root, addr);
+    let ino = || std::fs::metadata(&lock).expect("the lock file").ino();
+
+    drop(
+        sup.open_port_lock(&lock)
+            .expect("open the lock")
+            .expect("the lock is free"),
+    );
+    let first = ino();
+    let want = Ok(Running {
+        url: d.url.clone(),
+        owned: true,
+    });
+
+    for round in 0..2 {
+        assert_eq!(sup.ensure(Some(&server), &d), want, "spawn {round}");
+        assert_eq!(ino(), first, "inode changed by spawn {round}");
+        let pid = pids.lock().unwrap()[round];
+        kill_and_reap(&root, addr, pid, &exits);
+        assert_eq!(ino(), first, "inode changed by reap {round}");
+    }
+    assert_eq!(pids.lock().unwrap().len(), 2);
+}
+
+fn second_supervisor_locks_after_the_reap() {
+    let root = scratch("lock-second");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (exit_tx, exits) = mpsc::channel::<ExitNotice>();
+    let exit_tx = Mutex::new(exit_tx);
+    let (first, first_pids) = real_spawning(&root, move |n: ExitNotice| {
+        let _ = exit_tx.lock().unwrap().send(n);
+        std::thread::sleep(Duration::from_millis(500));
+    });
+    let (emit, second_exits) = recording();
+    let (second, second_pids) = real_spawning(&root, emit);
+    let lock = lock_path(&root, addr);
+    let want = Ok(Running {
+        url: d.url.clone(),
+        owned: true,
+    });
+
+    assert_eq!(first.ensure(Some(&server), &d), want);
+    let pid = first_pids.lock().unwrap()[0];
+    assert!(
+        second.open_port_lock(&lock).expect("open").is_none(),
+        "the second supervisor took the lock of a live owned child"
+    );
+
+    proc::kill_group(pid);
+    let n = exits
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reaper never reported the exit");
+    assert!(n.owned);
+    // The reaper sleeps in `emit` before `waitpid`: the slot is Exited, the child unreaped.
+    assert!(
+        second.open_port_lock(&lock).expect("open").is_none(),
+        "the second supervisor took the lock before the reap"
+    );
+    assert_eq!(
+        second.ensure(Some(&server), &d),
+        Err(Refusal::NotRunning {
+            hint: "another app instance is starting it; open the dashboard again".into(),
+        })
+    );
+    assert!(
+        second_pids.lock().unwrap().is_empty(),
+        "spawned before the reap"
+    );
+
+    assert!(
+        until(Duration::from_secs(5), || second
+            .open_port_lock(&lock)
+            .expect("open")
+            .is_some()),
+        "the reaper never released the port lock"
+    );
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "the lock was free before the reap");
+
+    assert_eq!(second.ensure(Some(&server), &d), want);
+    let pids = second_pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 1, "the second supervisor started one server");
+    assert!(matched(&get(addr, "/", MARKER_A)));
+    assert!(
+        take_lock(&root, addr.port()).is_none(),
+        "the second supervisor holds no lock"
+    );
+    kill_and_reap(&root, addr, pids[0], &second_exits);
 }
