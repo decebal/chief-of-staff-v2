@@ -26,6 +26,7 @@ const READY_EVERY: Duration = Duration::from_millis(250);
 const READY_WITHIN: Duration = Duration::from_secs(10);
 const TERM_GRACE: Duration = Duration::from_secs(5);
 const EXITED_WAIT: Duration = Duration::from_secs(5);
+const CLEANUP_POLL: Duration = Duration::from_millis(50);
 const LOG_TAIL_LINES: usize = 20;
 const LOG_KEEP: u64 = 1024 * 1024;
 
@@ -430,16 +431,11 @@ impl Inner {
             let record = std::fs::read(&file)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok());
-            let stale = match &record {
-                None => true,
-                Some(r) => match declared.get(&port) {
-                    Some(binary) if r.addr.port() == port => !five_checks(r, binary),
-                    _ => true,
-                },
+            let ownership = match (&record, declared.get(&port)) {
+                (Some(r), Some(binary)) if r.addr.port() == port => stop_leftover(r, binary),
+                _ => Ownership::Stale,
             };
-            if stale {
-                let _ = self.remove_pidfile(&file, &Ownership::Stale);
-            }
+            let _ = self.remove_pidfile(&file, &ownership);
             drop(lock);
         }
     }
@@ -1014,6 +1010,35 @@ fn five_checks(record: &Record, binary: &Path) -> bool {
     match (std::fs::canonicalize(&exe), std::fs::canonicalize(binary)) {
         (Ok(live), Ok(declared)) => live == declared,
         _ => false,
+    }
+}
+
+/// Launch cleanup steps 3 and 4, run while cleanup holds the port lock. Every signal goes
+/// to the group of the verified pid, never the record's `pgid`, and the five checks run
+/// again immediately before each one, so a recycled pid is never signalled.
+fn stop_leftover(record: &Record, binary: &Path) -> Ownership {
+    let pid = record.pid;
+    if !five_checks(record, binary) {
+        return Ownership::Stale;
+    }
+    cos::proc::signal_group(pid, libc::SIGTERM);
+    let deadline = Instant::now() + TERM_GRACE;
+    loop {
+        let expired = Instant::now() >= deadline;
+        let passes = five_checks(record, binary);
+        if passes && expired {
+            cos::proc::signal_group(pid, libc::SIGKILL);
+            return Ownership::Leftover { stopped: true };
+        }
+        if !passes {
+            // `VERIFY(leftover_group)`: the leader exited and launchd reaped it, so only
+            // a member that outlived it can still hold the group id.
+            if Instant::now() < deadline && cos::proc::group_alive(pid) {
+                cos::proc::kill_group(pid);
+            }
+            return Ownership::Leftover { stopped: true };
+        }
+        std::thread::sleep(CLEANUP_POLL.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
