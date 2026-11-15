@@ -100,7 +100,6 @@
       rows = await invoke("businesses");
       at = 0;
       render();
-      document.dispatchEvent(new CustomEvent("businesses-loaded", { detail: rows }));
     } catch (e) {
       msg.textContent = `Could not read the businesses: ${e}`;
       msg.hidden = false;
