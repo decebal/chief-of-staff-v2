@@ -897,6 +897,214 @@ fn paths_and_businesses_shape() {
     assert_eq!(by_name("gone")["missing"], true);
 }
 
+/// Writes `home/out/briefs/<day>.json` and returns its mtime in ms.
+fn write_brief(home: &Path, day: &str) -> i64 {
+    let dir = home.join("out/briefs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("{day}.json"));
+    std::fs::write(&file, "{}").unwrap();
+    cos::signals::mtime_ms(&std::fs::metadata(&file).unwrap())
+}
+
+/// The `cos.brief` plist under `user_home`, for `business` on `registry`.
+fn brief_plist(user_home: &Path, business: &str, registry: &Path) {
+    let path = user_home.join("Library/LaunchAgents/cos.brief.plist");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <plist version=\"1.0\"><dict>\n\
+             <key>Label</key><string>cos.brief</string>\n\
+             <key>ProgramArguments</key><array><string>/usr/local/bin/cos</string>\
+             <string>--business</string><string>{business}</string><string>brief</string></array>\n\
+             <key>EnvironmentVariables</key><dict>\
+             <key>COS_BUSINESSES</key><string>{}</string></dict>\n\
+             </dict></plist>\n",
+            registry.display()
+        ),
+    )
+    .unwrap();
+}
+
+/// `(unread, scheduled)` per business, from the `businesses` command.
+fn row_flags(w: &Win) -> BTreeMap<String, (Value, Value)> {
+    let rows = call(w, "businesses", json!({})).unwrap();
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["name"].as_str().unwrap().to_owned(),
+                (r["unread"].clone(), r["scheduled"].clone()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn businesses_rows_carry_unread_and_scheduled() {
+    let cos = cos_bin();
+    let root = scratch("unread");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let seen = dirs(&root, "seen");
+    let clock = dirs(&root, "clock");
+    write_brief(&a.home, "2026-11-14");
+    let mtime = write_brief(&seen.home, "2026-11-14");
+
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &a, true);
+    register(&start, "seen", &seen, false);
+    register(&start, "clock", &clock, false);
+    std::fs::write(
+        &start.ui_state_file,
+        json!({ "lastSeenBrief": { "seen": { "file": "2026-11-14.json", "mtime": mtime } } })
+            .to_string(),
+    )
+    .unwrap();
+    brief_plist(
+        start.user_home.as_deref().unwrap(),
+        "clock",
+        &start.registry,
+    );
+
+    let (_app, w) = open(start.clone());
+    let want = |d: bool, s: bool, c: bool| {
+        BTreeMap::from([
+            ("clock".to_owned(), (json!(false), json!(c))),
+            ("default".to_owned(), (json!(d), json!(false))),
+            ("seen".to_owned(), (json!(s), json!(false))),
+        ])
+    };
+    assert_eq!(
+        row_flags(&w),
+        want(true, false, true),
+        "a brief with no stored pair is unread; the plist's business is scheduled"
+    );
+
+    let mut bare = start;
+    bare.user_home = None;
+    let (_bare_app, w) = open(bare);
+    assert_eq!(
+        row_flags(&w),
+        want(true, false, false),
+        "a Start with no user home gives no clock"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn businesses_spawns_no_ps() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+
+    /// Set only on the child run of this case, never in this process's environment.
+    const NO_PS_ROOT: &str = "COS_DESKTOP_NO_PS_ROOT";
+    const NO_PS_PID: &str = "COS_DESKTOP_NO_PS_PID";
+
+    if let Some(root) = std::env::var_os(NO_PS_ROOT) {
+        let pid: u64 = std::env::var(NO_PS_PID).unwrap().parse().unwrap();
+        let root = PathBuf::from(root);
+        let (_app, w) = open(start(&root, cos_bin(), 2, Sources::default()));
+        let rows = call(&w, "businesses", json!({})).unwrap();
+        let row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == "default")
+            .unwrap();
+        assert_eq!(row["live"].as_u64(), Some(1), "supervisor {pid}: {rows}");
+        assert!(row["unread"].is_boolean(), "{row}");
+        assert!(row["scheduled"].is_boolean(), "{row}");
+        return;
+    }
+
+    struct Reap(std::process::Child);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let cos = cos_bin();
+    let root = scratch("no-ps");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let start = start(&root, cos.clone(), 2, Sources::default());
+    register(&start, "default", &a, true);
+
+    let sup_home = root.join("supervisor");
+    std::fs::create_dir_all(&sup_home).unwrap();
+    let supervisor = Reap(
+        Command::new(&cos)
+            .arg("--home")
+            .arg(&sup_home)
+            .arg("--workspace")
+            .arg(&sup_home)
+            .arg("--projects")
+            .arg(&sup_home)
+            .arg("mcp")
+            .env_remove("COS_HOME")
+            .env_remove("COS_WORKSPACE")
+            .env_remove("COS_PROJECTS")
+            .env_remove("COS_BUSINESS")
+            .env_remove("XDG_CONFIG_HOME")
+            .env("HOME", root.join("user"))
+            .env("COS_BUSINESSES", root.join("none.toml"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = supervisor.0.id() as i32;
+    let until = Instant::now() + Duration::from_secs(10);
+    while !cos::proc::exe(pid).is_some_and(|e| e.file_name().is_some_and(|f| f == "cos")) {
+        assert!(Instant::now() < until, "cos {pid} never ran");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    plant_run(&a.home, "live", pid);
+
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let marker = root.join("ps-ran");
+    let ps = bin.join("ps");
+    std::fs::write(
+        &ps,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = std::ffi::OsString::from(&bin);
+    if let Some(rest) = std::env::var_os("PATH") {
+        path.push(":");
+        path.push(rest);
+    }
+
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "businesses_spawns_no_ps",
+            "--exact",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env("PATH", &path)
+        .env(NO_PS_ROOT, &root)
+        .env(NO_PS_PID, pid.to_string())
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "child run failed: {text}");
+    assert!(text.contains("1 passed"), "child ran no case: {text}");
+    assert!(!marker.exists(), "businesses spawned ps");
+}
+
 #[test]
 fn first_start_writes_default_and_hints_legacy() {
     let cos = cos_bin();

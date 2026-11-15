@@ -10,6 +10,7 @@
 pub mod servers;
 pub mod settings;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -410,7 +411,8 @@ struct Live {
     unreadable: usize,
 }
 
-/// One business in the picker. A business whose home is missing carries no count.
+/// One business in the picker and the sidebar. A business whose home is missing carries
+/// no count.
 #[derive(Serialize)]
 struct BusinessRow {
     name: String,
@@ -419,11 +421,88 @@ struct BusinessRow {
     app: bool,
     dirs: Present,
     missing: bool,
+    unread: bool,
+    scheduled: bool,
     #[serde(flatten)]
     counts: Option<Live>,
 }
 
-fn business_row(name: &str, b: &Business, active: bool, app: bool) -> BusinessRow {
+/// The brief the owner last saw in Today, as the report rendered it.
+#[derive(Deserialize)]
+struct SeenBrief {
+    file: String,
+    mtime: i64,
+}
+
+#[derive(Deserialize, Default)]
+struct UiState {
+    #[serde(rename = "lastSeenBrief", default)]
+    last_seen_brief: BTreeMap<String, SeenBrief>,
+}
+
+/// An unreadable or unparseable file reads as empty.
+fn read_ui_state(path: &Path) -> UiState {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// What the row builder reads, copied from the managed `Start` and the App lock.
+struct RowSource {
+    registry: PathBuf,
+    user_home: Option<PathBuf>,
+    ui_state_file: PathBuf,
+}
+
+impl RowSource {
+    fn new(registry: PathBuf, start: &Start) -> Self {
+        Self {
+            registry,
+            user_home: start.user_home.clone(),
+            ui_state_file: start.ui_state_file.clone(),
+        }
+    }
+
+    /// The business the installed `cos.brief` plist runs for on this registry.
+    fn clock(&self) -> Option<String> {
+        let home = self.user_home.as_deref()?;
+        let registry = self.registry.canonicalize().ok()?;
+        cos::signals::scheduled(
+            &home.join("Library/LaunchAgents/cos.brief.plist"),
+            &registry,
+            Some(home),
+        )
+    }
+
+    /// Every registered business's row, or only `only`'s, each with `app` false. Reads
+    /// files and kernel state only: it spawns no process.
+    fn rows(&self, only: Option<&str>) -> anyhow::Result<Vec<BusinessRow>> {
+        let reg = business::load(&self.registry)?;
+        let seen = read_ui_state(&self.ui_state_file).last_seen_brief;
+        let clock = self.clock();
+        Ok(reg
+            .businesses
+            .iter()
+            .filter(|(name, _)| only.is_none_or(|o| o == name.as_str()))
+            .map(|(name, b)| {
+                let unread = cos::signals::latest_brief(&b.home).is_some_and(|brief| {
+                    seen.get(name).is_none_or(|s| {
+                        (brief.file.as_str(), brief.mtime) > (s.file.as_str(), s.mtime)
+                    })
+                });
+                BusinessRow {
+                    active: reg.active.as_deref() == Some(name),
+                    unread,
+                    scheduled: clock.as_deref() == Some(name),
+                    ..business_row(name, b)
+                }
+            })
+            .collect())
+    }
+}
+
+fn business_row(name: &str, b: &Business) -> BusinessRow {
     let dirs = Present {
         home: b.home.is_dir(),
         workspace: b.workspace.is_dir(),
@@ -441,36 +520,36 @@ fn business_row(name: &str, b: &Business, active: bool, app: bool) -> BusinessRo
     BusinessRow {
         name: name.to_owned(),
         triple: b.clone(),
-        active,
-        app,
+        active: false,
+        app: false,
         missing: !dirs.home,
         dirs,
+        unread: false,
+        scheduled: false,
         counts,
     }
 }
 
-/// Every registered business with its directories and run counts, read without
-/// touching any run.
+/// Every registered business with its directories, run counts, unread brief and clock,
+/// read without touching any run.
 #[tauri::command]
-async fn businesses(app: tauri::State<'_, App>) -> Res<Vec<BusinessRow>> {
-    let (registry, current) = {
+async fn businesses(
+    app: tauri::State<'_, App>,
+    start: tauri::State<'_, Start>,
+) -> Res<Vec<BusinessRow>> {
+    let (source, current) = {
         let st = app.lock();
-        (st.registry.clone(), st.triple.business.clone())
+        (
+            RowSource::new(st.registry.clone(), &start),
+            st.triple.business.clone(),
+        )
     };
     blocking(move || {
-        let reg = business::load(&registry)?;
-        Ok(reg
-            .businesses
-            .iter()
-            .map(|(name, b)| {
-                business_row(
-                    name,
-                    b,
-                    reg.active.as_deref() == Some(name),
-                    current.as_deref() == Some(name),
-                )
-            })
-            .collect())
+        let mut rows = source.rows(None)?;
+        for row in &mut rows {
+            row.app = current.as_deref() == Some(row.name.as_str());
+        }
+        Ok(rows)
     })
     .await
 }
