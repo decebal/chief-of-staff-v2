@@ -3,6 +3,7 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -247,6 +248,95 @@ pub fn kill_group(pgid: libc::pid_t) {
 pub fn alive(pid: libc::pid_t) -> bool {
     // SAFETY: signal 0 only checks for existence and permission.
     pid > 0 && unsafe { libc::kill(pid, 0) } == 0
+}
+
+/// The executable `pid` runs, as the kernel records it.
+#[cfg(target_os = "macos")]
+pub fn exe(pid: libc::pid_t) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    if pid <= 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer is writable for the length passed.
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf)))
+}
+
+/// The command name `ps` reports for `pid`; not a full path.
+#[cfg(not(target_os = "macos"))]
+pub fn exe(pid: libc::pid_t) -> Option<PathBuf> {
+    if pid <= 0 {
+        return None;
+    }
+    let mut cmd = Command::new("ps");
+    cmd.args(["-o", "comm=", "-p", &pid.to_string()]);
+    let out = run(&mut cmd, Duration::from_secs(5)).ok()?;
+    let name = out.stdout.trim();
+    (out.status.success() && !name.is_empty()).then(|| PathBuf::from(name))
+}
+
+/// When `pid` started, as seconds and microseconds since the epoch. With
+/// the pid it names one process: a reused pid has a different start time.
+#[cfg(target_os = "macos")]
+pub fn start_time(pid: libc::pid_t) -> Option<(i64, i64)> {
+    if pid <= 0 {
+        return None;
+    }
+    // SAFETY: `proc_bsdinfo` is plain data; all-zero is a valid value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: the buffer is a `proc_bsdinfo` of the size passed.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (n == size).then_some((info.pbi_start_tvsec as i64, info.pbi_start_tvusec as i64))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_time(_pid: libc::pid_t) -> Option<(i64, i64)> {
+    None
+}
+
+pub fn pgid(pid: libc::pid_t) -> Option<libc::pid_t> {
+    if pid <= 0 {
+        return None;
+    }
+    // SAFETY: reads the process table; no memory is touched.
+    let g = unsafe { libc::getpgid(pid) };
+    (g > 0).then_some(g)
+}
+
+/// `signal` to every process in group `pgid`, under `kill_group`'s guard.
+pub fn signal_group(pgid: libc::pid_t, signal: libc::c_int) {
+    if pgid > 0 {
+        // SAFETY: signalling a process group; no memory is touched.
+        unsafe {
+            libc::kill(-pgid, signal);
+        }
+    }
+}
+
+/// `signal` to `pid` alone. A pid of 0 or below would address a group, so
+/// it is refused.
+pub fn signal_pid(pid: libc::pid_t, signal: libc::c_int) {
+    if pid > 0 {
+        // SAFETY: signalling one process; no memory is touched.
+        unsafe {
+            libc::kill(pid, signal);
+        }
+    }
 }
 
 /// Whether any process is left in group `pgid`.
