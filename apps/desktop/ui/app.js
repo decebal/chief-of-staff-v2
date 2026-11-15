@@ -121,6 +121,17 @@ const SWITCH_PANES = ["staff", "runs", "scorecard"];
 // The docs room names the business it was opened for; its saves carry it back.
 const docsUrl = () => `${REPORT}docs?t=${Date.now()}&business=${encodeURIComponent(ui.business)}`;
 
+// The report frame reloads on every report-changed whatever view is shown, so
+// its brief counts as seen only while Today is visible. Until openFromHash has
+// routed at launch, Today being visible says nothing about the view the owner
+// will see.
+const shownBrief = { last: null, routed: false };
+const seenArgs = () =>
+  shownBrief.last && shownBrief.routed && ui.business && $("view-today").classList.contains("active")
+    ? { business: ui.business, file: shownBrief.last.file, mtime: shownBrief.last.mtime }
+    : null;
+const seenFailed = (e) => logDev("brief_seen", e);
+
 function openTab(view, pane) {
   for (const t of document.querySelectorAll(".app-tab")) {
     if (t.dataset.view === view) t.setAttribute("aria-current", "page");
@@ -138,6 +149,8 @@ function openTab(view, pane) {
     $("flows-frame").src = `${REPORT}flows?t=${Date.now()}`;
   }
   if (view === "agents" && SWITCH_PANES.includes(pane)) showPane(pane);
+  const args = view === "today" && seenArgs();
+  if (args) invoke("brief_seen", args).catch(seenFailed);
 }
 
 for (const tab of document.querySelectorAll(".app-tab")) {
@@ -147,6 +160,9 @@ for (const tab of document.querySelectorAll(".app-tab")) {
 function openFromHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (VIEWS.includes(h.get("tab"))) openTab(h.get("tab"), h.get("pane") ?? "");
+  shownBrief.routed = true;
+  const args = seenArgs();
+  if (args) invoke("brief_seen", args).catch(seenFailed);
 }
 
 // A Hire dialog with typed text, or contract edits, counts as unsaved.
@@ -195,6 +211,11 @@ window.addEventListener("message", (ev) => {
   const d = ev.data ?? {};
   if (d.type === "cos-report-ready") {
     frame.postMessage({ type: "cos-host", hire: true }, "*");
+    if (d.brief != null) {
+      shownBrief.last = { file: d.brief, mtime: d.mtime };
+      const args = seenArgs();
+      if (args) invoke("brief_seen", args).catch(seenFailed);
+    }
   } else if (d.type === "cos-report-state") {
     reportState.tab = /^[a-z]+$/.test(d.tab ?? "") ? d.tab : "";
     reportState.y = Number.isFinite(d.y) ? Math.max(0, Math.round(d.y)) : 0;
