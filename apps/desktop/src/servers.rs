@@ -13,7 +13,7 @@ use std::process::{Child, Command};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use cos::dashboards::{Dashboard, Probe, ProbeResult, Server};
+use cos::dashboards::{Dashboard, Dashboards, Probe, ProbeResult, Server};
 use serde::{Deserialize, Serialize};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -301,6 +301,13 @@ impl Supervisor {
         self.0.ensure(server, dashboard)
     }
 
+    /// Launch cleanup, once in `setup` before any `ensure`. The declared servers come from
+    /// `dashboards`; an empty value declares none, so every pidfile under a free lock is
+    /// removed without a signal.
+    pub fn launch_cleanup(&self, dashboards: &Dashboards) {
+        self.0.launch_cleanup(dashboards)
+    }
+
     /// `STORE(pidfile)` write: `<data dir>/servers/<port>.json`, atomically, from the
     /// spawn result and the validated `addr`.
     pub fn write_pidfile(&self, spawn: &SpawnResult, addr: SocketAddrV4) -> Result<(), StoreError> {
@@ -391,6 +398,50 @@ impl Inner {
                     }
                 }
             }
+        }
+    }
+
+    /// Only entries admitted by `VERIFY(pidfile_path)` are read: a non-canonical name such
+    /// as `04777.json` would lock a different `<port>.lock` from the one its owner holds.
+    fn launch_cleanup(&self, dashboards: &Dashboards) {
+        let declared: HashMap<u16, &Path> = dashboards
+            .servers
+            .values()
+            .map(|s| (s.addr.port(), s.binary.as_path()))
+            .collect();
+        let Ok(entries) = std::fs::read_dir(&self.data) else {
+            return;
+        };
+        for file in entries.flatten().map(|e| e.path()) {
+            if !self.pidfile_path(&file, "json") {
+                continue;
+            }
+            let Some(port) = file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<u16>().ok())
+            else {
+                continue;
+            };
+            let Ok(Some(lock)) = self.open_port_lock(&self.data.join(format!("{port}.lock")))
+            else {
+                continue;
+            };
+            let record = std::fs::read(&file)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok());
+            let stale = match &record {
+                None => true,
+                Some(r) => {
+                    r.addr.port() != port
+                        || !declared.contains_key(&port)
+                        || !cos::proc::alive(r.pid)
+                }
+            };
+            if stale {
+                let _ = self.remove_pidfile(&file, &Ownership::Stale);
+            }
+            drop(lock);
         }
     }
 

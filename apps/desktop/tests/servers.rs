@@ -5,7 +5,7 @@
 //! intermediate process that exits, as an earlier app's server is left after a
 //! crash. macOS only: elsewhere every spawn is refused, so `main` returns.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
@@ -21,7 +21,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use cos::business::{Dirs, Sources};
-use cos::dashboards::{Dashboard, Probe, ProbeResult, Server};
+use cos::dashboards::{Dashboard, Dashboards, Probe, ProbeResult, Server};
 use cos::proc;
 use cos_desktop::Start;
 use cos_desktop::servers::{
@@ -123,6 +123,21 @@ const TESTS: &[(&str, fn())] = &[
         "reopen_after_owned_exit_refuses_at_the_deadline",
         reopen_after_owned_exit_refuses_at_the_deadline,
     ),
+    (
+        "cleanup_removes_an_undeclared_leftover",
+        cleanup_removes_an_undeclared_leftover,
+    ),
+    ("cleanup_leaves_a_held_lock", cleanup_leaves_a_held_lock),
+    (
+        "cleanup_ignores_non_canonical_names",
+        cleanup_ignores_non_canonical_names,
+    ),
+    ("cleanup_keeps_the_lock_inode", cleanup_keeps_the_lock_inode),
+    (
+        "cleanup_removes_a_record_for_another_port",
+        cleanup_removes_a_record_for_another_port,
+    ),
+    ("cleanup_removes_a_dead_pid", cleanup_removes_a_dead_pid),
 ];
 
 fn main() {
@@ -2207,4 +2222,198 @@ fn reopen_after_owned_exit_refuses_at_the_deadline() {
     let pids = pids.lock().unwrap().clone();
     assert_eq!(pids.len(), 2, "one fresh server");
     kill_and_reap(&root, addr, pids[1], &exits);
+}
+
+/// `dashboards.toml` declaring one server, running `binary` on `addr`.
+fn declaring(addr: SocketAddrV4, binary: PathBuf) -> Dashboards {
+    let (server, _) = managed(addr, binary, MARKER_A);
+    Dashboards {
+        servers: BTreeMap::from([("fake".to_owned(), server)]),
+        businesses: BTreeMap::new(),
+    }
+}
+
+/// Writes `<root>/data/servers/<name>` as `pid`'s record, read from the kernel, so it
+/// passes the four kernel checks; `addr` is written as given.
+fn plant_record(root: &Path, name: &str, pid: libc::pid_t, addr: SocketAddrV4) -> PathBuf {
+    let file = root.join("data").join("servers").join(name);
+    let (secs, micros) = proc::start_time(pid).expect("start time");
+    let record = json!({
+        "pid": pid,
+        "pgid": proc::pgid(pid).expect("pgid"),
+        "start_time": [secs, micros],
+        "exe": proc::exe(pid).expect("exe"),
+        "addr": addr.to_string(),
+    });
+    std::fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    file
+}
+
+/// An idle leftover dies on SIGTERM or SIGKILL and launchd reaps it, so a signal shows
+/// as the pid going away.
+fn assert_unsignalled(pid: libc::pid_t, case: &str) {
+    assert!(
+        !until(Duration::from_millis(300), || !proc::alive(pid)),
+        "{case}: the leftover was signalled"
+    );
+}
+
+fn cleanup_removes_an_undeclared_leftover() {
+    let root = scratch("cleanup-undeclared");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let addr = free_addr();
+    let other = SocketAddrV4::new(Ipv4Addr::LOCALHOST, addr.port() % 60000 + 1);
+    let left = leftover("idle", addr);
+    let name = format!("{}.json", addr.port());
+
+    for (case, dashboards) in [
+        (
+            "no declared server has its port",
+            declaring(other, std::env::current_exe().unwrap()),
+        ),
+        ("empty value", Dashboards::default()),
+    ] {
+        let file = plant_record(&root, &name, left.0, addr);
+        sup.launch_cleanup(&dashboards);
+        assert!(!file.exists(), "{case}: the pidfile was kept");
+        assert_unsignalled(left.0, case);
+    }
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "cleanup kept the port lock"
+    );
+}
+
+fn cleanup_leaves_a_held_lock() {
+    let root = scratch("cleanup-held");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let addr = free_addr();
+    let left = leftover("idle", addr);
+    let held = take_lock(&root, addr.port()).expect("the lock is free");
+    let file = plant_record(&root, &format!("{}.json", addr.port()), left.0, addr);
+    let before = std::fs::read(&file).unwrap();
+
+    for (case, dashboards) in [
+        (
+            "declared",
+            declaring(addr, std::env::current_exe().unwrap()),
+        ),
+        ("empty value", Dashboards::default()),
+    ] {
+        sup.launch_cleanup(&dashboards);
+        assert_eq!(
+            std::fs::read(&file).ok(),
+            Some(before.clone()),
+            "{case}: the pidfile of a held lock changed"
+        );
+        assert_unsignalled(left.0, case);
+    }
+    drop(held);
+}
+
+fn cleanup_ignores_non_canonical_names() {
+    let root = scratch("cleanup-names");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let servers = root.join("data").join("servers");
+    let left = leftover("idle", free_addr());
+    let addr: SocketAddrV4 = "127.0.0.1:4777".parse().unwrap();
+    let live = plant_record(&root, "4777.json", left.0, addr);
+    let copy = servers.join("04777.json");
+    std::fs::copy(&live, &copy).unwrap();
+    let held = take_lock(&root, 4777).expect("4777.lock is free");
+
+    sup.launch_cleanup(&declaring(addr, std::env::current_exe().unwrap()));
+    assert!(copy.exists(), "04777.json was handled");
+    assert!(live.exists(), "the held 4777.json was removed");
+    assert!(
+        !servers.join("04777.lock").exists(),
+        "cleanup opened a non-canonical lock"
+    );
+    assert_unsignalled(left.0, "04777.json");
+    drop(held);
+}
+
+fn cleanup_keeps_the_lock_inode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let root = scratch("cleanup-inode");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let servers = root.join("data").join("servers");
+    let left = leftover("idle", free_addr());
+    let addr: SocketAddrV4 = "127.0.0.1:4777".parse().unwrap();
+    let lock = servers.join("4777.lock");
+    drop(
+        sup.open_port_lock(&lock)
+            .expect("open the lock")
+            .expect("the lock is free"),
+    );
+    let ino = || std::fs::metadata(&lock).expect("the lock file").ino();
+    let first = ino();
+    let live = plant_record(&root, "4777.json", left.0, addr);
+    let ignored: Vec<PathBuf> = ["abc.json", "70000.json"]
+        .iter()
+        .map(|n| {
+            let p = servers.join(n);
+            std::fs::copy(&live, &p).unwrap();
+            p
+        })
+        .collect();
+
+    sup.launch_cleanup(&Dashboards::default());
+    assert!(!live.exists(), "the Stale 4777.json was kept");
+    assert_eq!(ino(), first, "launch cleanup changed the lock inode");
+    for p in &ignored {
+        assert!(p.exists(), "{} was handled", p.display());
+    }
+    for name in ["abc.lock", "70000.lock"] {
+        assert!(!servers.join(name).exists(), "cleanup created {name}");
+    }
+    assert_unsignalled(left.0, "abc.json and 70000.json");
+    assert!(take_lock(&root, 4777).is_some(), "cleanup kept 4777.lock");
+}
+
+fn cleanup_removes_a_record_for_another_port() {
+    let root = scratch("cleanup-addr");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let left = leftover("idle", free_addr());
+    let addr: SocketAddrV4 = "127.0.0.1:4777".parse().unwrap();
+    let declared = declaring(addr, std::env::current_exe().unwrap());
+
+    let file = plant_record(
+        &root,
+        "4777.json",
+        left.0,
+        "127.0.0.1:4778".parse().unwrap(),
+    );
+    sup.launch_cleanup(&declared);
+    assert!(
+        !file.exists(),
+        "a record for port 4778 in 4777.json was kept"
+    );
+    assert_unsignalled(left.0, "addr port 4778");
+
+    std::fs::write(&file, "not a record").unwrap();
+    sup.launch_cleanup(&declared);
+    assert!(!file.exists(), "an unparseable record was kept");
+}
+
+fn cleanup_removes_a_dead_pid() {
+    let root = scratch("cleanup-dead");
+    let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
+    let addr = free_addr();
+    let left = leftover("idle", addr);
+    let pid = left.0;
+    let file = plant_record(&root, &format!("{}.json", addr.port()), pid, addr);
+    drop(left);
+    assert!(
+        until(Duration::from_secs(2), || !proc::alive(pid)),
+        "the leftover survived SIGKILL"
+    );
+
+    sup.launch_cleanup(&declaring(addr, std::env::current_exe().unwrap()));
+    assert!(!file.exists(), "a dead pid's pidfile was kept");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "cleanup kept the port lock"
+    );
 }
