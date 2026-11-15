@@ -7,6 +7,7 @@
 //! report renders in a sandboxed iframe with an opaque origin: a brief quotes
 //! mail and tickets, and nothing in it may reach these commands.
 
+pub mod servers;
 pub mod settings;
 
 use std::path::{Path, PathBuf};
@@ -990,6 +991,14 @@ pub fn with_menu<R: Runtime>(builder: Builder<R>) -> Builder<R> {
     })
 }
 
+/// The supervisor's `emit`: `dashboard-exited` for an owned server only. A server that
+/// exits while starting is reported by its `ensure` instead.
+pub fn emit_exited<R: Runtime>(app: &AppHandle<R>, notice: &servers::ExitNotice) {
+    if notice.owned {
+        let _ = app.emit("dashboard-exited", notice);
+    }
+}
+
 /// The app on any runtime: the report scheme, the state (given, or read from the
 /// environment and the config directory at setup), the watcher, the commands.
 pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder<R> {
@@ -1011,6 +1020,15 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
                 Some(s) => s,
                 None => Start::from_env(app.handle()).map_err(chain)?,
             };
+            let handle = app.handle().clone();
+            let supervisor = servers::Supervisor::new(
+                &start.data_dir,
+                &start.log_dir,
+                move |notice| emit_exited(&handle, &notice),
+                servers::real_spawn,
+                servers::real_connect,
+            )?;
+            app.manage(supervisor);
             app.manage(App::new(&start));
             app.manage(start);
             watch(app.handle().clone());
