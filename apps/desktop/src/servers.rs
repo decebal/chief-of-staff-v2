@@ -3,9 +3,11 @@
 //! server logs under `<log dir>/servers`.
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -17,6 +19,7 @@ use serde::{Deserialize, Serialize};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const UNMANAGED_HINT: &str = "its owner (for example launchd) is not running it";
+const LOCK_HELD_HINT: &str = "another app instance is starting it; open the dashboard again";
 
 /// A dashboard `ensure` verified: its URL, and whether this app instance owns the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -146,6 +149,11 @@ type Connect = Box<dyn Fn(SocketAddrV4) -> bool + Send + Sync>;
 enum State {
     /// Inserted at lookup, before any probe, lock or spawn.
     Reserved,
+    /// Holds `<port>.lock` until the slot is replaced.
+    Starting {
+        #[expect(dead_code, reason = "held for its flock, released on drop")]
+        lock: File,
+    },
     /// Returned to every waiter; the next open drops it.
     Refused(Refusal),
 }
@@ -173,7 +181,7 @@ pub struct Supervisor {
     connect: Connect,
     /// Guards lookup, insert and every slot transition; probes run outside it.
     slots: Mutex<Slots>,
-    /// Woken on every transition out of Reserved.
+    /// Woken on every transition out of Reserved or Starting.
     changed: Condvar,
 }
 
@@ -231,7 +239,7 @@ impl Supervisor {
                 State::Refused(_) => {
                     slots.by_key.remove(&key);
                 }
-                State::Reserved => {
+                State::Reserved | State::Starting { .. } => {
                     let id = slot.id;
                     if let Some(refusal) = self.wait(slots, key, id) {
                         return Err(refusal);
@@ -307,8 +315,8 @@ impl Supervisor {
         self.slots.lock().expect("supervisor lock")
     }
 
-    /// Waits while slot `id` at `key` is Reserved. A copy of its refusal when it ends
-    /// Refused; `None` when it was removed, so the caller runs `ensure` again.
+    /// Waits while slot `id` at `key` is Reserved or Starting. A copy of its refusal when
+    /// it ends Refused; `None` when it was removed, so the caller runs `ensure` again.
     fn wait(
         &self,
         mut slots: MutexGuard<'_, Slots>,
@@ -320,7 +328,7 @@ impl Supervisor {
             match slots.by_key.get(&key) {
                 Some(Slot {
                     id: now,
-                    state: State::Reserved,
+                    state: State::Reserved | State::Starting { .. },
                 }) if *now == id => {}
                 Some(Slot {
                     id: now,
@@ -367,7 +375,7 @@ impl Supervisor {
                 owned: false,
             })
         } else {
-            Err(start(server))
+            Err(self.start(key, id, server))
         };
         match &result {
             Ok(_) => self.settle(key, id, None),
@@ -375,16 +383,103 @@ impl Supervisor {
         }
         result
     }
+
+    /// ensure: start, reached only when `connect` found no listener. The caller's settle
+    /// replaces the slot with Refused, which drops a lock the slot still holds.
+    fn start(&self, key: SocketAddrV4, id: u64, server: Option<&Server>) -> Refusal {
+        let Some(server) = server else {
+            return Refusal::NotRunning {
+                hint: UNMANAGED_HINT.to_owned(),
+            };
+        };
+        if let Err(refusal) = binary_admissible(server, start_time_supported()) {
+            return refusal;
+        }
+        let path = self.data.join(format!("{}.lock", server.addr.port()));
+        let mut slots = self.lock();
+        // Opened through `std::fs`, so close-on-exec: a spawned server never inherits it.
+        let taken = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .and_then(|file| Ok(try_flock(&file)?.then_some(file)));
+        let lock = match taken {
+            Ok(Some(lock)) => lock,
+            Ok(None) => {
+                return Refusal::NotRunning {
+                    hint: LOCK_HELD_HINT.to_owned(),
+                };
+            }
+            Err(e) => {
+                return Refusal::Internal {
+                    message: format!("lock {}: {e}", path.display()),
+                };
+            }
+        };
+        match slots.by_key.get_mut(&key) {
+            Some(slot) if slot.id == id => slot.state = State::Starting { lock },
+            _ => {
+                return Refusal::Internal {
+                    message: format!("slot for {key} replaced while reserved"),
+                };
+            }
+        }
+        drop(slots);
+        Refusal::Internal {
+            message: "starting a managed server is not implemented".to_owned(),
+        }
+    }
 }
 
-fn start(server: Option<&Server>) -> Refusal {
-    match server {
-        None => Refusal::NotRunning {
-            hint: UNMANAGED_HINT.to_owned(),
-        },
-        Some(_) => Refusal::Internal {
-            message: "starting a managed server is not implemented".to_owned(),
-        },
+/// `VERIFY(binary_admissible)`: `binary` is absolute, a regular file and executable, and
+/// `proc::start_time` works on this platform (rule `platform`).
+pub fn binary_admissible(server: &Server, start_time_supported: bool) -> Result<(), Refusal> {
+    let path = &server.binary;
+    let refuse = |rule: &str| {
+        Err(Refusal::NotAdmissible {
+            rule: rule.to_owned(),
+            path: path.clone(),
+        })
+    };
+    if !path.is_absolute() {
+        return refuse("absolute");
+    }
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(Refusal::BinaryMissing { path: path.clone() });
+        }
+        Err(_) => return refuse("regular_file"),
+    };
+    if !meta.is_file() {
+        return refuse("regular_file");
+    }
+    if meta.permissions().mode() & 0o111 == 0 {
+        return refuse("executable");
+    }
+    if !start_time_supported {
+        return refuse("platform");
+    }
+    Ok(())
+}
+
+fn start_time_supported() -> bool {
+    cos::proc::start_time(std::process::id() as libc::pid_t).is_some()
+}
+
+/// `flock(LOCK_EX | LOCK_NB)`; false when another open file description holds it.
+fn try_flock(file: &File) -> io::Result<bool> {
+    // SAFETY: flock on a descriptor this process owns; no memory is touched.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(true);
+    }
+    let e = io::Error::last_os_error();
+    if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        Ok(false)
+    } else {
+        Err(e)
     }
 }
 

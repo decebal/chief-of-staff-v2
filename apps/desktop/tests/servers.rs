@@ -6,8 +6,11 @@
 //! crash. macOS only: elsewhere every spawn is refused, so `main` returns.
 
 use std::collections::BTreeSet;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -22,7 +25,8 @@ use cos::dashboards::{Dashboard, Probe, ProbeResult, Server};
 use cos::proc;
 use cos_desktop::Start;
 use cos_desktop::servers::{
-    ExitNotice, Ownership, Refusal, Running, SpawnResult, StoreError, Supervisor, real_connect,
+    ExitNotice, Ownership, Refusal, Running, SpawnResult, StoreError, Supervisor,
+    binary_admissible, real_connect,
 };
 use serde_json::{Value, json};
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -65,6 +69,15 @@ const TESTS: &[(&str, fn())] = &[
         pidfile_written_from_spawn_result,
     ),
     ("pidfile_removal_is_gated", pidfile_removal_is_gated),
+    (
+        "binary_admissible_refuses_before_spawn",
+        binary_admissible_refuses_before_spawn,
+    ),
+    ("held_port_lock_refuses", held_port_lock_refuses),
+    (
+        "answering_port_is_never_spawned_on",
+        answering_port_is_never_spawned_on,
+    ),
 ];
 
 fn main() {
@@ -1001,4 +1014,170 @@ fn pidfile_removal_is_gated() {
     }
     sup.remove_pidfile(&valid, &Ownership::Stale)
         .expect("a pidfile already gone");
+}
+
+/// A server running `binary` on `addr`, and its dashboard probing `/` for `marker`.
+fn managed(addr: SocketAddrV4, binary: PathBuf, marker: &str) -> (Server, Dashboard) {
+    let server = Server {
+        binary,
+        addr,
+        ready: Probe {
+            path: "/health".into(),
+            contains: READY.into(),
+        },
+    };
+    let dashboard = Dashboard {
+        name: "Control room".into(),
+        url: format!("http://{addr}/"),
+        port: addr.port(),
+        server: Some("fake".into()),
+        probe: Probe {
+            path: "/".into(),
+            contains: marker.into(),
+        },
+    };
+    (server, dashboard)
+}
+
+/// Takes `<root>/data/servers/<port>.lock` as another app instance would; `None` while
+/// someone else holds it.
+fn take_lock(root: &Path, port: u16) -> Option<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(
+            root.join("data")
+                .join("servers")
+                .join(format!("{port}.lock")),
+        )
+        .unwrap();
+    // SAFETY: flock on a descriptor this process owns; no memory is touched.
+    let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    taken.then_some(file)
+}
+
+fn binary_admissible_refuses_before_spawn() {
+    let root = scratch("admissible");
+    let (sup, spawns) = counting(&root, real_connect);
+
+    let addr = free_addr();
+    let missing = root.join("bin").join("control-room");
+    let (server, d) = managed(addr, missing.clone(), MARKER_A);
+    assert_eq!(
+        sup.ensure(Some(&server), &d),
+        Err(Refusal::BinaryMissing { path: missing })
+    );
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock was left held"
+    );
+
+    let plain = root.join("plain");
+    std::fs::write(&plain, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (server, d) = managed(free_addr(), plain.clone(), MARKER_A);
+    assert_eq!(
+        sup.ensure(Some(&server), &d),
+        Err(Refusal::NotAdmissible {
+            rule: "executable".into(),
+            path: plain,
+        })
+    );
+
+    let dir = root.join("bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (server, _) = managed(addr, dir.clone(), MARKER_A);
+    assert_eq!(
+        binary_admissible(&server, true),
+        Err(Refusal::NotAdmissible {
+            rule: "regular_file".into(),
+            path: dir,
+        })
+    );
+    let (server, _) = managed(addr, PathBuf::from("bin/control-room"), MARKER_A);
+    assert_eq!(
+        binary_admissible(&server, true),
+        Err(Refusal::NotAdmissible {
+            rule: "absolute".into(),
+            path: "bin/control-room".into(),
+        })
+    );
+
+    let exe = std::env::current_exe().unwrap();
+    let (server, _) = managed(addr, exe.clone(), MARKER_A);
+    assert_eq!(
+        binary_admissible(&server, false),
+        Err(Refusal::NotAdmissible {
+            rule: "platform".into(),
+            path: exe,
+        })
+    );
+    assert_eq!(binary_admissible(&server, true), Ok(()));
+    assert_eq!(spawns.load(Ordering::SeqCst), 0, "nothing spawned");
+}
+
+fn held_port_lock_refuses() {
+    let root = scratch("lock-held");
+    let (sup, spawns) = counting(&root, real_connect);
+    let addr = free_addr();
+    let other = take_lock(&root, addr.port()).expect("the other instance takes the lock");
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let want = Err(Refusal::NotRunning {
+        hint: "another app instance is starting it; open the dashboard again".into(),
+    });
+    assert_eq!(sup.ensure(Some(&server), &d), want);
+    // The next open drops the Refused slot and meets the same lock.
+    assert_eq!(sup.ensure(Some(&server), &d), want);
+    assert_eq!(spawns.load(Ordering::SeqCst), 0, "nothing spawned");
+    drop(other);
+}
+
+fn answering_port_is_never_spawned_on() {
+    let root = scratch("answering");
+    let (sup, spawns) = counting(&root, real_connect);
+    let addr = free_addr();
+    let mut kid = spawn_mode("serve", addr);
+    assert!(
+        until(Duration::from_secs(5), || matched(&get(
+            addr, "/health", READY
+        ))),
+        "serve never became ready"
+    );
+    let exe = std::env::current_exe().unwrap();
+
+    let (server, d) = managed(addr, exe.clone(), MARKER_A);
+    assert_eq!(
+        sup.ensure(Some(&server), &d),
+        Ok(Running {
+            url: d.url.clone(),
+            owned: false
+        })
+    );
+    let (server, d) = managed(addr, exe, MARKER_B);
+    assert!(
+        matches!(
+            sup.ensure(Some(&server), &d),
+            Err(Refusal::Identity {
+                owned: false,
+                spawned: false,
+                ..
+            })
+        ),
+        "a listener without the marker"
+    );
+    assert_eq!(
+        spawns.load(Ordering::SeqCst),
+        0,
+        "spawned on a port that answers"
+    );
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock was taken for an answering port"
+    );
+    assert!(
+        kid.0.try_wait().unwrap().is_none(),
+        "the listener was signalled"
+    );
 }
