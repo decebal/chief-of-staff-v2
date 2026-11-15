@@ -17,6 +17,7 @@ pub mod proc;
 pub mod report;
 pub mod reports;
 pub mod ritual;
+pub mod signals;
 pub mod staff;
 pub mod state;
 pub mod store;
