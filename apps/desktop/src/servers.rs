@@ -846,18 +846,23 @@ impl Inner {
         let mut slots = self.lock();
         // A slot whose `ensure` is still running stays: its readiness and its epilogue's
         // Exited check read it, and the epilogue replaces it with Refused.
-        let exited: Vec<(SocketAddrV4, bool)> = slots
+        let exited: Vec<(SocketAddrV4, bool, bool)> = slots
             .by_key
             .iter()
             .filter_map(|(key, slot)| match &slot.state {
                 State::Exited { spawn, starting } => {
-                    Some((*key, !starting && spawn.notice.is_set()))
+                    Some((*key, *starting, !starting && spawn.notice.is_set()))
                 }
                 _ => None,
             })
             .collect();
-        for (key, drop_slot) in exited {
-            let _ = self.remove_pidfile(&self.pidfile(key), &Ownership::Owned { exited: true });
+        for (key, starting, drop_slot) in exited {
+            let ownership = if starting {
+                Ownership::Starting { exited: true }
+            } else {
+                Ownership::Owned { exited: true }
+            };
+            let _ = self.remove_pidfile(&self.pidfile(key), &ownership);
             if drop_slot {
                 slots.by_key.remove(&key);
             }
