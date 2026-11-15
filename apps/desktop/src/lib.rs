@@ -31,6 +31,13 @@ pub struct Start {
     pub user_home: Option<PathBuf>,
     pub registry: PathBuf,
     pub settings_file: PathBuf,
+    /// Holds `servers/`: pidfiles and port locks.
+    pub data_dir: PathBuf,
+    /// Holds `servers/`: one log per dashboard server.
+    pub log_dir: PathBuf,
+    pub ui_state_file: PathBuf,
+    /// `COS_DASHBOARDS`; `None` means `dashboards.toml` beside `registry`.
+    pub dashboards_file: Option<PathBuf>,
     /// `COS_BUSINESS`, `COS_HOME`, `COS_WORKSPACE`, `COS_PROJECTS`.
     pub sources: Sources,
     /// `COS_BIN`.
@@ -47,11 +54,16 @@ impl Start {
                 .map(PathBuf::from)
         };
         let install = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let config = app.path().app_config_dir()?;
         Ok(Self {
             install: install.canonicalize().unwrap_or(install),
             user_home: env_path("HOME"),
             registry: business::location()?,
-            settings_file: app.path().app_config_dir()?.join("settings.json"),
+            settings_file: config.join("settings.json"),
+            data_dir: app.path().app_data_dir()?,
+            log_dir: app.path().app_log_dir()?,
+            ui_state_file: config.join("ui-state.json"),
+            dashboards_file: env_path("COS_DASHBOARDS"),
             sources: Sources {
                 business: std::env::var("COS_BUSINESS").ok().filter(|v| !v.is_empty()),
                 dirs: Dirs {
@@ -262,13 +274,36 @@ fn err(e: impl std::fmt::Display) -> String {
 /// A write names the business it was issued for. A call sent before a switch
 /// is refused here, before anything is read, written, run or killed.
 fn named(cur: &Current, business: &str) -> Res<()> {
-    if cur.business == business {
+    same_label(&cur.business, business)
+}
+
+fn same_label(label: &str, business: &str) -> Res<()> {
+    if label == business {
         return Ok(());
     }
     Err(format!(
-        "this call names business {business:?} but the window is on {:?}: nothing written, run or killed",
-        cur.business
+        "this call names business {business:?} but the window is on {label:?}: nothing written, run or killed"
     ))
+}
+
+/// What a business-checked command reads of the app business, copied in the same
+/// App-lock acquisition as the check, so a switch cannot land between the two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    /// The registry business; `None` when the triple came from the env or defaults layer.
+    pub business: Option<String>,
+    pub home: PathBuf,
+}
+
+/// Refuses a call naming a business other than the app business label, with `named()`'s text.
+pub fn check_business<R: Runtime>(app: &AppHandle<R>, business: &str) -> Res<Checked> {
+    let st = app.state::<App>();
+    let st = st.lock();
+    same_label(st.triple.label(), business)?;
+    Ok(Checked {
+        business: st.triple.business.clone(),
+        home: st.triple.home.clone(),
+    })
 }
 
 /// Blocking work off the main thread: a sync command would freeze the window.
@@ -955,10 +990,6 @@ pub fn with_menu<R: Runtime>(builder: Builder<R>) -> Builder<R> {
 /// The app on any runtime: the report scheme, the state (given, or read from the
 /// environment and the config directory at setup), the watcher, the commands.
 pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder<R> {
-    let builder = match start {
-        Some(s) => builder.manage(App::new(&s)),
-        None => builder,
-    };
     builder
         .register_asynchronous_uri_scheme_protocol("cosreport", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
@@ -972,11 +1003,13 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
                 responder.respond(res)
             });
         })
-        .setup(|app| {
-            if app.try_state::<App>().is_none() {
-                let start = Start::from_env(app.handle()).map_err(chain)?;
-                app.manage(App::new(&start));
-            }
+        .setup(move |app| {
+            let start = match start {
+                Some(s) => s,
+                None => Start::from_env(app.handle()).map_err(chain)?,
+            };
+            app.manage(App::new(&start));
+            app.manage(start);
             watch(app.handle().clone());
             Ok(())
         })

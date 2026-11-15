@@ -63,13 +63,20 @@ fn main() {
         user_home: std::env::var_os("HOME").map(PathBuf::from),
         registry,
         settings_file: home.join("settings.json"),
+        data_dir: home.join("data"),
+        log_dir: home.join("logs"),
+        ui_state_file: home.join("ui-state.json"),
+        dashboards_file: None,
         sources: Sources::default(),
         cos_bin: cos.is_file().then_some(cos),
         slots: Some(2),
     };
-    let app = cos_desktop::builder(mock_builder(), Some(start))
+    let mut app = cos_desktop::builder(mock_builder(), Some(start))
         .build(mock_context(noop_assets()))
         .expect("mock app");
+    // `build` does not run `setup`; on the mock runtime one iteration runs it and nothing else.
+    #[allow(deprecated)]
+    app.run_iteration(|_, _| {});
     let w = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .expect("mock window");
