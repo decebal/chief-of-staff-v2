@@ -138,7 +138,6 @@ function openTab(view, pane) {
     $("flows-frame").src = `${REPORT}flows?t=${Date.now()}`;
   }
   if (view === "agents" && SWITCH_PANES.includes(pane)) showPane(pane);
-  if (view === "agents") refreshOtherLive();
 }
 
 for (const tab of document.querySelectorAll(".app-tab")) {
@@ -163,11 +162,15 @@ async function switchTo(name) {
     throw new Error("The Hire dialog has unsaved edits. Pick the business again to discard them.");
   }
   await invoke("switch_business", { args: { name } });
-  const tab = document.querySelector('.app-tab[aria-current="page"]').dataset.view;
+  const current = document.querySelector('.app-tab[aria-current="page"]');
+  const tab = current.dataset.view;
   const pane = ui.pane === "role" ? "staff" : ui.pane === "run" ? ui.from : ui.pane;
-  location.hash = `tab=${tab}&pane=${pane}`;
+  // Dashboard names contain spaces ("Control room").
+  location.hash =
+    tab === "dash" ? `tab=dash&dash=${encodeURIComponent(current.dataset.dash)}` : `tab=${tab}&pane=${pane}`;
   location.reload();
 }
+window.switchTo = switchTo;
 
 // The Docs room saves through the app, not over its own scheme: only messages
 // from that frame are honoured, and the reply goes back to it alone.
@@ -1116,24 +1119,6 @@ $("hire-form").addEventListener("submit", async (ev) => {
   }
 });
 
-// ---- other businesses
-
-function showOtherLive(rows) {
-  const n = rows.filter((r) => !r.app).reduce((sum, r) => sum + (r.live ?? 0), 0);
-  const badge = $("other-live");
-  badge.textContent = `${n} live in other businesses`;
-  badge.hidden = !n;
-}
-
-async function refreshOtherLive() {
-  try {
-    showOtherLive(await invoke("businesses"));
-  } catch (e) {
-    logDev("businesses", e);
-    $("other-live").hidden = true;
-  }
-}
-
 // ---- start
 
 let staffTimer;
@@ -1148,8 +1133,6 @@ listen("agents-changed", () => {
   staffTimer = setTimeout(refreshStaff, 800);
 });
 $("biz-open").addEventListener("click", () => openSwitcher(switchTo));
-$("other-live").addEventListener("click", () => openSwitcher(switchTo));
-document.addEventListener("businesses-loaded", (e) => showOtherLive(e.detail));
 listen("switch-business", () => openSwitcher(switchTo));
 loadPaths().then(loadRepos).then(openFromHash).catch((e) => logDev("paths", e));
 reloadReport();

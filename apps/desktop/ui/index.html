@@ -9,6 +9,11 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <aside id="sidebar" aria-label="Businesses">
+    <ul id="sidebar-rows" class="biz-rows"></ul>
+    <p id="sidebar-status" class="error small" role="status" hidden></p>
+  </aside>
+  <div class="shell-main">
   <header class="app-header">
     <div class="brand">
       <img src="mark.svg" alt="" class="brand-mark">
@@ -177,7 +182,6 @@
             </nav>
           </div>
           <div class="agents-bar-end">
-            <button id="other-live" class="btn" data-variant="outline" data-size="sm" type="button" aria-haspopup="dialog" hidden></button>
             <button id="hire-open" class="btn" data-variant="primary" type="button">Hire</button>
           </div>
         </div>
@@ -295,7 +299,9 @@
       </div>
     </section>
   </main>
+  </div>
   <script src="command.js"></script>
+  <script src="sidebar.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
