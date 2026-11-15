@@ -428,13 +428,13 @@ struct BusinessRow {
 }
 
 /// The brief the owner last saw in Today, as the report rendered it.
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct SeenBrief {
     file: String,
     mtime: i64,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default)]
 struct UiState {
     #[serde(rename = "lastSeenBrief", default)]
     last_seen_brief: BTreeMap<String, SeenBrief>,
@@ -446,6 +446,114 @@ fn read_ui_state(path: &Path) -> UiState {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
+}
+
+/// `^\d{4}-\d{2}-\d{2}\.json$`: a bare name, so it can only name a file in `out/briefs`.
+fn brief_name(file: &str) -> bool {
+    let b = file.as_bytes();
+    b.len() == 15
+        && file.ends_with(".json")
+        && b[..10].iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            _ => c.is_ascii_digit(),
+        })
+}
+
+/// `VERIFY(brief_seen)`'s file checks. The file's metadata is a check only, never the
+/// value stored: a brief rewritten after render keeps the mtime the owner saw.
+fn verify_brief_seen(home: &Path, file: &str, mtime: i64) -> Res<()> {
+    if !brief_name(file) {
+        return Err(format!(
+            "brief_seen: {file:?} is not a YYYY-MM-DD.json brief name: nothing written"
+        ));
+    }
+    if mtime < 0 {
+        return Err(format!(
+            "brief_seen: mtime {mtime} is before the Unix epoch: nothing written"
+        ));
+    }
+    let dir = home.join("out/briefs");
+    let meta = std::fs::metadata(dir.join(file))
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .ok_or_else(|| {
+            format!(
+                "brief_seen: no brief {file:?} under {}: nothing written",
+                dir.display()
+            )
+        })?;
+    let current = cos::signals::mtime_ms(&meta);
+    if mtime > current {
+        return Err(format!(
+            "brief_seen: mtime {mtime} is past {file}'s current mtime {current}: nothing written"
+        ));
+    }
+    Ok(())
+}
+
+fn lock_path(file: &Path) -> PathBuf {
+    let mut path = file.as_os_str().to_owned();
+    path.push(".lock");
+    PathBuf::from(path)
+}
+
+/// `STORE(ui-state)`: keeps the greater of the stored and the given pair for `business`
+/// and drops entries for unregistered names. Nothing else creates the config dir, and
+/// `atomic_write_bytes` needs the parent to exist.
+fn store_seen(
+    ui_state_file: &Path,
+    registry: &Path,
+    business: &str,
+    seen: SeenBrief,
+) -> anyhow::Result<()> {
+    if let Some(dir) = ui_state_file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let _held = agents::slots::lock_exclusive(&lock_path(ui_state_file))?;
+    let registered = business::load(registry)?.businesses;
+    let mut state = read_ui_state(ui_state_file);
+    state
+        .last_seen_brief
+        .retain(|name, _| registered.contains_key(name));
+    let lower = state
+        .last_seen_brief
+        .get(business)
+        .is_some_and(|s| (seen.file.as_str(), seen.mtime) < (s.file.as_str(), s.mtime));
+    if !lower {
+        state.last_seen_brief.insert(business.to_owned(), seen);
+    }
+    cos::state::atomic_write_bytes(ui_state_file, &serde_json::to_vec(&state)?)
+}
+
+/// Records the brief the report rendered in Today as seen, then publishes the business's
+/// row so the dot clears at once.
+#[tauri::command]
+async fn brief_seen<R: Runtime>(
+    app: AppHandle<R>,
+    business: String,
+    file: String,
+    mtime: i64,
+) -> Res<()> {
+    let checked = check_business(&app, &business)?;
+    // The defaults layer is labelled `default`, which a registered business may also be named.
+    if checked.business.is_none() {
+        return Err(format!(
+            "brief_seen: the window on {business:?} has no registry business: nothing written"
+        ));
+    }
+    verify_brief_seen(&checked.home, &file, mtime)?;
+    blocking(move || {
+        let start = app.state::<Start>();
+        store_seen(
+            &start.ui_state_file,
+            &start.registry,
+            &business,
+            SeenBrief { file, mtime },
+        )?;
+        publish(&app, Rebuild::Named(&[business]));
+        Ok(())
+    })
+    .await
 }
 
 /// What the row builder reads, copied from the managed `Start` and the App lock.
@@ -1258,6 +1366,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             paths,
             switch_business,
             businesses,
+            brief_seen,
             agents_list,
             agents_fit,
             agents_spawn,
