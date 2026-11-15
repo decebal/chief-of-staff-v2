@@ -155,6 +155,60 @@ Full flags: [Usage › Spin off agents](docs/usage.md#spin-off-agents).
 | **claude.ai** | `cos tunnel`: a Cloudflare quick tunnel to a read-only server that can't start paid runs or read the workspace |
 | **Claude Code · Codex skill** | the starter skill, from `.claude-plugin/` or `.agents/plugins/` in this repo; the `tactician` agent is installed into `~/.claude/agents/` |
 
+## Dashboards
+
+Each business can show its own dashboards as tabs in the desktop app. They are declared in
+`dashboards.toml`, next to the registry: `COS_DASHBOARDS`, else the registry's directory
+(`~/.config/cos/dashboards.toml` by default). No `cos` command writes it, and a missing file
+means no dashboards.
+
+```toml
+[server.control-room]
+binary = "/Users/decebaldobrica/Projects/founder-mode/portfolio-control-room/target/release/portfolio-control-room"
+addr = "127.0.0.1:4777"
+ready = { path = "/health", contains = "\"status\":\"ok\"" }
+
+[[business.founding-bets]]
+name = "Control room"
+url = "http://127.0.0.1:4777/"
+server = "control-room"
+probe = { path = "/", contains = "<title>Wolven portfolio control room" }
+
+[[business.founding-bets]]
+name = "Salesroom"
+url = "http://127.0.0.1:4777/sales"
+server = "control-room"
+probe = { path = "/sales", contains = "<script src=\"/sales.js\"" }
+
+[[business.longhand]]
+name = "Gazette"
+url = "http://127.0.0.1:8790/#staff"
+probe = { path = "/", contains = "<measured in Build>" }
+```
+
+A `[server.<name>]` is a server the app may start, always as `[binary, "serve", addr]`. A
+dashboard with no `server` key is never started by the app. Every URL is
+`http://127.0.0.1:<port>/...`, and a marker that is a single tag (such as the
+`<measured in Build>` placeholder) is refused, so the file does not load until a real marker
+replaces it.
+
+Which processes the app may stop:
+
+| State | What it is | Signalled by the app |
+|---|---|---|
+| **owned** | this app instance spawned it and holds its port lock until it is reaped | yes, with its process group, when the app exits |
+| **external** | something else holds the port and the dashboard's identity probe passed | never; it is embedded, and probed again on every open |
+| **leftover** | a pidfile from an earlier app instance whose process still matches the record, and whose executable is the binary declared for that port | stopped at the next launch, never adopted; on any mismatch only the pidfile is removed |
+
+A listener whose probe fails is refused with a visible reason and never signalled.
+
+```sh
+cos business dashboards              # every dashboard, its server, and whether its URL answers its probe now
+cos business dashboards founding-bets
+```
+
+It starts nothing and writes nothing. An invalid file prints the key path and rule and exits 1.
+
 ## Try the demo
 
 ```sh
@@ -191,6 +245,7 @@ cos --home /tmp/cos-demo dash
 | [Business sidebar and dashboards design](docs/plans/2026-11-13-business-dashboards-design.md) | dashboards.toml, the app's server supervisor, the sidebar signals and the Semantic ISA |
 | [Business sidebar and dashboards design review](docs/plans/2026-11-13-business-dashboards-design-review.md) | 13 EGM rounds, owner decisions, what Build must prove |
 | [Business sidebar and dashboards plan](docs/plans/2026-11-15-business-dashboards-plan.md) | quality gates, testing trophy and 45 stories, the Q1 spike first |
+| [Business sidebar and dashboards Q1 spike](docs/plans/2026-11-15-business-dashboards-q1-spike.md) | the go/no-go record for embedding loopback dashboards in the app's iframe |
 
 ## License
 
