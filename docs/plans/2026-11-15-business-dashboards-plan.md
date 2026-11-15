@@ -458,10 +458,10 @@ As the owner, I want the next launch after a crash to stop the server the crashe
 Covers: design item 8 (Launch cleanup steps 4 and 5, `VERIFY(leftover_group)`, re-checks before each signal), 23 cases: matching pidfile from a dead app signalled and removed; leftover `serve-with-member` gets one group SIGKILL. ISA rows: Lifecycle: leftover group member outlives the leader; Lifecycle: crash, then launch; `signal_group` admitted "leftover with all five checks equal and the port lock taken by launch cleanup, signalled at `-pid`" and "one SIGKILL to a leftover's group after its leader passed the five checks at SIGTERM and exited". The refused entries of `signal_group` for launch cleanup are in US-025 and US-044.
 Blocked by: US-044. Priority: p1.
 
-- [ ] Test: a leftover started through an intermediate process, whose executable is the declared test binary for its port, has its group signalled at `-pid` and its pidfile removed (file: `apps/desktop/tests/servers.rs`), written first and failing.
-- [ ] Test: a leftover `serve-with-member`: SIGTERM, leader exits, member survives, one SIGKILL to the group while `group_alive` and the lock is held; cleanup returns before 5 s with the pidfile removed; polling every 50 ms for up to 1 s shows the group gone and the port free (file: `apps/desktop/tests/servers.rs`), written first and failing.
-- [ ] The five checks run again immediately before the SIGTERM and the deadline SIGKILL; each leftover gets at most one SIGKILL.
-- [ ] All tests green: `cargo test -p cos-desktop --test servers`
+- [x] Test: a leftover started through an intermediate process, whose executable is the declared test binary for its port, has its group signalled at `-pid` and its pidfile removed (file: `apps/desktop/tests/servers.rs`), written first and failing.
+- [x] Test: a leftover `serve-with-member`: SIGTERM, leader exits, member survives, one SIGKILL to the group while `group_alive` and the lock is held; cleanup returns before 5 s with the pidfile removed; polling every 50 ms for up to 1 s shows the group gone and the port free (file: `apps/desktop/tests/servers.rs`), written first and failing.
+- [x] The five checks run again immediately before the SIGTERM and the deadline SIGKILL; each leftover gets at most one SIGKILL.
+- [x] All tests green: `cargo test -p cos-desktop --test servers`
 
 Mark each item [x] as you complete it. Only close when all are checked.
 
