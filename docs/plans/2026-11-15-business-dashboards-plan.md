@@ -407,9 +407,9 @@ As the owner, I want quit to stop an Owned server before it waits on a probing s
 Covers: design item 8 (Stop path, the order of signals across keys and the reaper's group kill under `stop_owned`), 23 cases: quit with one key Owned and another probing; `serve-with-member` under `stop_owned`; second instance. ISA rows: Lifecycle: quit with an Owned server and a probing slot; Lifecycle: group member outlives the leader on quit; Lifecycle: second instance; `signal_group` admitted "SIGKILL to the group of a reaped leader while `group_alive(pgid)` is true".
 Blocked by: US-023. Priority: p1.
 
-- [ ] Test: with one key Owned and another key's probe blocked, the Owned group gets SIGTERM before `stop_owned` waits on the Reserved slot and is gone without a SIGKILL (file: `apps/desktop/tests/servers.rs`), written first and failing.
-- [ ] Test: `serve-with-member` under `stop_owned`: the reaper sends SIGKILL to the group after the reap; group gone and port free within the 5 s deadline; a second supervisor that embedded the server as External signals nothing on its own `stop_owned` (file: `apps/desktop/tests/servers.rs`), written first and failing.
-- [ ] All tests green: `cargo test -p cos-desktop --test servers`
+- [x] Test: with one key Owned and another key's probe blocked, the Owned group gets SIGTERM before `stop_owned` waits on the Reserved slot and is gone without a SIGKILL (file: `apps/desktop/tests/servers.rs`), written first and failing.
+- [x] Test: `serve-with-member` under `stop_owned`: the reaper sends SIGKILL to the group after the reap; group gone and port free within the 5 s deadline; a second supervisor that embedded the server as External signals nothing on its own `stop_owned` (file: `apps/desktop/tests/servers.rs`), written first and failing.
+- [x] All tests green: `cargo test -p cos-desktop --test servers`
 
 Mark each item [x] as you complete it. Only close when all are checked.
 
