@@ -2316,21 +2316,20 @@ fn cleanup_ignores_non_canonical_names() {
     let sup = supervisor(&root.join("data"), &root.join("logs")).unwrap();
     let servers = root.join("data").join("servers");
     let left = leftover("idle", free_addr());
-    let addr: SocketAddrV4 = "127.0.0.1:4777".parse().unwrap();
-    let live = plant_record(&root, "4777.json", left.0, addr);
-    let copy = servers.join("04777.json");
-    std::fs::copy(&live, &copy).unwrap();
-    let held = take_lock(&root, 4777).expect("4777.lock is free");
 
-    sup.launch_cleanup(&declaring(addr, std::env::current_exe().unwrap()));
-    assert!(copy.exists(), "04777.json was handled");
-    assert!(live.exists(), "the held 4777.json was removed");
-    assert!(
-        !servers.join("04777.lock").exists(),
-        "cleanup opened a non-canonical lock"
-    );
-    assert_unsignalled(left.0, "04777.json");
-    drop(held);
+    for (name, port) in [("04777.json", 4777), ("0.json", 0)] {
+        let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+        let file = plant_record(&root, name, left.0, addr);
+        sup.launch_cleanup(&Dashboards::default());
+        assert!(file.exists(), "{name} was removed");
+        for lock in [format!("{port}.lock"), name.replace(".json", ".lock")] {
+            assert!(
+                !servers.join(&lock).exists(),
+                "{name}: cleanup opened {lock}"
+            );
+        }
+        assert_unsignalled(left.0, name);
+    }
 }
 
 fn cleanup_keeps_the_lock_inode() {

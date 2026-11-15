@@ -1449,8 +1449,16 @@ fn setup_manages_the_start_it_was_given() {
 }
 
 #[test]
-fn invalid_dashboards_at_setup_removes_pidfiles_unsignalled() {
+fn invalid_dashboards_at_setup_removes_pidfile_unsignalled() {
     use std::os::unix::process::CommandExt;
+
+    struct Reap(std::process::Child);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
 
     let cos = cos_bin();
     let root = scratch("cleanup-invalid");
@@ -1462,12 +1470,14 @@ fn invalid_dashboards_at_setup_removes_pidfiles_unsignalled() {
     std::fs::write(&dashboards, "[servers.fake\nbinary = ").unwrap();
     start.dashboards_file = Some(dashboards);
 
-    let mut child = Command::new("sleep")
-        .arg("60")
-        .process_group(0)
-        .spawn()
-        .unwrap();
-    let pid = child.id() as libc::pid_t;
+    let mut child = Reap(
+        Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = child.0.id() as libc::pid_t;
     let servers = root.join("data").join("servers");
     std::fs::create_dir_all(&servers).unwrap();
     let pidfile = servers.join("4777.json");
@@ -1484,9 +1494,8 @@ fn invalid_dashboards_at_setup_removes_pidfiles_unsignalled() {
     assert!(app.try_state::<Start>().is_some(), "setup did not complete");
     assert!(!pidfile.exists(), "launch cleanup kept the pidfile");
     std::thread::sleep(Duration::from_millis(300));
-    let alive = child.try_wait().unwrap().is_none();
-    let _ = child.kill();
-    let _ = child.wait();
+    let alive = child.0.try_wait().unwrap().is_none();
+    drop(child);
     assert!(alive, "launch cleanup signalled the child");
 }
 
