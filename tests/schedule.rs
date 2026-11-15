@@ -78,12 +78,19 @@ impl Sandbox {
         for d in [&home, &launchd, &bin] {
             std::fs::create_dir_all(d).unwrap();
         }
+        // Like launchctl, `print` exits non-zero for a job that is not loaded; `cos.dash` is
+        // loaded while `dash.pid` exists, and booting it out unloads it without touching the pid.
         let stub = bin.join("launchctl");
+        let state = root.0.join("dash.pid");
         std::fs::write(
             &stub,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
-                stub_log.display()
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncase \"$*\" in\n  \
+                 'print gui/'*/cos.dash)\n    [ -f '{st}' ] || exit 113\n    \
+                 printf 'gui/%s/cos.dash = {{\\n\\tstate = running\\n\\tpid = %s\\n}}\\n' \"$(id -u)\" \"$(cat '{st}')\" ;;\n  \
+                 'bootout gui/'*/cos.dash) rm -f '{st}' ;;\nesac\nexit 0\n",
+                log = stub_log.display(),
+                st = state.display(),
             ),
         )
         .unwrap();
@@ -100,6 +107,11 @@ impl Sandbox {
 
     fn stub(&self) -> PathBuf {
         self.bin.join("launchctl")
+    }
+
+    /// Marks `cos.dash` loaded in the fake launchctl, which then prints `pid = <pid>` for it.
+    fn load_dash(&self, pid: u32) {
+        std::fs::write(self.root.0.join("dash.pid"), pid.to_string()).unwrap();
     }
 
     /// The stub also copies both `cos.dash` plists into `snap/` when `cos.dash` is booted out,
@@ -388,6 +400,101 @@ fn failed_dash_render_removes_new_only() {
     assert!(
         !log.contains("cos.dash"),
         "cos.dash touched after a failed render: {log:?}"
+    );
+}
+
+/// A live process standing in for an old `cos.dash` that outlives its bootout; killed and reaped on drop.
+struct Stuck(std::process::Child);
+
+impl Drop for Stuck {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn old_dash_pid_alive_times_out_keeping_installed_plist() {
+    let sb = Sandbox::new("dash-timeout");
+    let acme = make_biz(&sb.root.0, "acme");
+    write_registry(&sb.registry, "acme", &[("acme", &acme)]);
+    let installed = b"sentinel dash\n<installed/>\n".to_vec();
+    std::fs::write(sb.launchd.join("cos.dash.plist"), &installed).unwrap();
+    let old = Stuck(Command::new("sleep").arg("60").spawn().unwrap());
+    sb.load_dash(old.0.id());
+
+    let out = schedule(&sb, Some("acme"));
+
+    assert!(
+        !out.status.success(),
+        "an old cos.dash pid alive after 10 s must fail the task: {} {:?}",
+        stderr(&out),
+        sb.launchctl_log()
+    );
+    let plists = sb.plists();
+    assert!(
+        !plists.contains_key("cos.dash.plist.new"),
+        "cos.dash.plist.new left after a timeout: {:?}",
+        plists.keys()
+    );
+    assert_eq!(
+        plists.get("cos.dash.plist"),
+        Some(&installed),
+        "installed cos.dash.plist changed by a timeout"
+    );
+    let brief = String::from_utf8_lossy(
+        plists
+            .get("cos.brief.plist")
+            .expect("cos.brief.plist installed"),
+    )
+    .into_owned();
+    assert!(
+        brief.contains("<string>acme</string>"),
+        "cos.brief.plist not rendered: {brief}"
+    );
+    let log = sb.launchctl_log();
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("bootstrap ") && l.contains("cos.brief.plist")),
+        "cos.brief not loaded: {log:?}"
+    );
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("bootout ") && l.ends_with("/cos.dash")),
+        "cos.dash not booted out: {log:?}"
+    );
+    assert!(
+        !log.lines()
+            .any(|l| l.starts_with("bootstrap ") && l.contains("cos.dash.plist")),
+        "cos.dash bootstrapped while its old pid is alive: {log:?}"
+    );
+}
+
+#[test]
+fn unloaded_dash_skips_the_wait() {
+    let sb = Sandbox::new("dash-unloaded");
+    let acme = make_biz(&sb.root.0, "acme");
+    write_registry(&sb.registry, "acme", &[("acme", &acme)]);
+
+    let start = std::time::Instant::now();
+    let out = schedule(&sb, Some("acme"));
+    let took = start.elapsed();
+
+    assert_bound_to(&sb, &out, "acme", &acme.home);
+    assert!(
+        took < std::time::Duration::from_secs(10),
+        "an empty old pid waited: {took:?}"
+    );
+    let log = sb.launchctl_log();
+    let print = log
+        .lines()
+        .position(|l| l.starts_with("print gui/") && l.ends_with("/cos.dash"));
+    let bootout = log
+        .lines()
+        .position(|l| l.starts_with("bootout ") && l.ends_with("/cos.dash"));
+    assert!(
+        matches!((print, bootout), (Some(a), Some(b)) if a < b),
+        "old cos.dash pid not read before bootout: {log:?}"
     );
 }
 
