@@ -537,7 +537,24 @@ fn business_cmd(cli: &Cli, cmd: &BusinessCmd) -> Result<()> {
             };
             let canon = business::canonical(&business).context("cos business add refused")?;
             announce_first_run(business::first_run(&path, &default)?, &path, &default);
-            business::add(&path, name, canon.clone(), *replace)?;
+            let nested = business::add(&path, name, canon.clone(), *replace)?;
+            if !nested.is_empty() {
+                let registry = business::load(&path)?;
+                for other in &nested {
+                    let Some(other_biz) = registry.businesses.get(other) else {
+                        continue;
+                    };
+                    let relation = if canon.home.starts_with(&other_biz.home) {
+                        "is inside"
+                    } else {
+                        "contains"
+                    };
+                    eprintln!(
+                        "warning: {} {relation} {other}'s home",
+                        canon.home.display()
+                    );
+                }
+            }
             let install = default_home();
             if business::seed_context(&install.join("templates/context"), &canon.home)? {
                 eprintln!(

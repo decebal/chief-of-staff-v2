@@ -234,6 +234,48 @@ fn add_refuses_bad_or_shared_dirs() {
     }
 }
 
+#[test]
+fn add_returns_nested_homes() {
+    let root = scratch("nested");
+    let file = registry_file(&root);
+    let projects = subdir(&root, "projects");
+    let outer = subdir(&root, "outer");
+    let inner = subdir(&root, "outer/inner");
+    let apart = subdir(&root, "apart");
+
+    assert!(
+        business::add(&file, "outer", one_dir(&outer, &projects), false)
+            .unwrap()
+            .is_empty()
+    );
+    let nested = business::add(&file, "inner", one_dir(&inner, &projects), false).unwrap();
+    assert_eq!(nested, vec!["outer".to_owned()], "inner names its outer");
+    let loaded = business::load(&file).unwrap();
+    assert_eq!(
+        loaded.businesses["inner"],
+        one_dir(&inner, &projects),
+        "a nested home registers"
+    );
+    assert!(
+        business::add(&file, "apart", one_dir(&apart, &projects), false)
+            .unwrap()
+            .is_empty(),
+        "a disjoint home names nobody"
+    );
+
+    let before = std::fs::read(&file).unwrap();
+    let equal = business::add(&file, "twin", one_dir(&outer, &projects), false);
+    assert!(equal.is_err(), "an equal home is still refused");
+    assert_eq!(std::fs::read(&file).unwrap(), before, "file byte-identical");
+
+    let replaced = business::add(&file, "outer", one_dir(&outer, &projects), true).unwrap();
+    assert_eq!(
+        replaced,
+        vec!["inner".to_owned()],
+        "replace names the nested business, never itself"
+    );
+}
+
 struct Restore(PathBuf);
 
 impl Drop for Restore {

@@ -265,9 +265,11 @@ fn canonical_dir(label: &str, dir: &Path) -> Result<PathBuf> {
 }
 
 /// Adds `name`, or replaces it when `replace` is set. A home or workspace already used by
-/// another business is refused, so each directory belongs to one business.
-pub fn add(path: &Path, name: &str, business: Business, replace: bool) -> Result<()> {
+/// another business is refused, so each directory belongs to one business. Returns the other
+/// businesses whose home contains the new home or lies inside it.
+pub fn add(path: &Path, name: &str, business: Business, replace: bool) -> Result<Vec<String>> {
     let business = canonical(&business)?;
+    let mut nested = Vec::new();
     update(path, |registry| {
         if !replace && registry.businesses.contains_key(name) {
             bail!(
@@ -285,10 +287,16 @@ pub fn add(path: &Path, name: &str, business: Business, replace: bool) -> Result
             if shared {
                 bail!("business {name:?} shares a home or workspace with {other:?}");
             }
+            if existing.home.starts_with(&business.home)
+                || business.home.starts_with(&existing.home)
+            {
+                nested.push(other.clone());
+            }
         }
         registry.businesses.insert(name.to_owned(), business);
         Ok(())
-    })
+    })?;
+    Ok(nested)
 }
 
 /// Directory values, each optional.
