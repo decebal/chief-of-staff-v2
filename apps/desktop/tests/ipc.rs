@@ -2463,3 +2463,128 @@ fn dashboards_refuses_an_invalid_file_and_a_stale_business() {
         "this call names business \"bravo\" but the window is on \"default\": nothing written, run or killed"
     );
 }
+
+fn dashboard_open(w: &Win, business: &str, name: &str) -> Result<Value, Value> {
+    call(
+        w,
+        "dashboard_open",
+        json!({ "business": business, "name": name }),
+    )
+}
+
+#[test]
+fn dashboard_open_refuses_a_stale_business_an_undeclared_name_and_an_invalid_file() {
+    let (_start, path, _app, w) = dashboards_app("dash-open-refused", DASHBOARDS_TOML);
+
+    assert_eq!(
+        dashboard_open(&w, "bravo", "Bravo board").unwrap_err(),
+        json!({
+            "kind": "StaleBusiness",
+            "message": "this call names business \"bravo\" but the window is on \"default\": nothing written, run or killed",
+        })
+    );
+    assert_eq!(
+        dashboard_open(&w, "default", "Bravo board").unwrap_err(),
+        json!({ "kind": "UnknownDashboard", "name": "Bravo board" }),
+        "a dashboard of another business must not open"
+    );
+
+    let bad = DASHBOARDS_TOML.replace(
+        "url = \"http://127.0.0.1:4777/\"",
+        "url = \"https://127.0.0.1:4777/\"",
+    );
+    std::fs::write(&path, bad).unwrap();
+    let e = dashboard_open(&w, "default", "Control room").unwrap_err();
+    assert_eq!(e["kind"], "InvalidConfig", "{e}");
+    assert!(
+        e["message"]
+            .as_str()
+            .unwrap()
+            .contains("business.default[0].url: must be http://127.0.0.1:<port>/"),
+        "{e}"
+    );
+}
+
+/// A listener answering every request with a page that carries `marker`.
+fn marker_page(marker: &'static str) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut req = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut chunk) {
+                    Ok(n) if n > 0 => req.extend_from_slice(&chunk[..n]),
+                    _ => break,
+                }
+            }
+            let body = format!("<html><head>{marker}</head></html>");
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    port
+}
+
+#[test]
+fn dashboard_open_runs_an_unmanaged_dashboard_added_after_launch() {
+    let (_start, path, _app, w) = dashboards_app("dash-open-unmanaged", DASHBOARDS_TOML);
+    let port = marker_page("<title>Fixture board</title>");
+    let url = format!("http://127.0.0.1:{port}/");
+
+    assert_eq!(
+        dashboard_open(&w, "default", "Fixture").unwrap_err(),
+        json!({ "kind": "UnknownDashboard", "name": "Fixture" })
+    );
+
+    let added = format!(
+        "{DASHBOARDS_TOML}
+[[business.default]]
+name = \"Fixture\"
+url = \"{url}\"
+probe = {{ path = \"/\", contains = \"<title>Fixture board</title>\" }}
+"
+    );
+    std::fs::write(&path, added).unwrap();
+    assert_eq!(
+        dashboard_open(&w, "default", "Fixture").unwrap(),
+        json!({ "url": url, "owned": false }),
+        "a dashboard added after launch did not open"
+    );
+}
+
+#[test]
+fn dashboard_open_on_a_window_with_no_registry_business_is_unknown() {
+    let root = scratch("dash-open-explicit");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let base = start(&root, cos_bin(), 2, Sources::default());
+    register(&base, "default", &a, true);
+    std::fs::write(
+        root.join("dashboards.toml"),
+        r#"
+[[business.explicit]]
+name = "Explicit board"
+url = "http://127.0.0.1:4801/"
+probe = { path = "/", contains = "<title>Explicit board</title>" }
+"#,
+    )
+    .unwrap();
+    let (_app, w) = open(pinned(&base, &a));
+    assert_eq!(
+        call(&w, "paths", json!({})).unwrap()["business"],
+        "explicit"
+    );
+
+    assert_eq!(dashboards(&w, "explicit").unwrap(), json!([]));
+    assert_eq!(
+        dashboard_open(&w, "explicit", "Explicit board").unwrap_err(),
+        json!({ "kind": "UnknownDashboard", "name": "Explicit board" })
+    );
+}

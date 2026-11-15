@@ -589,6 +589,38 @@ async fn dashboards<R: Runtime>(app: AppHandle<R>, business: String) -> Res<Vec<
     .await
 }
 
+/// One dashboard of the app business, from `dashboards.toml` read on every call; `ensure`
+/// decides whether it runs.
+#[tauri::command]
+async fn dashboard_open<R: Runtime>(
+    app: AppHandle<R>,
+    business: String,
+    name: String,
+) -> Result<servers::Running, servers::Refusal> {
+    use servers::Refusal;
+    let checked =
+        check_business(&app, &business).map_err(|message| Refusal::StaleBusiness { message })?;
+    let Some(owner) = checked.business else {
+        return Err(Refusal::UnknownDashboard { name });
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let start = app.state::<Start>();
+        let file = cos::dashboards::location(&start.registry, start.dashboards_file.as_deref());
+        let loaded = cos::dashboards::load(&file).map_err(|e| Refusal::InvalidConfig {
+            message: format!("{e:#}"),
+        })?;
+        let Some(dashboard) = loaded.for_business(&owner).iter().find(|d| d.name == name) else {
+            return Err(Refusal::UnknownDashboard { name });
+        };
+        app.state::<servers::Supervisor>()
+            .ensure(loaded.server_of(dashboard), dashboard)
+    })
+    .await
+    .map_err(|e| Refusal::Internal {
+        message: e.to_string(),
+    })?
+}
+
 /// What the row builder reads, copied from the managed `Start` and the App lock.
 struct RowSource {
     registry: PathBuf,
@@ -1401,6 +1433,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             businesses,
             brief_seen,
             dashboards,
+            dashboard_open,
             agents_list,
             agents_fit,
             agents_spawn,
