@@ -41,7 +41,7 @@ pub use supervise::supervise;
 pub const CEILING: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// A supervisor that has not recorded its pid within this is presumed dead.
-const START_GRACE: Duration = Duration::from_secs(15);
+pub const START_GRACE: Duration = Duration::from_secs(15);
 
 /// How long `clean` waits for a supervisor still judging an ended run.
 const JUDGE_GRACE: Duration = Duration::from_secs(15);

@@ -19,6 +19,7 @@ name = "servers"
 harness = false
 
 [dev-dependencies]
+jiff = "0.2"
 tauri = { version = "2", features = ["test"] }
 
 [build-dependencies]

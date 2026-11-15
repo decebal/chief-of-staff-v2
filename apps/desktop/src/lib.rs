@@ -397,14 +397,14 @@ fn switch_business(app: tauri::State<'_, App>, args: SwitchArgs) -> Res<Value> {
     Ok(paths(app))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, PartialEq)]
 struct Present {
     home: bool,
     workspace: bool,
     projects: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, PartialEq)]
 struct Live {
     live: usize,
     lost: usize,
@@ -413,7 +413,7 @@ struct Live {
 
 /// One business in the picker and the sidebar. A business whose home is missing carries
 /// no count.
-#[derive(Serialize)]
+#[derive(Serialize, Clone, PartialEq)]
 struct BusinessRow {
     name: String,
     triple: Business,
@@ -468,21 +468,19 @@ impl RowSource {
     fn clock(&self) -> Option<String> {
         let home = self.user_home.as_deref()?;
         let registry = self.registry.canonicalize().ok()?;
-        cos::signals::scheduled(
-            &home.join("Library/LaunchAgents/cos.brief.plist"),
-            &registry,
-            Some(home),
-        )
+        cos::signals::scheduled(&home.join(BRIEF_PLIST), &registry, Some(home))
     }
 
     /// Every registered business's row, or only `only`'s, each with `app` false. Reads
     /// files and kernel state only: it spawns no process.
     fn rows(&self, only: Option<&str>) -> anyhow::Result<Vec<BusinessRow>> {
-        let reg = business::load(&self.registry)?;
+        Ok(self.rows_of(&business::load(&self.registry)?, only))
+    }
+
+    fn rows_of(&self, reg: &business::Registry, only: Option<&str>) -> Vec<BusinessRow> {
         let seen = read_ui_state(&self.ui_state_file).last_seen_brief;
         let clock = self.clock();
-        Ok(reg
-            .businesses
+        reg.businesses
             .iter()
             .filter(|(name, _)| only.is_none_or(|o| o == name.as_str()))
             .map(|(name, b)| {
@@ -498,8 +496,65 @@ impl RowSource {
                     ..business_row(name, b)
                 }
             })
-            .collect())
+            .collect()
     }
+}
+
+/// Under `Start.user_home`.
+const BRIEF_PLIST: &str = "Library/LaunchAgents/cos.brief.plist";
+
+/// The rows last emitted on `businesses-changed`, without `app`.
+#[derive(Default)]
+struct RowCache(Mutex<BTreeMap<String, BusinessRow>>);
+
+/// The rows `publish` rebuilds.
+enum Rebuild<'a> {
+    /// The registry changed: every row, replacing the whole cache.
+    All,
+    Named(&'a [String]),
+}
+
+/// The one way rows reach `businesses-changed`. Rows are built here while the cache is
+/// held, never passed in, so a row built before another publisher's write cannot land
+/// after that publisher's row. A cache missing a registered business is first filled
+/// with every row. Emits all cached rows, with `app` from the App's business at that
+/// moment, only when a cached row changed.
+fn publish<R: Runtime>(app: &AppHandle<R>, rebuild: Rebuild<'_>) {
+    let cache = app.state::<RowCache>();
+    let mut cache = cache.0.lock().expect("row cache lock");
+    let start = app.state::<Start>();
+    let source = RowSource::new(start.registry.clone(), &start);
+    let Ok(reg) = business::load(&source.registry) else {
+        return;
+    };
+    let full = reg.businesses.keys().all(|n| cache.contains_key(n));
+    let mut next = match rebuild {
+        Rebuild::All => BTreeMap::new(),
+        Rebuild::Named(_) => cache.clone(),
+    };
+    let rows = match rebuild {
+        Rebuild::Named(names) if full => names
+            .iter()
+            .flat_map(|n| source.rows_of(&reg, Some(n)))
+            .collect(),
+        _ => source.rows_of(&reg, None),
+    };
+    for row in rows {
+        next.insert(row.name.clone(), row);
+    }
+    if next == *cache {
+        return;
+    }
+    *cache = next;
+    let current = app.state::<App>().lock().triple.business.clone();
+    let rows: Vec<BusinessRow> = cache
+        .values()
+        .map(|r| BusinessRow {
+            app: current.as_deref() == Some(r.name.as_str()),
+            ..r.clone()
+        })
+        .collect();
+    let _ = app.emit("businesses-changed", rows);
 }
 
 fn business_row(name: &str, b: &Business) -> BusinessRow {
@@ -1001,15 +1056,94 @@ fn git_repos(projects: &Path) -> Vec<String> {
     found
 }
 
+/// What the watcher saw of one business at its last recompute.
+struct Watched {
+    stamp: String,
+    starting: usize,
+    supervisors: Vec<i32>,
+}
+
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// An unreadable registry has no businesses to watch.
+fn registered_homes(registry: &Path) -> BTreeMap<String, PathBuf> {
+    business::load(registry)
+        .map(|r| {
+            r.businesses
+                .into_iter()
+                .map(|(name, b)| (name, b.home))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Emits `report-changed` when a run or the workspace writes, and
 /// `agents-changed` when an agent does, so the window refreshes on events
 /// instead of every view polling. Reads metadata only: `agents::list` runs
 /// `ps` per live agent, too dear per tick. An agent's state write renames into
 /// its directory, which moves the directory's mtime that `stamp` reads.
+///
+/// Publishes a business's row when its stamp changed, a supervisor it last saw live
+/// died, or it has a Starting run, which turns Lost with no file change or pid to
+/// watch. A changed registry publishes every row; a changed `dashboards.toml` emits
+/// `dashboards-changed`. The first tick only records those two files' mtimes.
 fn watch<R: Runtime>(handle: AppHandle<R>) {
     std::thread::spawn(move || {
+        let start = handle.state::<Start>().inner().clone();
+        let plist = start.user_home.as_ref().map(|h| h.join(BRIEF_PLIST));
+        let dashboards =
+            cos::dashboards::location(&start.registry, start.dashboards_file.as_deref());
         let (mut report, mut fleet) = (String::new(), String::new());
+        let mut registry_mtime = modified(&start.registry);
+        let mut dashboards_mtime = modified(&dashboards);
+        let mut homes = registered_homes(&start.registry);
+        let mut watched: BTreeMap<String, Watched> = BTreeMap::new();
         loop {
+            let now = modified(&start.registry);
+            let registry_changed = now != registry_mtime;
+            if registry_changed {
+                registry_mtime = now;
+                homes = registered_homes(&start.registry);
+            }
+            let plist_mtime = plist.as_deref().and_then(modified);
+            watched.retain(|name, _| homes.contains_key(name));
+            let mut recompute = Vec::new();
+            for (name, home) in &homes {
+                let stamp = format!("{}-{plist_mtime:?}", cos::signals::stamp(home));
+                let due = registry_changed
+                    || watched.get(name).is_none_or(|w| {
+                        w.stamp != stamp
+                            || w.starting > 0
+                            || w.supervisors.iter().any(|&pid| !cos::proc::alive(pid))
+                    });
+                if due {
+                    // Read before the row is built: a supervisor that dies after this
+                    // read is still in the set, so the next tick sees it die.
+                    let signals = cos::signals::read(home);
+                    watched.insert(
+                        name.clone(),
+                        Watched {
+                            stamp,
+                            starting: signals.starting,
+                            supervisors: signals.supervisors,
+                        },
+                    );
+                    recompute.push(name.clone());
+                }
+            }
+            if registry_changed {
+                publish(&handle, Rebuild::All);
+            } else if !recompute.is_empty() {
+                publish(&handle, Rebuild::Named(&recompute));
+            }
+            let now = modified(&dashboards);
+            if now != dashboards_mtime {
+                let _ = handle.emit("dashboards-changed", ());
+                dashboards_mtime = now;
+            }
+
             let s = handle.state::<App>().get();
             let now = cos::dash::version(&s.home, &s.workspace);
             if now != report {
@@ -1116,6 +1250,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             app.manage(supervisor);
             app.manage(App::new(&start));
             app.manage(start);
+            app.manage(RowCache::default());
             watch(app.handle().clone());
             Ok(())
         })
