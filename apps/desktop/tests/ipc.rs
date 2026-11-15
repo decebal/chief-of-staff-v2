@@ -1505,3 +1505,57 @@ fn business_check_refuses_a_stale_label_and_copies_under_one_lock() {
         "{admitted} admitted, {refused} refused"
     );
 }
+
+/// The data object a rendered report page embeds.
+fn embedded(html: &[u8]) -> Value {
+    let html = std::str::from_utf8(html).unwrap();
+    let at = html.find("const DATA = ").unwrap() + "const DATA = ".len();
+    serde_json::Deserializer::from_str(&html[at..])
+        .into_iter::<Value>()
+        .next()
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn only_the_root_report_is_rendered_for_the_host() {
+    let cos = cos_bin();
+    let root = scratch("host-brief");
+    let d = dirs(&root, "default");
+    seed(&d.workspace, None);
+    let briefs = d.home.join("out/briefs");
+    std::fs::create_dir_all(&briefs).unwrap();
+    let file = briefs.join("2030-04-09.json");
+    std::fs::write(
+        &file,
+        json!({ "headline": "Rendered.", "needs_you": [] }).to_string(),
+    )
+    .unwrap();
+    let mtime = cos::signals::mtime_ms(&std::fs::metadata(&file).unwrap());
+
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &d, true);
+    let (app, _w) = open(start);
+
+    for path in ["/", ""] {
+        let report = cos_desktop::report_response(app.handle(), path);
+        assert_eq!(report.status(), 200);
+        let data = embedded(report.body());
+        assert_eq!(data["hostBrief"], json!(true), "{path:?}");
+        assert_eq!(
+            data["briefRef"],
+            json!({ "file": "2030-04-09.json", "mtime": mtime })
+        );
+    }
+
+    let archived = cos::report::build(&d.home, &d.workspace).unwrap();
+    let day = archived.file_stem().unwrap().to_str().unwrap();
+    let report = cos_desktop::report_response(app.handle(), &format!("/reports/{day}.html"));
+    assert_eq!(report.status(), 200);
+    let data = embedded(report.body());
+    assert!(
+        data.get("hostBrief").is_none(),
+        "archived report has hostBrief"
+    );
+    assert_eq!(data["briefRef"]["file"], "2030-04-09.json");
+}

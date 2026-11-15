@@ -236,6 +236,87 @@ fn latest_brief_is_the_greatest_dated_filename() {
 }
 
 #[test]
+fn store_latest_keeps_dated_names_and_carries_the_file_mtime() {
+    let root = scratch("store-latest");
+    let home = root.join("home");
+    let briefs = home.join("out/briefs");
+    std::fs::create_dir_all(&briefs).unwrap();
+    let brief = serde_json::json!({ "headline": "Dated.", "needs_you": [] }).to_string();
+    for name in [
+        "2026-11-13.json",
+        "2026-11-14.json",
+        "2026-11-15-x.json",
+        "2026-1-150.json",
+        "latest.json",
+        "zzzz-zz-zz.json",
+    ] {
+        std::fs::write(briefs.join(name), &brief).unwrap();
+    }
+
+    let saved = cos::store::latest::<serde_json::Value>(&home, cos::store::Kind::Briefs)
+        .unwrap()
+        .unwrap();
+    let mtime = signals::mtime_ms(&std::fs::metadata(briefs.join("2026-11-14.json")).unwrap());
+    assert_eq!(saved.day, "2026-11-14");
+    assert_eq!(saved.mtime_ms, mtime);
+
+    let data = cos::report::data(&home, &home, false).unwrap();
+    assert_eq!(
+        data["briefRef"],
+        serde_json::json!({ "file": "2026-11-14.json", "mtime": mtime })
+    );
+}
+
+#[test]
+fn store_latest_never_pairs_content_with_another_writes_mtime() {
+    let root = scratch("store-race");
+    let home = root.join("home");
+    let briefs = home.join("out/briefs");
+    std::fs::create_dir_all(&briefs).unwrap();
+    let file = briefs.join("2026-11-14.json");
+    let pad = "x".repeat(16 * 1024);
+    let body = move |seq: usize| serde_json::json!({ "seq": seq, "pad": pad }).to_string();
+    std::fs::write(&file, body(0)).unwrap();
+    let first = signals::mtime_ms(&std::fs::metadata(&file).unwrap());
+
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let (file, done) = (file.clone(), done.clone());
+        std::thread::spawn(move || {
+            let mut written = vec![first];
+            for seq in 1..5000 {
+                std::fs::write(&file, body(seq)).unwrap();
+                written.push(signals::mtime_ms(&std::fs::metadata(&file).unwrap()));
+            }
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            written
+        })
+    };
+
+    let mut reads = Vec::new();
+    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+        reads.push(
+            cos::store::latest::<serde_json::Value>(&home, cos::store::Kind::Briefs)
+                .map(|s| s.unwrap())
+                .map(|s| (s.value["seq"].as_u64().unwrap() as usize, s.mtime_ms))
+                .map_err(|e| format!("{e:#}")),
+        );
+    }
+    let written = writer.join().unwrap();
+
+    assert!(!reads.is_empty());
+    for read in reads {
+        match read {
+            Ok((seq, mtime)) => assert_eq!(
+                written[seq], mtime,
+                "content of write {seq} paired with another write's mtime"
+            ),
+            Err(e) => assert!(e.starts_with("parse "), "not a parse failure: {e}"),
+        }
+    }
+}
+
+#[test]
 fn mtime_ms_is_whole_milliseconds_since_the_epoch() {
     let root = scratch("mtime");
     let file = root.join("f");

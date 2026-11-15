@@ -452,7 +452,9 @@ const DATA = "__COS_DATA__";
     canHire = Boolean(e.data.hire);
     for (const b of document.querySelectorAll("[data-hire]")) b.textContent = canHire ? "Hire" : "Copy prompt";
   });
-  tellHost({ type: "cos-report-ready" });
+  // Only the desktop's live `/` sets hostBrief: an archived or browser page names no brief to mark seen.
+  const hostRef = DATA.hostBrief === true && DATA.briefRef;
+  tellHost(hostRef ? { type: "cos-report-ready", brief: hostRef.file, mtime: hostRef.mtime } : { type: "cos-report-ready" });
 
   // ---- copy
   async function copy(text, btn) {

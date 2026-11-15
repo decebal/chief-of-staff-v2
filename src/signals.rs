@@ -6,7 +6,7 @@ use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use crate::{agents, business, dash};
+use crate::{agents, business, dash, store};
 
 /// The newest brief: its file name under `out/briefs` and its mtime in ms.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,15 +95,6 @@ fn latest_brief(home: &Path) -> Option<Brief> {
     })
 }
 
-/// `YYYY-MM-DD.json`.
 fn dated_json(name: &str) -> bool {
-    let Some(day) = name.strip_suffix(".json") else {
-        return false;
-    };
-    let b = day.as_bytes();
-    b.len() == 10
-        && b.iter().enumerate().all(|(i, c)| match i {
-            4 | 7 => *c == b'-',
-            _ => c.is_ascii_digit(),
-        })
+    name.strip_suffix(".json").is_some_and(store::is_day)
 }
