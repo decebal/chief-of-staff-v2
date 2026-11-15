@@ -123,13 +123,17 @@ fn open(start: Start) -> (tauri::App<MockRuntime>, Win) {
 
 /// A run that never ended under `home`, whose supervisor is `supervisor`; returns its state file.
 fn plant_run(home: &Path, id: &str, supervisor: i32) -> PathBuf {
+    plant(home, id, json!(supervisor), "2020-01-01T00:00:00Z")
+}
+
+fn plant(home: &Path, id: &str, supervisor: Value, created: &str) -> PathBuf {
     let dir = home.join("out/agents").join(id);
     std::fs::create_dir_all(&dir).unwrap();
     let spec = json!({
         "id": id, "harness": "claude", "program": "claude", "model": null, "repo": null,
         "base": null, "workdir": dir, "worktree": false, "title": "planted", "source": "test",
         "prompt": "planted", "deadline_secs": 60, "budget_usd": 1.0,
-        "created": "2020-01-01T00:00:00Z",
+        "created": created,
     });
     let state = json!({
         "status": "running", "supervisor": supervisor, "pgid": null, "pgid_started": null,
@@ -1817,4 +1821,274 @@ fn only_the_root_report_is_rendered_for_the_host() {
         "archived report has hostBrief"
     );
     assert_eq!(data["briefRef"]["file"], "2030-04-09.json");
+}
+
+const BUSINESSES_CHANGED: &str = "businesses-changed";
+const DASHBOARDS_CHANGED: &str = "dashboards-changed";
+/// The watcher's tick, plus slack for a loaded machine.
+const ONE_TICK: Duration = Duration::from_millis(1200);
+
+type Events = std::sync::mpsc::Receiver<(&'static str, String)>;
+
+/// `open`, with a listener on each of `events` registered before setup starts the
+/// watcher, so its first tick is never missed.
+fn open_listening(start: Start, events: &[&'static str]) -> (tauri::App<MockRuntime>, Win, Events) {
+    use tauri::Listener;
+    let mut app = cos_desktop::builder(mock_builder(), Some(start))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    for &event in events {
+        let tx = tx.clone();
+        app.listen_any(event, move |e| {
+            let _ = tx.send((event, e.payload().to_owned()));
+        });
+    }
+    #[allow(deprecated)]
+    app.run_iteration(|_, _| {});
+    let w = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    (app, w, rx)
+}
+
+/// The first `event` payload within `within` that `want` accepts; other events are dropped.
+fn next_event(
+    rx: &Events,
+    event: &str,
+    within: Duration,
+    want: impl Fn(&Value) -> bool,
+) -> Option<Value> {
+    let until = Instant::now() + within;
+    loop {
+        let left = until.checked_duration_since(Instant::now())?;
+        let (name, payload) = rx.recv_timeout(left).ok()?;
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        if name == event && want(&payload) {
+            return Some(payload);
+        }
+    }
+}
+
+/// The names of every event received within `within`.
+fn drain(rx: &Events, within: Duration) -> Vec<&'static str> {
+    let until = Instant::now() + within;
+    let mut seen = Vec::new();
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok((name, _)) => seen.push(name),
+            Err(_) => break,
+        }
+    }
+    seen
+}
+
+fn row<'a>(rows: &'a Value, name: &str) -> &'a Value {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == name)
+        .unwrap_or(&Value::Null)
+}
+
+fn names(rows: &Value) -> Vec<&str> {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect()
+}
+
+/// Kills and reaps the child on drop, so a failed assertion leaks no process.
+struct Reaped(std::process::Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn a_killed_supervisor_turns_its_row_lost_within_one_tick() {
+    let root = scratch("cuj8");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let cos = cos_bin();
+    let sup_home = root.join("supervisor");
+    std::fs::create_dir_all(&sup_home).unwrap();
+    let mut supervisor = Reaped(
+        Command::new(&cos)
+            .arg("--home")
+            .arg(&sup_home)
+            .arg("--workspace")
+            .arg(&sup_home)
+            .arg("--projects")
+            .arg(&sup_home)
+            .arg("mcp")
+            .env_remove("COS_HOME")
+            .env_remove("COS_WORKSPACE")
+            .env_remove("COS_PROJECTS")
+            .env_remove("COS_BUSINESS")
+            .env_remove("XDG_CONFIG_HOME")
+            .env("HOME", root.join("user"))
+            .env("COS_BUSINESSES", root.join("none.toml"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = supervisor.0.id() as i32;
+    let until = Instant::now() + Duration::from_secs(10);
+    while !cos::proc::exe(pid).is_some_and(|e| e.file_name().is_some_and(|f| f == "cos")) {
+        assert!(Instant::now() < until, "cos {pid} never ran");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let state = plant_run(&a.home, "r1", pid);
+    let before = std::fs::read(&state).unwrap();
+
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &a, true);
+    let (_app, _w, rx) = open_listening(start, &[BUSINESSES_CHANGED]);
+    assert!(
+        next_event(&rx, BUSINESSES_CHANGED, Duration::from_secs(5), |rows| {
+            row(rows, "default")["live"] == 1
+        })
+        .is_some(),
+        "the first tick did not emit the live run"
+    );
+
+    supervisor.0.kill().unwrap();
+    supervisor.0.wait().unwrap();
+    let lost = next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |rows| {
+        row(rows, "default")["lost"] == 1
+    });
+    assert!(lost.is_some(), "no lost row within one tick of the SIGKILL");
+    assert_eq!(row(&lost.unwrap(), "default")["live"], 0);
+    assert_eq!(std::fs::read(&state).unwrap(), before, "a run file changed");
+}
+
+#[test]
+fn a_starting_run_turns_lost_after_the_grace_without_a_call() {
+    let root = scratch("starting");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let margin = Duration::from_secs(4);
+    let created = jiff::Timestamp::now()
+        - jiff::SignedDuration::try_from(cos::agents::START_GRACE - margin).unwrap();
+    plant(&a.home, "r1", Value::Null, &created.to_string());
+    let lost_at = Instant::now() + margin;
+
+    let start = start(&root, cos_bin(), 2, Sources::default());
+    register(&start, "default", &a, true);
+    let (_app, _w, rx) = open_listening(start, &[BUSINESSES_CHANGED]);
+    let starting = next_event(&rx, BUSINESSES_CHANGED, margin, |_| true)
+        .expect("the first tick emitted nothing");
+    assert_eq!(
+        (
+            row(&starting, "default")["live"].clone(),
+            row(&starting, "default")["lost"].clone()
+        ),
+        (json!(1), json!(0)),
+        "a Starting run counts as live"
+    );
+
+    let lost = next_event(&rx, BUSINESSES_CHANGED, margin + ONE_TICK, |rows| {
+        row(rows, "default")["lost"] == 1
+    });
+    assert!(lost.is_some(), "the Starting run never turned lost");
+    assert!(
+        Instant::now() >= lost_at,
+        "turned lost before the grace passed"
+    );
+    assert_eq!(row(&lost.unwrap(), "default")["live"], 0);
+}
+
+#[test]
+fn businesses_changed_carries_every_registered_row_and_the_app_business() {
+    let root = scratch("changed-rows");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let b = dirs(&root, "bravo");
+    seed(&b.workspace, None);
+    let c = dirs(&root, "charlie");
+    let start = start(&root, cos_bin(), 2, Sources::default());
+    register(&start, "default", &a, true);
+    register(&start, "bravo", &b, false);
+    register(&start, "charlie", &c, false);
+
+    let registry = start.registry.clone();
+    let (_app, w, rx) = open_listening(start, &[BUSINESSES_CHANGED]);
+    let first = next_event(&rx, BUSINESSES_CHANGED, Duration::from_secs(5), |_| true)
+        .expect("the first tick emitted nothing");
+    assert_eq!(names(&first), ["bravo", "charlie", "default"]);
+    assert_eq!(row(&first, "default")["app"], true);
+
+    switch(&w, "bravo").unwrap();
+    write_brief(&c.home, "2026-11-14");
+    let after_switch = next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |rows| {
+        row(rows, "charlie")["unread"] == true
+    })
+    .expect("a new brief in charlie emitted nothing");
+    let apps: Vec<(&str, bool)> = after_switch
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["name"].as_str().unwrap(), r["app"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        apps,
+        [("bravo", true), ("charlie", false), ("default", false)]
+    );
+    assert_eq!(after_switch, call(&w, "businesses", json!({})).unwrap());
+
+    cos::business::remove(&registry, "charlie").unwrap();
+    let removed = next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |rows| {
+        !names(rows).contains(&"charlie")
+    })
+    .expect("the removed business is still in the payload");
+    assert_eq!(names(&removed), ["bravo", "default"]);
+    assert_eq!(
+        removed,
+        call(&w, "businesses", json!({})).unwrap(),
+        "the payload is not the businesses shape"
+    );
+}
+
+#[test]
+fn dashboards_changed_skips_the_first_tick_and_carries_no_payload() {
+    let root = scratch("dash-changed");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let mut start = start(&root, cos_bin(), 2, Sources::default());
+    register(&start, "default", &a, true);
+    let file = root.join("dashboards.toml");
+    std::fs::write(&file, "").unwrap();
+    start.dashboards_file = Some(file.clone());
+
+    let (_app, _w, rx) = open_listening(start, &[BUSINESSES_CHANGED, DASHBOARDS_CHANGED]);
+    let launch = drain(&rx, 3 * ONE_TICK);
+    assert!(
+        launch.contains(&BUSINESSES_CHANGED),
+        "the first tick emitted nothing"
+    );
+    assert!(
+        !launch.contains(&DASHBOARDS_CHANGED),
+        "dashboards-changed at launch: {launch:?}"
+    );
+
+    std::fs::write(&file, "# edited\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    let changed = next_event(&rx, DASHBOARDS_CHANGED, ONE_TICK, |_| true);
+    assert_eq!(
+        changed,
+        Some(Value::Null),
+        "no payload-free dashboards-changed"
+    );
 }
