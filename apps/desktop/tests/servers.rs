@@ -12,11 +12,13 @@ use std::os::unix::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use cos::business::{Dirs, Sources};
-use cos::dashboards::{Probe, ProbeResult, Server};
+use cos::dashboards::{Dashboard, Probe, ProbeResult, Server};
 use cos::proc;
 use cos_desktop::Start;
 use cos_desktop::servers::{ExitNotice, Refusal, Running, Supervisor, real_connect};
@@ -46,6 +48,16 @@ const TESTS: &[(&str, fn())] = &[
     ),
     ("idle_binds_nothing", idle_binds_nothing),
     ("leftover_is_not_our_child", leftover_is_not_our_child),
+    ("identity_retry_rule", identity_retry_rule),
+    ("unmanaged_not_running", unmanaged_not_running),
+    (
+        "waiter_on_reserved_gets_identity",
+        waiter_on_reserved_gets_identity,
+    ),
+    (
+        "waiter_on_reserved_embeds_external",
+        waiter_on_reserved_embeds_external,
+    ),
 ];
 
 fn main() {
@@ -582,5 +594,306 @@ fn leftover_is_not_our_child() {
     assert!(
         until(Duration::from_secs(2), || !proc::alive(pid)),
         "the leftover survived SIGKILL"
+    );
+}
+
+/// A supervisor whose spawn records each call and starts nothing.
+fn counting(
+    root: &Path,
+    connect: impl Fn(SocketAddrV4) -> bool + Send + Sync + 'static,
+) -> (Supervisor, Arc<AtomicUsize>) {
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let counted = spawns.clone();
+    let sup = Supervisor::new(
+        &root.join("data"),
+        &root.join("logs"),
+        |_: ExitNotice| {},
+        move |_: &Server, _: &Path| -> anyhow::Result<Child> {
+            counted.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("no spawn in this case")
+        },
+        connect,
+    )
+    .unwrap();
+    (sup, spawns)
+}
+
+fn unmanaged(addr: SocketAddrV4) -> Dashboard {
+    Dashboard {
+        name: "Gazette".into(),
+        url: format!("http://{addr}/"),
+        port: addr.port(),
+        server: None,
+        probe: Probe {
+            path: "/".into(),
+            contains: MARKER_A.into(),
+        },
+    }
+}
+
+/// What a test listener does with an accepted connection.
+#[derive(Clone, Copy)]
+enum Act {
+    Close,
+    Reply(&'static str),
+    Silent,
+}
+
+/// A loopback listener that counts accepted connections and acts on the `n`th (from 0)
+/// by `act(n)`.
+struct Fixture {
+    addr: SocketAddrV4,
+    accepts: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Fixture {
+    fn new(act: fn(usize) -> Act) -> Self {
+        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, l.local_addr().unwrap().port());
+        l.set_nonblocking(true).unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (n, halt) = (accepts.clone(), stop.clone());
+        let thread = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while !halt.load(Ordering::SeqCst) {
+                match l.accept() {
+                    Ok((mut s, _)) => {
+                        s.set_nonblocking(false).unwrap();
+                        match act(n.fetch_add(1, Ordering::SeqCst)) {
+                            Act::Close => drop(s),
+                            Act::Reply(body) => {
+                                let _ = reply(&mut s, body);
+                            }
+                            Act::Silent => held.push(s),
+                        }
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        });
+        Self {
+            addr,
+            accepts,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn accepts(&self) -> usize {
+        self.accepts.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn reply(s: &mut TcpStream, body: &str) -> io::Result<()> {
+    s.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut req = Vec::new();
+    let mut chunk = [0u8; 1024];
+    while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = s.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        req.extend_from_slice(&chunk[..n]);
+    }
+    write!(
+        s,
+        "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )?;
+    s.flush()
+}
+
+const WITH_MARKER: &str = "<html><head><title>Fake dashboard A</title></head></html>";
+const WITHOUT_MARKER: &str = "<html><head><title>Someone else</title></head></html>";
+
+fn identity_retry_rule() {
+    let root = scratch("identity-retry");
+    let (sup, spawns) = counting(&root, real_connect);
+
+    let late = Fixture::new(|n| {
+        if n <= 1 {
+            Act::Close
+        } else {
+            Act::Reply(WITH_MARKER)
+        }
+    });
+    let d = unmanaged(late.addr);
+    assert_eq!(
+        sup.ensure(None, &d),
+        Ok(Running {
+            url: d.url.clone(),
+            owned: false
+        })
+    );
+    // `connect` is accepted first; the identity probe's GETs follow it.
+    assert_eq!(
+        late.accepts(),
+        3,
+        "connect, a closed GET, a GET with the marker"
+    );
+
+    let foreign = Fixture::new(|_| Act::Reply(WITHOUT_MARKER));
+    match sup.ensure(None, &unmanaged(foreign.addr)) {
+        Err(Refusal::Identity {
+            status,
+            head,
+            owned: false,
+            spawned: false,
+        }) => {
+            assert_eq!(status, "HTTP/1.0 200 OK");
+            assert!(head.starts_with("HTTP/1.0 200 OK"), "{head}");
+        }
+        other => panic!("foreign listener: {other:?}"),
+    }
+    assert_eq!(foreign.accepts(), 2, "connect and exactly one GET");
+
+    let silent = Fixture::new(|_| Act::Silent);
+    assert_eq!(
+        sup.ensure(None, &unmanaged(silent.addr)),
+        Err(Refusal::Identity {
+            status: "no response".into(),
+            head: String::new(),
+            owned: false,
+            spawned: false,
+        })
+    );
+    assert_eq!(silent.accepts(), 3, "connect and two GETs");
+    assert_eq!(spawns.load(Ordering::SeqCst), 0);
+}
+
+fn unmanaged_not_running() {
+    let root = scratch("unmanaged");
+    let (sup, spawns) = counting(&root, real_connect);
+    let d = unmanaged(free_addr());
+    let want = Err(Refusal::NotRunning {
+        hint: "its owner (for example launchd) is not running it".into(),
+    });
+    assert_eq!(sup.ensure(None, &d), want);
+    // The next open drops the Refused slot and probes again.
+    assert_eq!(sup.ensure(None, &d), want);
+    assert_eq!(spawns.load(Ordering::SeqCst), 0, "nothing spawned");
+}
+
+/// Opens `d` twice, the second while the first's `connect` is blocked. Returns both
+/// results, the number of `connect` calls and the number of spawns.
+fn two_opens(root: &Path, d: &Dashboard) -> ([Result<Running, Refusal>; 2], usize, usize) {
+    let (gate_tx, gate_rx) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate_rx);
+    let connects = Arc::new(AtomicUsize::new(0));
+    let counted = connects.clone();
+    let (sup, spawns) = counting(root, move |addr| {
+        if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+            let _ = gate.lock().unwrap().recv();
+        }
+        real_connect(addr)
+    });
+    let sup = Arc::new(sup);
+    let (tx, rx) = mpsc::channel();
+    let mut threads = Vec::new();
+    for i in 0..2 {
+        if i == 1 {
+            assert!(
+                until(Duration::from_secs(2), || connects.load(Ordering::SeqCst)
+                    == 1),
+                "the first open never reached connect"
+            );
+        }
+        let (sup, d, tx) = (sup.clone(), d.clone(), tx.clone());
+        threads.push(std::thread::spawn(move || {
+            let _ = tx.send((i, sup.ensure(None, &d)));
+        }));
+    }
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "an open returned while the first probe was blocked"
+    );
+    assert_eq!(
+        connects.load(Ordering::SeqCst),
+        1,
+        "the waiter probed a Reserved slot"
+    );
+    gate_tx.send(()).unwrap();
+    let mut got: [Option<Result<Running, Refusal>>; 2] = [None, None];
+    for _ in 0..2 {
+        let (i, r) = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("an open hung");
+        got[i] = Some(r);
+    }
+    for t in threads {
+        t.join().unwrap();
+    }
+    let [a, b] = got;
+    (
+        [a.unwrap(), b.unwrap()],
+        connects.load(Ordering::SeqCst),
+        spawns.load(Ordering::SeqCst),
+    )
+}
+
+fn waiter_on_reserved_gets_identity() {
+    let root = scratch("waiter-identity");
+    let foreign = Fixture::new(|_| Act::Reply(WITHOUT_MARKER));
+    let d = unmanaged(foreign.addr);
+    let ([first, second], connects, spawns) = two_opens(&root, &d);
+    assert!(
+        matches!(
+            first,
+            Err(Refusal::Identity {
+                owned: false,
+                spawned: false,
+                ..
+            })
+        ),
+        "{first:?}"
+    );
+    assert_eq!(second, first, "the waiter gets a copy of the refusal");
+    assert_eq!(connects, 1, "the waiter never probed");
+    assert_eq!(foreign.accepts(), 2, "one connect and one GET in all");
+    assert_eq!(spawns, 0);
+}
+
+fn waiter_on_reserved_embeds_external() {
+    let root = scratch("waiter-external");
+    let addr = free_addr();
+    let mut kid = spawn_mode("serve", addr);
+    assert!(
+        until(Duration::from_secs(5), || matched(&get(
+            addr, "/health", READY
+        ))),
+        "serve never became ready"
+    );
+    let d = unmanaged(addr);
+    let ([first, second], connects, spawns) = two_opens(&root, &d);
+    let want = Ok(Running {
+        url: d.url.clone(),
+        owned: false,
+    });
+    assert_eq!(first, want);
+    assert_eq!(second, want);
+    assert_eq!(
+        connects, 2,
+        "the waiter reruns ensure once the slot is removed"
+    );
+    assert_eq!(spawns, 0);
+    assert!(
+        kid.0.try_wait().unwrap().is_none(),
+        "the External listener was signalled"
+    );
+    assert!(
+        matched(&get(addr, "/", MARKER_A)),
+        "the External listener stopped answering"
     );
 }
