@@ -22,11 +22,14 @@ const UNMANAGED_HINT: &str = "its owner (for example launchd) is not running it"
 const LOCK_HELD_HINT: &str = "another app instance is starting it; open the dashboard again";
 const EXITING_HINT: &str =
     "the previous server on this port is still exiting; open the dashboard again";
+const QUITTING_HINT: &str = "the app is quitting";
 const READY_EVERY: Duration = Duration::from_millis(250);
 const READY_WITHIN: Duration = Duration::from_secs(10);
 const TERM_GRACE: Duration = Duration::from_secs(5);
+const KILL_GRACE: Duration = Duration::from_secs(1);
 const EXITED_WAIT: Duration = Duration::from_secs(5);
 const CLEANUP_POLL: Duration = Duration::from_millis(50);
+const GROUP_POLL: Duration = Duration::from_millis(50);
 const LOG_TAIL_LINES: usize = 20;
 const LOG_KEEP: u64 = 1024 * 1024;
 
@@ -247,6 +250,9 @@ struct Slot {
 struct Slots {
     next: u64,
     by_key: HashMap<SocketAddrV4, Slot>,
+    /// Set once quit has begun: every spawn the stop path waits on, including spawns
+    /// recorded after it began.
+    quit: Option<Vec<Recorded>>,
 }
 
 /// Shared with each child's reaper thread.
@@ -302,6 +308,12 @@ impl Supervisor {
         self.0.ensure(server, dashboard)
     }
 
+    /// The stop path, on quit: stops every server this instance started within 5 s plus
+    /// 1 s, and refuses every `ensure` from then on. A second call is a no-op.
+    pub fn stop_owned(&self) {
+        self.0.stop_owned()
+    }
+
     /// Launch cleanup, once in `setup` before any `ensure`. The declared servers come from
     /// `dashboards`; an empty value declares none, so every pidfile under a free lock is
     /// removed without a signal.
@@ -346,6 +358,9 @@ impl Inner {
         loop {
             let mut slots = self.lock();
             let Some(slot) = slots.by_key.get(&key) else {
+                if slots.quit.is_some() {
+                    return Err(quitting());
+                }
                 slots.next += 1;
                 let id = slots.next;
                 slots.by_key.insert(
@@ -615,6 +630,10 @@ impl Inner {
         }
         let path = self.data.join(format!("{}.lock", server.addr.port()));
         let mut slots = self.lock();
+        if slots.quit.is_some() {
+            drop(slots);
+            return refuse(quitting());
+        }
         let lock = match self.open_port_lock(&path) {
             Ok(Some(lock)) => lock,
             Ok(None) => {
@@ -681,6 +700,10 @@ impl Inner {
                 append_log(&log, &format!("pidfile: {e:?}"));
                 return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
             }
+            if slots.quit.is_some() {
+                drop(slots);
+                return Err(self.epilogue(key, id, Some(recorded), quitting()));
+            }
         }
         if !self.ready(key, id, server) {
             return Err(self.epilogue(key, id, Some(recorded), failed_to_start(&log)));
@@ -722,8 +745,123 @@ impl Inner {
         {
             *spawn = Some(recorded.clone());
         }
+        if let Some(collected) = &mut slots.quit {
+            recorded.target.signal(libc::SIGTERM);
+            collected.push(recorded.clone());
+        }
         let (inner, recorded) = (Arc::clone(self), recorded.clone());
         std::thread::spawn(move || inner.reap(key, id, child, &recorded));
+        self.changed.notify_all();
+    }
+
+    /// The stop path. Steps 1, 2 and 3 share one 5 s deadline from the moment quit
+    /// begins; the SIGKILL wait and the group poll get 1 s more.
+    fn stop_owned(&self) {
+        let mut slots = self.lock();
+        if slots.quit.is_some() {
+            return;
+        }
+        let deadline = Instant::now() + TERM_GRACE;
+        let mut collected = Vec::new();
+        for slot in slots.by_key.values() {
+            match &slot.state {
+                State::Owned { spawn, .. }
+                | State::Starting {
+                    spawn: Some(spawn), ..
+                } => {
+                    spawn.target.signal(libc::SIGTERM);
+                    collected.push(spawn.clone());
+                }
+                State::Exited { spawn, .. } if !spawn.notice.is_set() => {
+                    collected.push(spawn.clone());
+                }
+                _ => {}
+            }
+        }
+        slots.quit = Some(collected);
+
+        while slots.by_key.values().any(|s| {
+            matches!(
+                s.state,
+                State::Reserved | State::Starting { spawn: None, .. }
+            )
+        }) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            slots = self
+                .changed
+                .wait_timeout(slots, left)
+                .expect("supervisor lock")
+                .0;
+        }
+        let collected = slots.quit.clone().unwrap_or_default();
+        drop(slots);
+
+        for spawn in &collected {
+            spawn
+                .notice
+                .wait(Some(deadline.saturating_duration_since(Instant::now())));
+        }
+
+        let budget = deadline + KILL_GRACE;
+        for slot in self.lock().by_key.values() {
+            if let State::Owned { spawn, .. }
+            | State::Starting {
+                spawn: Some(spawn), ..
+            } = &slot.state
+            {
+                spawn.target.signal(libc::SIGKILL);
+            }
+        }
+        for spawn in &collected {
+            spawn
+                .notice
+                .wait(Some(budget.saturating_duration_since(Instant::now())));
+        }
+
+        for spawn in collected.iter().filter(|s| s.notice.is_set()) {
+            if let Target::Group(pgid) = spawn.target {
+                while cos::proc::group_alive(pgid) && Instant::now() < budget {
+                    std::thread::sleep(
+                        GROUP_POLL.min(budget.saturating_duration_since(Instant::now())),
+                    );
+                }
+            }
+        }
+        for spawn in &collected {
+            if !spawn.notice.is_set() {
+                eprintln!(
+                    "stop_owned: {:?} not reaped within the budget",
+                    spawn.target
+                );
+            } else if let Target::Group(pgid) = spawn.target
+                && cos::proc::group_alive(pgid)
+            {
+                eprintln!("stop_owned: group {pgid} still alive after the budget");
+            }
+        }
+
+        let mut slots = self.lock();
+        // A slot whose `ensure` is still running stays: its readiness and its epilogue's
+        // Exited check read it, and the epilogue replaces it with Refused.
+        let exited: Vec<(SocketAddrV4, bool)> = slots
+            .by_key
+            .iter()
+            .filter_map(|(key, slot)| match &slot.state {
+                State::Exited { spawn, starting } => {
+                    Some((*key, !starting && spawn.notice.is_set()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (key, drop_slot) in exited {
+            let _ = self.remove_pidfile(&self.pidfile(key), &Ownership::Owned { exited: true });
+            if drop_slot {
+                slots.by_key.remove(&key);
+            }
+        }
         self.changed.notify_all();
     }
 
@@ -928,6 +1066,12 @@ fn wait_exited(pid: libc::pid_t) -> String {
             libc::CLD_KILLED | libc::CLD_DUMPED => return format!("signal {code}"),
             _ => std::thread::sleep(Duration::from_millis(50)),
         }
+    }
+}
+
+fn quitting() -> Refusal {
+    Refusal::NotRunning {
+        hint: QUITTING_HINT.to_owned(),
     }
 }
 

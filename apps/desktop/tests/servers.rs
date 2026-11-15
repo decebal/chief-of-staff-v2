@@ -140,6 +140,19 @@ const TESTS: &[(&str, fn())] = &[
         "reopen_after_owned_exit_refuses_at_the_deadline",
         reopen_after_owned_exit_refuses_at_the_deadline,
     ),
+    ("stop_owned_frees_the_port", stop_owned_frees_the_port),
+    (
+        "quit_during_readiness_stops_the_group",
+        quit_during_readiness_stops_the_group,
+    ),
+    (
+        "quit_before_the_port_lock_is_taken",
+        quit_before_the_port_lock_is_taken,
+    ),
+    (
+        "open_after_quit_refuses_at_reserve",
+        open_after_quit_refuses_at_reserve,
+    ),
     (
         "cleanup_removes_an_undeclared_leftover",
         cleanup_removes_an_undeclared_leftover,
@@ -2079,6 +2092,166 @@ fn kill_and_reap(
         until(Duration::from_secs(5), || take_lock(root, addr.port())
             .is_some()),
         "the reaper never released the port lock"
+    );
+}
+
+fn quitting() -> Result<Running, Refusal> {
+    Err(Refusal::NotRunning {
+        hint: "the app is quitting".into(),
+    })
+}
+
+fn stop_owned_frees_the_port() {
+    let root = scratch("stop-owned");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, fake_spawn("serve", 0, pids.clone()));
+    assert_eq!(
+        sup.ensure(Some(&server), &d),
+        Ok(Running {
+            url: d.url.clone(),
+            owned: true,
+        })
+    );
+    let pid = pids.lock().unwrap()[0];
+
+    let started = Instant::now();
+    sup.stop_owned();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the server needed the deadline SIGKILL"
+    );
+    let n = exits
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 15", "the group was sent SIGTERM");
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "stop_owned returned before the reap");
+    assert!(!proc::group_alive(pid), "the group outlived stop_owned");
+    assert!(TcpListener::bind(addr).is_ok(), "the port is still bound");
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile remains");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+
+    let again = Instant::now();
+    sup.stop_owned();
+    assert!(
+        again.elapsed() < Duration::from_millis(100),
+        "the second stop_owned waited"
+    );
+    assert!(
+        exits.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the second stop_owned stopped something"
+    );
+    assert_eq!(pids.lock().unwrap().len(), 1);
+}
+
+fn quit_during_readiness_stops_the_group() {
+    let root = scratch("quit-readiness");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, fake_spawn("idle", 0, pids.clone()));
+    let pidfile = pidfile_of(&root, addr);
+
+    let (tx, rx) = mpsc::channel();
+    let threads = vec![open_on_thread(&sup, &server, &d, 0, &tx)];
+    assert!(
+        until(Duration::from_secs(5), || pidfile.exists()),
+        "the spawn never wrote its pidfile"
+    );
+    let pid = pids.lock().unwrap()[0];
+    let started = Instant::now();
+    sup.stop_owned();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the group needed the deadline SIGKILL"
+    );
+    assert!(!proc::group_alive(pid), "the group outlived stop_owned");
+    let n = exits
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 15", "the group was sent SIGTERM");
+    assert!(!n.owned, "dashboard-exited for a Starting slot");
+
+    let got = collect(&rx, threads, Duration::from_secs(5));
+    assert!(got[0].is_err(), "a stopped start returned {:?}", got[0]);
+    assert_eq!(pids.lock().unwrap().len(), 1);
+    assert!(!pidfile.exists(), "a pidfile remains");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+}
+
+fn quit_before_the_port_lock_is_taken() {
+    let root = scratch("quit-reserved");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (gate_tx, gate_rx) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate_rx);
+    let connects = Arc::new(AtomicUsize::new(0));
+    let counted = connects.clone();
+    let (sup, spawns) = counting(&root, move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        let _ = gate.lock().unwrap().recv();
+        false
+    });
+    let sup = Arc::new(sup);
+
+    let (tx, rx) = mpsc::channel();
+    let threads = vec![open_on_thread(&sup, &server, &d, 0, &tx)];
+    assert!(
+        until(Duration::from_secs(2), || connects.load(Ordering::SeqCst)
+            == 1),
+        "the open never reached connect"
+    );
+    let started = Instant::now();
+    sup.stop_owned();
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(4900) && took < Duration::from_secs(6),
+        "stop_owned returned after {took:?}, not at its 5 s deadline"
+    );
+    gate_tx.send(()).unwrap();
+
+    let got = collect(&rx, threads, Duration::from_secs(5));
+    assert_eq!(got[0], quitting());
+    assert_eq!(spawns.load(Ordering::SeqCst), 0, "spawned during quit");
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile was written");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is held"
+    );
+}
+
+fn open_after_quit_refuses_at_reserve() {
+    let root = scratch("quit-reserve");
+    let connects = Arc::new(AtomicUsize::new(0));
+    let counted = connects.clone();
+    let (sup, spawns) = counting(&root, move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        false
+    });
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    sup.stop_owned();
+
+    assert_eq!(sup.ensure(Some(&server), &d), quitting());
+    assert_eq!(sup.ensure(None, &unmanaged(free_addr())), quitting());
+    assert_eq!(sup.ensure(Some(&server), &d), quitting());
+    assert_eq!(connects.load(Ordering::SeqCst), 0, "probed during quit");
+    assert_eq!(spawns.load(Ordering::SeqCst), 0, "spawned during quit");
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile was written");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is held"
     );
 }
 
