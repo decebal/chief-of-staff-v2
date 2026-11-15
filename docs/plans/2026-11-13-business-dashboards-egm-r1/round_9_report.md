@@ -62,3 +62,31 @@ Numbering follows the round's order: F1 to F8 design, F9 to F12 comprehension, F
 | F36 | readiness | nit | FIX | Refusal and payload types; JSON shape `{"kind": ...}` given for dash.js. |
 | F37 | readiness | nit | FIX | Port 0. |
 | F38 | readiness | nit | FIX | Shared row cache: synchronous `rows(..)` named in §6 Refresh and item 9. |
+
+## Round 9 follow-up: Q2 and trim
+
+Two owner decisions (2026-11-14), applied after the round. Status stays In Review.
+
+### Q2 answer
+
+"Yes, same rule." After SIGTERM to a leftover whose leader passed all five checks, launch cleanup sends one group SIGKILL with `proc::kill_group(pgid)` (`src/proc.rs:237`) while `proc::group_alive(pgid)` (`src/proc.rs:253`) is true and cleanup still holds `<port>.lock`, before the 5 s per-leftover deadline. Edits:
+
+- Open Questions: Q2 and its Build gate removed; Q1 is the only open question.
+- Decision bullet 2, Goal 7 and CUJ 7: cleanup stops any member left in the leftover's group with one SIGKILL.
+- §4 Launch cleanup: step 4 splits into the deadline SIGKILL (leader still passes) and the group SIGKILL after the leader exits; `group_alive` runs immediately before that kill; at most one SIGKILL per leftover.
+- Risks: the "member of a leftover's group" row is now the check-then-kill window row for launch cleanup. It states that the window is wider than the reaper's: launchd reaps the leftover leader, so the window spans from that reap to the `group_alive` check (at most one 50 ms poll).
+- Semantic ISA: new `VERIFY(leftover_group)` checkpoint; S2, the `signal_group` instruction and its sink row name launch cleanup's `kill_group`; the pidfile-removal sink row and the `STORE(pidfile)` matrix row lose "pending Q2"; the `signal_group` matrix row gains an admitted entry; new matrix row "Lifecycle: leftover group member outlives the leader".
+- Tests: item 23 gains the `serve-with-member` case after a simulated crash; the leftover is started through an intermediate process that exits, so launchd reaps its leader and the case exercises the new path, and the case asserts cleanup returns before the 5 s deadline.
+- NFR Process ownership and the Confidence launch-cleanup row name the member case.
+
+### What was trimmed, by section
+
+- Detailed Implementation Plan: rewritten to the owner's scope (per file: changes, public signatures, IPC and event contracts, behaviour, tests and the matrix rows they cover). Removed: struct and enum field layouts (`Supervisor`, `Inner`, `Slot`, `Starting`, `Owned`, `Spawned`, `Exit`, `Waiter`, `StopTarget`, `ChildExit`, `Dashboards`, `Server`, `Dashboard`, `Probe`, `Signals`), derive lists and serde attributes, `Arc`/`Mutex`/`Condvar` layouts, the `SpawnFn` type, the `reap` parameter list, the `report_response` code snippet, the `blocking` closure's type reasoning, and justifications that concern only internals (why `list` is unusable, why `comm` would fail clippy). Kept: every public signature, the `Running`, `dashboard-exited`, `dashboards` row (`{name, url, managed}`) and `Refusal` contracts (kinds, fields, JSON shape, ISA mapping), the `businesses` row fields, the `Start` fields used by tests and `preview.rs`, and every test case. Items 19, 20, 22, 23 and 25 now name the matrix rows they cover.
+- §4 Server supervisor: slot states kept as behaviour (Reserved, Starting, Owned, Exited, Refused) with what each holds; dropped `Arc<Mutex<Inner>>`, `Arc<Waiter>`, `Condvar`, `Arc::ptr_eq`, `Option<Arc<Waiter>>` and the exit-cell struct. The exit cell is now "the reaper's completion notice". Kept: the slot-identity rule, wake-ups, the stop-target rule, reaper order, the signal-under-lock invariant, every ensure step and refusal, the failure epilogue, launch cleanup, the stop path and all deadlines.
+- §5: `dashboard_open` steps reduced to the ordering guarantee (business check and registry copy in one App-lock acquisition), the deadlock constraint and the outcome order; dropped `AppHandle` cloning, `Supervisor` not being `Clone` and `anyhow` types.
+- §6: the shared row cache and row builder described by behaviour; dropped `Rows(Mutex<BTreeMap<..>>)` and the `rows(..)` signature; dropped the `pub(crate)`/`Held` detail (item 3a keeps the visibility change).
+- §1, §3 and the ISA bindings: dropped Rust type names (`Triple.business`, `Option<pid_t>`, `u16`, `i64`, `Refusal::` prefixes) where a plain description carries the same rule.
+
+### Rows and tests retained
+
+Every Semantic ISA VERIFY, sink row, Violations row and test-matrix row from the pre-trim document remains, with wording adjusted only for the removed type names; one VERIFY and one matrix row were added for Q2. Every test case in items 3b, 17b and 19 to 25 remains; item 23 gains one. Every CUJ, Goal, Risk (one replaced per Q2), NFR and Confidence row remains. The doc has no em dashes.
