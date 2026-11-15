@@ -2424,7 +2424,8 @@ fn quit_kills_a_member_and_spares_another_instance() {
     first.stop_owned();
     assert!(
         started.elapsed() < Duration::from_secs(5),
-        "the group needed the deadline SIGKILL"
+        "stop_owned waited for its deadline: {:?}",
+        started.elapsed()
     );
     let n = exits
         .recv_timeout(Duration::from_secs(1))
