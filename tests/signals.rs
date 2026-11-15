@@ -279,22 +279,21 @@ fn store_latest_never_pairs_content_with_another_writes_mtime() {
     std::fs::write(&file, body(0)).unwrap();
     let first = signals::mtime_ms(&std::fs::metadata(&file).unwrap());
 
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let writer = {
-        let (file, done) = (file.clone(), done.clone());
+        let file = file.clone();
         std::thread::spawn(move || {
             let mut written = vec![first];
             for seq in 1..5000 {
                 std::fs::write(&file, body(seq)).unwrap();
                 written.push(signals::mtime_ms(&std::fs::metadata(&file).unwrap()));
             }
-            done.store(true, std::sync::atomic::Ordering::SeqCst);
             written
         })
     };
 
     let mut reads = Vec::new();
-    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+    // is_finished also turns true when the writer panics, so a failed write ends the loop.
+    while !writer.is_finished() {
         reads.push(
             cos::store::latest::<serde_json::Value>(&home, cos::store::Kind::Briefs)
                 .map(|s| s.unwrap())
