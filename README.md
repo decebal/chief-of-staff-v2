@@ -246,6 +246,8 @@ cos --home /tmp/cos-demo dash
 | [Business sidebar and dashboards design review](docs/plans/2026-11-13-business-dashboards-design-review.md) | 13 EGM rounds, owner decisions, what Build must prove |
 | [Business sidebar and dashboards plan](docs/plans/2026-11-15-business-dashboards-plan.md) | quality gates, testing trophy and 45 stories, the Q1 spike first |
 | [Business sidebar and dashboards Q1 spike](docs/plans/2026-11-15-business-dashboards-q1-spike.md) | the go/no-go record for embedding loopback dashboards in the app's iframe |
+| [Limiting-factor tracker brief](docs/plans/2026-11-15-limiting-factor-brief.md) | name the delivery constraint per business from recorded waits, track it with KPIs, judge each improvement |
+| [Limiting-factor tracker spec notes](docs/plans/2026-11-15-limiting-factor-spec-notes.md) | detection rules, measurement labels, instrumentation and the findings Spec must resolve |
 
 ## License
 
