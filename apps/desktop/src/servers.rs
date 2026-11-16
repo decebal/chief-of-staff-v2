@@ -389,6 +389,7 @@ impl Inner {
                     }
                     Found::Exiting(spawn.notice.clone())
                 }
+                State::Owned { .. } if slots.quit.is_some() => return Err(quitting()),
                 State::Owned { .. } => Found::Owned,
                 State::Reserved | State::Starting { .. } | State::Exited { .. } => Found::Wait,
             };
