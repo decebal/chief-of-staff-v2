@@ -115,7 +115,7 @@ function renderSlots() {
   $("runs-count").textContent = ui.agents.length ? String(ui.agents.length) : "";
 }
 
-const VIEWS = ["today", "agents", "flows", "docs"];
+const VIEWS = ["today", "agents", "flows", "docs", "dash"];
 const SWITCH_PANES = ["staff", "runs", "scorecard"];
 
 // The docs room names the business it was opened for; its saves carry it back.
@@ -132,14 +132,15 @@ const seenArgs = () =>
     : null;
 const seenFailed = (e) => logDev("brief_seen", e);
 
-function openTab(view, pane) {
+function openTab(view, pane, dash) {
   for (const t of document.querySelectorAll(".app-tab")) {
-    if (t.dataset.view === view) t.setAttribute("aria-current", "page");
+    if (t.dataset.view === view && (view !== "dash" || t.dataset.dash === dash)) t.setAttribute("aria-current", "page");
     else t.removeAttribute("aria-current");
   }
   for (const v of document.querySelectorAll(".view")) {
     v.classList.toggle("active", v.id === `view-${view}`);
   }
+  if (view !== "dash") window.hideDash();
   // Loaded on first open: the room scans every monitored repo.
   if (view === "docs" && !$("docs-frame").src) {
     $("docs-frame").src = docsUrl();
@@ -157,9 +158,23 @@ for (const tab of document.querySelectorAll(".app-tab")) {
   tab.addEventListener("click", () => openTab(tab.dataset.view, ""));
 }
 
-function openFromHash() {
+// The tabs load before routing, so the hash's dashboard exists before it is selected.
+async function openFromHash() {
+  await window.loadDashTabs();
   const h = new URLSearchParams(location.hash.slice(1));
-  if (VIEWS.includes(h.get("tab"))) openTab(h.get("tab"), h.get("pane") ?? "");
+  const tab = h.get("tab");
+  if (tab === "dash") {
+    const name = h.get("dash");
+    const declared = [...document.querySelectorAll('.app-tab[data-view="dash"]')].some((t) => t.dataset.dash === name);
+    if (declared) {
+      openTab("dash", "", name);
+      window.hideDash();
+    } else {
+      openTab("today", "");
+    }
+  } else if (VIEWS.includes(tab)) {
+    openTab(tab, h.get("pane") ?? "");
+  }
   shownBrief.routed = true;
   const args = seenArgs();
   if (args) invoke("brief_seen", args).catch(seenFailed);
@@ -179,7 +194,7 @@ async function switchTo(name) {
   }
   await invoke("switch_business", { args: { name } });
   const current = document.querySelector('.app-tab[aria-current="page"]');
-  const tab = current.dataset.view;
+  const tab = current?.dataset.view ?? "today";
   const pane = ui.pane === "role" ? "staff" : ui.pane === "run" ? ui.from : ui.pane;
   // Dashboard names contain spaces ("Control room").
   location.hash =
