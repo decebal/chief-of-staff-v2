@@ -69,15 +69,15 @@ As the owner, I want the four Q1 checks run in the built app before any embeddin
 Covers: design Open Question Q1 (checks 1 to 4 and the probe measurement); review "Carried into Build" item 2. ISA rows: none.
 Blocked by: none. Priority: p1.
 
-- [ ] No production code lands. Any spike change (a temporary `frame-src` entry, a test page) is reverted before close: `git diff origin/feat/business-dashboards --stat` lists only the record file.
-- [ ] The control-room binary exists at `~/Projects/founder-mode/portfolio-control-room/target/release/portfolio-control-room`, built with `cargo build --release` in `portfolio-control-room/control-room` (Setup Runbook); `ls -l` output recorded.
-- [ ] Check 1 recorded: an `http://127.0.0.1` iframe loads inside the `tauri://localhost` page without a mixed-content block (screenshot and console output).
-- [ ] Check 2 recorded: `typeof window.__TAURI__` evaluated inside the frame, with its value.
-- [ ] Check 3 recorded: the `Origin` header of a `fetch` POST to `cosreport://localhost/docs/organize` from a page inside a dashboard frame.
-- [ ] Check 4 recorded: `curl -sI http://127.0.0.1:8790/` output, with the `X-Frame-Options`, `frame-ancestors` and `Content-Security-Policy` values. If `launchctl list com.longhand.chief-of-staff-dashboard` shows the gazette not loaded, the record reads `Check 4: pending (gazette not loaded)` with that output, and the gazette entry under Manual and external actions applies.
-- [ ] The time one identity probe to the control room takes while a frame is loaded, and whether it answers within the 3 s probe timeout, recorded.
-- [ ] Verdict line per check: pass, or the fallback the design names (Alternative E or F).
-- [ ] All tests green: `test -s docs/plans/2026-11-15-business-dashboards-q1-spike.md` and the file contains a `Verdict:` line.
+- [x] No production code lands. Any spike change (a temporary `frame-src` entry, a test page) is reverted before close: `git diff origin/feat/business-dashboards --stat` lists only the record file.
+- [x] The control-room binary exists at `~/Projects/founder-mode/portfolio-control-room/target/release/portfolio-control-room`, built with `cargo build --release` in `portfolio-control-room/control-room` (Setup Runbook); `ls -l` output recorded.
+- [x] Check 1 recorded: an `http://127.0.0.1` iframe loads inside the `tauri://localhost` page without a mixed-content block (screenshot and console output).
+- [x] Check 2 recorded: `typeof window.__TAURI__` evaluated inside the frame, with its value.
+- [x] Check 3 recorded: the `Origin` header of a `fetch` POST to `cosreport://localhost/docs/organize` from a page inside a dashboard frame.
+- [x] Check 4 recorded: `curl -sI http://127.0.0.1:8790/` output, with the `X-Frame-Options`, `frame-ancestors` and `Content-Security-Policy` values. If `launchctl list com.longhand.chief-of-staff-dashboard` shows the gazette not loaded, the record reads `Check 4: pending (gazette not loaded)` with that output, and the gazette entry under Manual and external actions applies.
+- [x] The time one identity probe to the control room takes while a frame is loaded, and whether it answers within the 3 s probe timeout, recorded.
+- [x] Verdict line per check: pass, or the fallback the design names (Alternative E or F).
+- [x] All tests green: `test -s docs/plans/2026-11-15-business-dashboards-q1-spike.md` and the file contains a `Verdict:` line.
 
 Mark each item [x] as you complete it. Only close when all are checked.
 
