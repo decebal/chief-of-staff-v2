@@ -549,7 +549,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cos",
- "jiff 0.2.46",
+ "jiff 1.0.0",
  "libc",
  "serde",
  "serde_json",
