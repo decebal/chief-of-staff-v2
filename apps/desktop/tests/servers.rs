@@ -1,6 +1,7 @@
 //! The dashboard server supervisor, against real child processes. The test
 //! binary doubles as the fake server: `<self> serve <addr>`,
-//! `<self> serve-with-member <addr>` and `<self> idle <addr>` run a mode instead
+//! `<self> serve-with-member <addr>`, `<self> serve-handling-term <addr>` and
+//! `<self> idle <addr>` run a mode instead
 //! of the tests, and `<self> leftover <mode> <addr>` starts a mode through an
 //! intermediate process that exits, as an earlier app's server is left after a
 //! crash. macOS only: elsewhere every spawn is refused, so `main` returns.
@@ -162,6 +163,20 @@ const TESTS: &[(&str, fn())] = &[
         quit_kills_a_member_and_spares_another_instance,
     ),
     (
+        "quit_waits_for_a_spawn_to_be_recorded",
+        quit_waits_for_a_spawn_to_be_recorded,
+    ),
+    (
+        "spawn_recorded_after_quit_returned",
+        spawn_recorded_after_quit_returned,
+    ),
+    ("quit_while_a_reaper_finishes", quit_while_a_reaper_finishes),
+    (
+        "quit_signals_a_leader_target_alone",
+        quit_signals_a_leader_target_alone,
+    ),
+    ("quit_kills_a_stopped_server", quit_kills_a_stopped_server),
+    (
         "cleanup_removes_an_undeclared_leftover",
         cleanup_removes_an_undeclared_leftover,
     ),
@@ -247,6 +262,16 @@ fn fake(args: &[String]) {
                     serve(addr)
                 }
                 "idle" => idle(),
+                "serve-handling-term" => {
+                    // SAFETY: `exit_on_term` only calls `_exit`, which is async-signal-safe.
+                    unsafe {
+                        libc::signal(
+                            libc::SIGTERM,
+                            exit_on_term as *const () as libc::sighandler_t,
+                        );
+                    }
+                    serve(addr)
+                }
                 _ => {}
             }
         }
@@ -308,6 +333,13 @@ fn fork_member() {
         }
         idle();
     }
+}
+
+/// A caught SIGTERM, unlike a default one, stays pending while the process is stopped:
+/// Darwin ends a stopped process on a signal whose default action terminates it.
+extern "C" fn exit_on_term(_: libc::c_int) {
+    // SAFETY: `_exit` is async-signal-safe and touches no Rust state.
+    unsafe { libc::_exit(0) }
 }
 
 fn idle() -> ! {
@@ -2435,6 +2467,287 @@ fn quit_kills_a_member_and_spares_another_instance() {
         !proc::group_alive(pid),
         "the SIGTERM-ignoring member outlived stop_owned"
     );
+    assert!(TcpListener::bind(addr).is_ok(), "the port is still bound");
+    assert!(!pidfile.exists(), "a pidfile remains");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+}
+
+/// A fake spawn of `idle` that, once its child has started, reports the child's pid on
+/// the returned receiver and waits for the returned sender before it returns.
+fn gated_spawn() -> (
+    impl Fn(&Server, &Path) -> anyhow::Result<Child> + Send + Sync + 'static,
+    mpsc::Receiver<libc::pid_t>,
+    mpsc::Sender<()>,
+) {
+    let (spawned_tx, spawned_rx) = mpsc::channel();
+    let (gate_tx, gate_rx) = mpsc::channel::<()>();
+    let (spawned_tx, gate_rx) = (Mutex::new(spawned_tx), Mutex::new(gate_rx));
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let inner = fake_spawn("idle", 0, pids.clone());
+    let spawn = move |server: &Server, log: &Path| {
+        let child = inner(server, log)?;
+        let _ = spawned_tx.lock().unwrap().send(child.id() as libc::pid_t);
+        let _ = gate_rx.lock().unwrap().recv();
+        Ok(child)
+    };
+    (spawn, spawned_rx, gate_tx)
+}
+
+fn quit_waits_for_a_spawn_to_be_recorded() {
+    let root = scratch("quit-unrecorded");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (spawn, spawned, gate) = gated_spawn();
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, spawn);
+
+    let (tx, rx) = mpsc::channel();
+    let threads = vec![open_on_thread(&sup, &server, &d, 0, &tx)];
+    let pid = spawned
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the spawn never started its child");
+    let started = Instant::now();
+    let stopper = {
+        let sup = sup.clone();
+        std::thread::spawn(move || sup.stop_owned())
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !stopper.is_finished(),
+        "stop_owned left an unrecorded spawn"
+    );
+    assert!(proc::alive(pid), "stop_owned signalled an unrecorded spawn");
+    assert!(exits.try_recv().is_err(), "an exit before the record");
+    gate.send(()).unwrap();
+
+    stopper.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the group needed the deadline SIGKILL"
+    );
+    let n = exits
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 15", "the record sent SIGTERM");
+    assert!(!n.owned, "dashboard-exited for a Starting slot");
+    assert!(!proc::group_alive(pid), "the group outlived stop_owned");
+    let got = collect(&rx, threads, Duration::from_secs(5));
+    assert!(got[0].is_err(), "a stopped start returned {:?}", got[0]);
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile was kept");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+}
+
+fn spawn_recorded_after_quit_returned() {
+    let root = scratch("quit-then-record");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (spawn, spawned, gate) = gated_spawn();
+    let (emit, exits) = recording();
+    let sup = spawning(&root, emit, spawn);
+
+    let (tx, rx) = mpsc::channel();
+    let threads = vec![open_on_thread(&sup, &server, &d, 0, &tx)];
+    let pid = spawned
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the spawn never started its child");
+    sup.stop_owned();
+    assert!(proc::alive(pid), "stop_owned signalled an unrecorded spawn");
+    assert!(exits.try_recv().is_err(), "an exit before the record");
+    gate.send(()).unwrap();
+
+    let got = collect(&rx, threads, Duration::from_secs(10));
+    assert_eq!(got[0], quitting());
+    let n = exits
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 15", "the record sent SIGTERM");
+    assert!(!n.owned, "dashboard-exited for a Starting slot");
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "the epilogue returned before the reap");
+    assert!(!proc::group_alive(pid), "the group outlived the epilogue");
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile was kept");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+}
+
+fn quit_while_a_reaper_finishes() {
+    let root = scratch("quit-reaper");
+    let addr = free_addr();
+    let (server, control) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let (emit, exits) = delaying(Duration::from_millis(1000));
+    let (sup, pids) = real_spawning(&root, emit);
+    let pid = open_then_exit(&root, &server, &control, &sup, &pids, &exits);
+
+    let started = Instant::now();
+    sup.stop_owned();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(5),
+        "stop_owned waited for its deadline: {took:?}"
+    );
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "stop_owned returned before the reap");
+    assert!(!proc::group_alive(pid), "the group outlived stop_owned");
+    assert!(TcpListener::bind(addr).is_ok(), "the port is still bound");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile remains");
+    assert!(exits.try_recv().is_err(), "a second exit was reported");
+    assert_eq!(pids.lock().unwrap().len(), 1);
+}
+
+fn quit_signals_a_leader_target_alone() {
+    let root = scratch("quit-leader-target");
+    let mut group = spawn_mode("idle", free_addr());
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let (recorded, joined) = (pids.clone(), group.pid());
+    let sup = spawning(&root, emit, move |server: &Server, log: &Path| {
+        let out = OpenOptions::new().create(true).append(true).open(log)?;
+        let err = out.try_clone()?;
+        let mut cmd = Command::new(std::env::current_exe()?);
+        // SAFETY: the closure runs between fork and exec and only calls `signal`, which
+        // is async-signal-safe. An ignored disposition survives exec, so the leader
+        // ignores SIGTERM from its first instruction.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+        let child = cmd
+            .args(["idle", &server.addr.to_string()])
+            .process_group(joined)
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            .spawn()?;
+        recorded.lock().unwrap().push(child.id() as libc::pid_t);
+        Ok(child)
+    });
+
+    let (tx, rx) = mpsc::channel();
+    let threads = vec![open_on_thread(&sup, &server, &d, 0, &tx)];
+    assert!(
+        until(Duration::from_secs(5), || !pids.lock().unwrap().is_empty()),
+        "the spawn never started its child"
+    );
+    let opened = Instant::now();
+    let pid = pids.lock().unwrap()[0];
+    // The leader ignores the epilogue's SIGTERM, so its slot stays Starting with a
+    // recorded spawn until the epilogue's SIGKILL at 5 s.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(proc::alive(pid), "the leader died before quit");
+    assert!(exits.try_recv().is_err(), "an exit before quit");
+
+    let started = Instant::now();
+    sup.stop_owned();
+    let took = started.elapsed();
+    let n = exits
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 9", "the leader ignores SIGTERM");
+    assert!(!n.owned, "dashboard-exited for a Starting slot");
+    // SAFETY: WNOHANG never blocks; a reaped pid is no longer our child.
+    let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(reaped, -1, "stop_owned returned before the reap");
+    assert!(
+        opened.elapsed() < Duration::from_millis(5500),
+        "stop_owned returned {:?} after the open, past the leader's reap at 5 s",
+        opened.elapsed()
+    );
+    assert!(
+        took < Duration::from_millis(4900),
+        "stop_owned spent its budget on the leader's group: {took:?}"
+    );
+    assert!(
+        group.0.try_wait().unwrap().is_none(),
+        "the group the leader joined was signalled"
+    );
+    let got = collect(&rx, threads, Duration::from_secs(5));
+    log_tail_has(&got[0], "cos: spawn result refused: pgid");
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile was written");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+}
+
+fn quit_kills_a_stopped_server() {
+    let root = scratch("quit-stopped");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(
+        &root,
+        emit,
+        fake_spawn("serve-handling-term", 0, pids.clone()),
+    );
+    assert_eq!(
+        sup.ensure(Some(&server), &d),
+        Ok(Running {
+            url: d.url.clone(),
+            owned: true,
+        })
+    );
+    let pid = pids.lock().unwrap()[0];
+    let pidfile = pidfile_of(&root, addr);
+    proc::signal_pid(pid, libc::SIGSTOP);
+    assert!(
+        exits.recv_timeout(Duration::from_millis(500)).is_err(),
+        "the reaper took the stop for an exit"
+    );
+    assert!(pidfile.exists(), "the pidfile of a stopped server is gone");
+    assert!(
+        take_lock(&root, addr.port()).is_none(),
+        "the slot of a stopped server released its lock"
+    );
+
+    let started = Instant::now();
+    let stopper = {
+        let sup = sup.clone();
+        std::thread::spawn(move || sup.stop_owned())
+    };
+    std::thread::sleep(Duration::from_millis(4500));
+    assert!(
+        proc::alive(pid),
+        "the stopped leader acted on SIGTERM: {:?} after {:?}",
+        exits.try_recv(),
+        started.elapsed()
+    );
+    assert!(exits.try_recv().is_err(), "an exit before the deadline");
+    assert!(pidfile.exists(), "the pidfile went before the reap");
+
+    stopper.join().unwrap();
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(4900) && took < Duration::from_secs(6),
+        "stop_owned returned after {took:?}, not after the deadline SIGKILL"
+    );
+    let n = exits
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the reaper never reported the exit");
+    assert_eq!(
+        n.status, "signal 9",
+        "the leader died from the deadline SIGKILL"
+    );
+    assert!(n.owned, "the Owned server's exit");
+    assert!(!proc::group_alive(pid), "the group outlived stop_owned");
     assert!(TcpListener::bind(addr).is_ok(), "the port is still bound");
     assert!(!pidfile.exists(), "a pidfile remains");
     assert!(
