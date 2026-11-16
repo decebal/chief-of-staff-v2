@@ -400,6 +400,6 @@ impl AuditLog {
 }
 
 pub fn audit_path(home: &Path) -> PathBuf {
-    let day = jiff::Zoned::now().date();
+    let day = jiff::ZonedDateTime::now().date();
     home.join("out/audit").join(format!("{day}.jsonl"))
 }

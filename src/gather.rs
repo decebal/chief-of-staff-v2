@@ -155,7 +155,7 @@ pub fn collect(projects: &Path, merged_since: &str, reads: Reads) -> Facts {
 /// PRs would otherwise crowd the work ones out of a busy week.
 pub fn collect_for(projects: &Path, merged_since: &str, reads: Reads, owners: &[String]) -> Facts {
     let mut f = Facts {
-        collected_at: jiff::Zoned::now().to_string(),
+        collected_at: jiff::ZonedDateTime::now().to_string(),
         merged_since: merged_since.to_owned(),
         ..Facts::default()
     };

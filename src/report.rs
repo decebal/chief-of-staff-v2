@@ -23,7 +23,7 @@ const MARKDY_SLOT: &str = "/*__MARKDY__*/";
 /// Writes `out/reports/<day>.html` and `out/report.html` (always the latest).
 pub fn build(home: &Path, ws: &Path) -> Result<PathBuf> {
     let html = render(&data(home, ws, false)?)?;
-    let day = jiff::Zoned::now().date().to_string();
+    let day = jiff::ZonedDateTime::now().date().to_string();
     let dir = home.join("out/reports");
     std::fs::create_dir_all(&dir)?;
     let dated = dir.join(format!("{day}.html"));
@@ -34,7 +34,7 @@ pub fn build(home: &Path, ws: &Path) -> Result<PathBuf> {
 
 /// Everything the page shows. `live` makes the page poll `cos dash` for changes.
 pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
-    let now = jiff::Zoned::now();
+    let now = jiff::ZonedDateTime::now();
     let brief = store::latest::<Brief>(home, Kind::Briefs)?;
     let mut upcoming: Vec<&Milestone> = brief.iter().flat_map(|b| &b.value.upcoming).collect();
     upcoming.sort_by(|a, b| a.date.cmp(&b.date));
@@ -73,6 +73,8 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         "archive": archive(home),
         "diagrams": diagrams,
         "workspace": workspace(ws),
+        "delivery": crate::delivery::view(home),
+        "constraints": crate::constraints::view(home),
     }))
 }
 

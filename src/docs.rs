@@ -727,7 +727,7 @@ pub fn library(home: &Path, workspace: &Path, projects: &Path) -> Result<Value> 
         }
     }
     Ok(json!({
-        "generated_at": jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string(),
+        "generated_at": jiff::ZonedDateTime::now().strftime("%Y-%m-%d %H:%M").to_string(),
         "repos": repos.iter().map(|(n, d)| {
             match github(d, GITHUB_BUDGET) {
                 Ok(gh) => json!({ "name": n, "dir": d, "github": gh }),

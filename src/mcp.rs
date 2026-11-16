@@ -136,7 +136,7 @@ impl Cos {
         match tokio::task::spawn_blocking(move || cfg.brief()).await {
             Ok(Ok(done)) => structured(Report {
                 kind: Some("brief".into()),
-                day: Some(jiff::Zoned::now().date().to_string()),
+                day: Some(jiff::ZonedDateTime::now().date().to_string()),
                 report: serde_json::to_value(&done.value).ok(),
                 markdown: Some(done.markdown),
                 cost_usd: Some(done.cost_usd),
