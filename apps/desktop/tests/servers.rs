@@ -185,6 +185,10 @@ const TESTS: &[(&str, fn())] = &[
     ),
     ("cleanup_leaves_a_held_lock", cleanup_leaves_a_held_lock),
     (
+        "forged_pidfile_is_overwritten_by_the_spawn",
+        forged_pidfile_is_overwritten_by_the_spawn,
+    ),
+    (
         "cleanup_ignores_non_canonical_names",
         cleanup_ignores_non_canonical_names,
     ),
@@ -3376,6 +3380,43 @@ fn cleanup_leaves_a_held_lock() {
         assert_unsignalled(left.0, case);
     }
     drop(held);
+}
+
+fn forged_pidfile_is_overwritten_by_the_spawn() {
+    let root = scratch("forged-pidfile");
+    let addr = free_addr();
+    let exe = std::env::current_exe().unwrap();
+    let (server, control) = managed(addr, exe.clone(), MARKER_A);
+    let (emit, exits) = recording();
+    let (sup, pids) = real_spawning(&root, emit);
+    sup.launch_cleanup(&declaring(addr, exe));
+
+    let left = leftover("idle", addr);
+    let forged = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 2), addr.port());
+    let file = plant_record(&root, &format!("{}.json", addr.port()), left.0, forged);
+
+    assert_eq!(
+        sup.ensure(Some(&server), &control),
+        Ok(Running {
+            url: control.url.clone(),
+            owned: true
+        })
+    );
+    let pid = pids.lock().unwrap()[0];
+    let got: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let (secs, micros) = proc::start_time(pid).expect("start time");
+    assert_eq!(
+        got,
+        json!({
+            "pid": pid,
+            "pgid": pid,
+            "start_time": [secs, micros],
+            "exe": proc::exe(pid).expect("exe"),
+            "addr": addr.to_string(),
+        })
+    );
+    assert_unsignalled(left.0, "the forged pidfile's process");
+    kill_and_reap(&root, addr, pid, &exits);
 }
 
 fn cleanup_ignores_non_canonical_names() {
