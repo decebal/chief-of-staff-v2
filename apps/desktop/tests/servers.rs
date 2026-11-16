@@ -1,8 +1,8 @@
 //! The dashboard server supervisor, against real child processes. The test
 //! binary doubles as the fake server: `<self> serve <addr>`,
 //! `<self> serve-with-member <addr>`, `<self> serve-handling-term <addr>`,
-//! `<self> serve-handling-term-with-member <addr>`, `<self> idle-blocking-term <addr>`
-//! and `<self> idle <addr>` run a mode instead
+//! `<self> serve-handling-term-with-member <addr>`, `<self> serve-ignoring-term <addr>`,
+//! `<self> idle-blocking-term <addr>` and `<self> idle <addr>` run a mode instead
 //! of the tests, and `<self> leftover <mode> <addr>` starts a mode through an
 //! intermediate process that exits, as an earlier app's server is left after a
 //! crash. macOS only: elsewhere every spawn is refused, so `main` returns.
@@ -158,6 +158,10 @@ const TESTS: &[(&str, fn())] = &[
         open_after_quit_refuses_at_reserve,
     ),
     (
+        "open_on_owned_during_quit_refuses",
+        open_on_owned_during_quit_refuses,
+    ),
+    (
         "quit_signals_owned_before_waiting_on_a_probe",
         quit_signals_owned_before_waiting_on_a_probe,
     ),
@@ -285,6 +289,13 @@ fn fake(args: &[String]) {
                 "serve-handling-term-with-member" => {
                     println!("member {}", fork_member(false));
                     catch_term();
+                    serve(addr)
+                }
+                "serve-ignoring-term" => {
+                    // SAFETY: setting a disposition to SIG_IGN touches no memory.
+                    unsafe {
+                        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                    }
                     serve(addr)
                 }
                 _ => {}
@@ -2340,6 +2351,70 @@ fn open_after_quit_refuses_at_reserve() {
         take_lock(&root, addr.port()).is_some(),
         "the port lock is held"
     );
+}
+
+/// No unprivileged fake survives SIGKILL, so the Owned slot after quit began is one whose
+/// server ignores SIGTERM, opened within the TERM grace.
+fn open_on_owned_during_quit_refuses() {
+    let root = scratch("quit-owned-open");
+    let addr = free_addr();
+    let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let (emit, exits) = recording();
+    let sup = spawning(
+        &root,
+        emit,
+        fake_spawn("serve-ignoring-term", 0, pids.clone()),
+    );
+    assert_eq!(
+        sup.ensure(Some(&server), &d),
+        Ok(Running {
+            url: d.url.clone(),
+            owned: true,
+        })
+    );
+    let pid = pids.lock().unwrap()[0];
+    let probes = requests(&root, addr, "GET / HTTP/1.0");
+
+    let started = Instant::now();
+    let stopper = {
+        let sup = sup.clone();
+        std::thread::spawn(move || sup.stop_owned())
+    };
+    assert!(
+        until(Duration::from_secs(2), || sup
+            .ensure(None, &unmanaged(free_addr()))
+            == quitting()),
+        "quit never began"
+    );
+    assert!(proc::alive(pid), "the server died on SIGTERM");
+    assert_eq!(sup.ensure(Some(&server), &d), quitting());
+    assert!(
+        started.elapsed() < Duration::from_millis(4500),
+        "the open ran past the TERM grace: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        requests(&root, addr, "GET / HTTP/1.0"),
+        probes,
+        "an identity probe ran during quit"
+    );
+
+    stopper.join().unwrap();
+    let n = exits
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the reaper never reported the exit");
+    assert_eq!(n.status, "signal 9", "the server died from the SIGKILL");
+    assert!(n.owned, "the Owned server's exit");
+    assert!(!proc::group_alive(pid), "the group outlived stop_owned");
+    assert!(TcpListener::bind(addr).is_ok(), "the port is still bound");
+    assert!(!pidfile_of(&root, addr).exists(), "a pidfile remains");
+    assert!(
+        take_lock(&root, addr.port()).is_some(),
+        "the port lock is still held"
+    );
+    assert_eq!(sup.ensure(Some(&server), &d), quitting());
+    assert_eq!(pids.lock().unwrap().len(), 1, "spawned during quit");
 }
 
 fn quit_signals_owned_before_waiting_on_a_probe() {
