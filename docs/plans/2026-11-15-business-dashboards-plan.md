@@ -563,13 +563,13 @@ As the owner, I want one header tab per dashboard of the app's business, restore
 Covers: design items 11, 12 (`#dash-tabs`, `#dash-notice`, `#view-dash`, `#dash-state`, `#dash-frame`, `dash.js` script tag), 14 (`loadDashTabs`, `hideDash`, tab clicks, `dashboards-changed` gating), 15 (`openTab` `dash` argument; `VIEWS`; async `openFromHash`); design §5 Tabs, Startup and restore, Invalid file, CSP, Switch. UI case (g). ISA rows: none (frame `src` is set by US-034).
 Blocked by: US-001, US-031. Priority: p1.
 
-- [ ] Test: `rg -n 'id="(dash-tabs|dash-notice|view-dash|dash-state|dash-frame)"' apps/desktop/ui/index.html` prints five lines and `rg -n 'src="dash.js"' apps/desktop/ui/index.html` prints one, checked failing before the edit.
-- [ ] Test (contract): relies on the US-031 `dashboards` shape test; `dash.js` reads only `name`, `url`, `managed`.
-- [ ] `apps/desktop/tauri.conf.json` `frame-src` is `cosreport: http://cosreport.localhost http://127.0.0.1:*`, or the fallback US-001 recorded.
-- [ ] Built app on `founding-bets`: launch with no hash and with `#tab=agents` both render "Control room" and "Salesroom"; screenshot each.
-- [ ] Built app, UI case (g): an invalid `dashboards.toml` shows `#dash-notice` and no tabs; a valid file shows no notice; fixing the file while running clears the notice and renders the tabs; screenshots.
-- [ ] Built app: `#tab=dash&dash=Control%20room` restores the tab idle, with no `dashboard_open` call; an undeclared name opens Today; screenshots.
-- [ ] All tests green: `cargo test -p cos-desktop --test ipc` and `task desktop-app`
+- [x] Test: `rg -n 'id="(dash-tabs|dash-notice|view-dash|dash-state|dash-frame)"' apps/desktop/ui/index.html` prints five lines and `rg -n 'src="dash.js"' apps/desktop/ui/index.html` prints one, checked failing before the edit.
+- [x] Test (contract): relies on the US-031 `dashboards` shape test; `dash.js` reads only `name`, `url`, `managed`.
+- [x] `apps/desktop/tauri.conf.json` `frame-src` is `cosreport: http://cosreport.localhost http://127.0.0.1:*`, or the fallback US-001 recorded.
+- [x] Built app on `founding-bets`: launch with no hash and with `#tab=agents` both render "Control room" and "Salesroom"; screenshot each.
+- [x] Built app, UI case (g): an invalid `dashboards.toml` shows `#dash-notice` and no tabs; a valid file shows no notice; fixing the file while running clears the notice and renders the tabs; screenshots.
+- [x] Built app: `#tab=dash&dash=Control%20room` restores the tab idle, with no `dashboard_open` call; an undeclared name opens Today; screenshots.
+- [x] All tests green: `cargo test -p cos-desktop --test ipc` and `task desktop-app`
 
 Mark each item [x] as you complete it. Only close when all are checked.
 

@@ -25,6 +25,10 @@
       <button class="app-tab" data-view="flows">Flows</button>
       <button class="app-tab" data-view="docs">Docs</button>
     </nav>
+    <div class="dash-group">
+      <p id="dash-notice" class="error small" role="status" hidden></p>
+      <nav id="dash-tabs" class="app-nav" aria-label="Dashboards"></nav>
+    </div>
     <div class="where">
       <button id="biz-open" class="btn" data-variant="outline" data-size="sm" type="button" aria-haspopup="dialog" title="Switch business (⌘K)">
         <span class="muted">business</span> <span id="biz-name"></span>
@@ -171,6 +175,11 @@
       <iframe id="docs-frame" title="Documentation room" sandbox="allow-scripts allow-popups allow-same-origin"></iframe>
     </section>
 
+    <section id="view-dash" class="view">
+      <div id="dash-state" class="dash-state" role="status"></div>
+      <iframe id="dash-frame" title="Dashboard" sandbox="allow-scripts allow-same-origin allow-forms" hidden></iframe>
+    </section>
+
     <section id="view-agents" class="view">
       <div class="agents">
         <div class="agents-bar">
@@ -302,6 +311,7 @@
   </div>
   <script src="command.js"></script>
   <script src="sidebar.js"></script>
-<script src="app.js"></script>
+  <script src="dash.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
