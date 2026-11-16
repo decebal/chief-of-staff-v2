@@ -390,12 +390,13 @@ Mark each item [x] as you complete it. Only close when all are checked.
 #### US-023: `stop_owned` on quit stops every owned server [Backend]
 As the owner, I want ⌘Q to stop every server the app started, group members included, within the 5 s + 1 s budget so that quitting leaves no process on the port (Goal 5).
 
-Covers: design items 8 (`stop_owned`, Stop path steps 1 to 7, quit refusals at reserve, lock-take and after the pidfile write), 9 (`on_run_event`), 10, 23 cases: `stop_owned` frees the port; second `stop_owned` no-op; quit during readiness; quit before the port lock is taken. Side effect S2 (stop path). ISA rows: Lifecycle: quit during readiness; Lifecycle: quit before the port lock is taken; Lifecycle: second `stop_owned`; `signal_group` admitted "child of this instance not marked Exited, in Owned".
+Covers: design items 8 (`stop_owned`, Stop path steps 1 to 7, quit refusals at reserve, lock-take, after the pidfile write and at ensure: owned), 9 (`on_run_event`), 10, 23 cases: `stop_owned` frees the port; second `stop_owned` no-op; quit during readiness; quit before the port lock is taken. Side effect S2 (stop path). ISA rows: Lifecycle: quit during readiness; Lifecycle: quit before the port lock is taken; Lifecycle: second `stop_owned`; Lifecycle: quit with an Owned server that survives SIGKILL; `signal_group` admitted "child of this instance not marked Exited, in Owned".
 Blocked by: US-018. Priority: p1.
 
 - [ ] Test: `stop_owned` frees the port and leaves no child; a second call sends no signal (file: `apps/desktop/tests/servers.rs`), written first and failing.
 - [ ] Test: quit during readiness stops the group within the 5 s deadline; quit while a Reserved probe blocks on the `connect` barrier returns at the deadline with nothing signalled, then the `ensure` returns `NotRunning` "the app is quitting", no spawn, no pidfile, and the test's own `flock` on `<port>.lock` succeeds (file: `apps/desktop/tests/servers.rs`), written first and failing.
 - [ ] Test: an `ensure` called after `stop_owned` has returned refuses at reserve with `NotRunning` "the app is quitting"; no slot is inserted, nothing is probed or spawned (file: `apps/desktop/tests/servers.rs`), written first and failing.
+- [ ] Test: an `ensure` that finds an Owned slot after quit began refuses with `NotRunning` "the app is quitting" and runs no identity probe; the fake server ignores SIGTERM so its slot is still Owned within the TERM grace, and `stop_owned` still kills the group (file: `apps/desktop/tests/servers.rs`), written first and failing.
 - [ ] `apps/desktop/src/main.rs` uses `.build(...).expect(...).run(cos_desktop::on_run_event)`; `on_run_event` calls `stop_owned` on `ExitRequested` and `Exit`.
 - [ ] All tests green: `cargo test -p cos-desktop --test servers`
 
