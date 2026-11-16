@@ -1,7 +1,8 @@
 //! The dashboard server supervisor, against real child processes. The test
 //! binary doubles as the fake server: `<self> serve <addr>`,
-//! `<self> serve-with-member <addr>`, `<self> serve-handling-term <addr>` and
-//! `<self> idle <addr>` run a mode instead
+//! `<self> serve-with-member <addr>`, `<self> serve-handling-term <addr>`,
+//! `<self> serve-handling-term-with-member <addr>`, `<self> idle-blocking-term <addr>`
+//! and `<self> idle <addr>` run a mode instead
 //! of the tests, and `<self> leftover <mode> <addr>` starts a mode through an
 //! intermediate process that exits, as an earlier app's server is left after a
 //! crash. macOS only: elsewhere every spawn is refused, so `main` returns.
@@ -36,6 +37,8 @@ use tauri::{Listener, Manager};
 const READY: &str = r#""status":"ok""#;
 const MARKER_A: &str = "<title>Fake dashboard A";
 const MARKER_B: &str = r#"<script src="/fake-b.js""#;
+/// The path `idle-blocking-term` waits for before it unblocks SIGTERM.
+const PIDFILE_ENV: &str = "COS_FAKE_WAIT_FOR";
 
 const TESTS: &[(&str, fn())] = &[
     ("new_creates_servers_dirs", new_creates_servers_dirs),
@@ -258,18 +261,26 @@ fn fake(args: &[String]) {
             match mode.as_str() {
                 "serve" => serve(addr),
                 "serve-with-member" => {
-                    fork_member();
+                    fork_member(true);
                     serve(addr)
                 }
                 "idle" => idle(),
-                "serve-handling-term" => {
-                    // SAFETY: `exit_on_term` only calls `_exit`, which is async-signal-safe.
-                    unsafe {
-                        libc::signal(
-                            libc::SIGTERM,
-                            exit_on_term as *const () as libc::sighandler_t,
-                        );
+                "idle-blocking-term" => {
+                    if let Some(pidfile) = std::env::var_os(PIDFILE_ENV).map(PathBuf::from) {
+                        while !pidfile.exists() {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
                     }
+                    set_term_blocked(false);
+                    idle()
+                }
+                "serve-handling-term" => {
+                    catch_term();
+                    serve(addr)
+                }
+                "serve-handling-term-with-member" => {
+                    println!("member {}", fork_member(false));
+                    catch_term();
                     serve(addr)
                 }
                 _ => {}
@@ -320,18 +331,50 @@ fn answer(s: &mut TcpStream) -> io::Result<()> {
     s.flush()
 }
 
-/// Forks one process that stays in this process's group and ignores SIGTERM. It runs
-/// before `bind`, so it holds no listener.
-fn fork_member() {
+/// Forks one process that stays in this process's group, ignoring SIGTERM when
+/// `ignore_term`, and returns its pid. It runs before `bind`, so it holds no listener.
+fn fork_member(ignore_term: bool) -> libc::pid_t {
     // SAFETY: the mode runs before any thread is started, so the child of `fork` is a
     // single-threaded copy; it only changes a signal disposition and sleeps.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
-        // SAFETY: setting a disposition to SIG_IGN touches no memory.
-        unsafe {
-            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        if ignore_term {
+            // SAFETY: setting a disposition to SIG_IGN touches no memory.
+            unsafe {
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            }
         }
         idle();
+    }
+    pid
+}
+
+fn catch_term() {
+    // SAFETY: `exit_on_term` only calls `_exit`, which is async-signal-safe.
+    unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            exit_on_term as *const () as libc::sighandler_t,
+        );
+    }
+}
+
+/// Blocks or unblocks SIGTERM for the calling thread. A blocked SIGTERM stays pending
+/// and the mask survives exec, so a child blocked between fork and exec dies only
+/// once it unblocks.
+fn set_term_blocked(blocked: bool) {
+    // SAFETY: the set is initialised by `sigemptyset` before use; `sigprocmask` only
+    // changes this thread's mask and is async-signal-safe.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        let how = if blocked {
+            libc::SIG_BLOCK
+        } else {
+            libc::SIG_UNBLOCK
+        };
+        libc::sigprocmask(how, &set, std::ptr::null_mut());
     }
 }
 
@@ -2475,9 +2518,11 @@ fn quit_kills_a_member_and_spares_another_instance() {
     );
 }
 
-/// A fake spawn of `idle` that, once its child has started, reports the child's pid on
-/// the returned receiver and waits for the returned sender before it returns.
-fn gated_spawn() -> (
+/// A spawn of `inner` that, once its child has started, reports the child's pid on the
+/// returned receiver and waits for the returned sender before it returns.
+fn gated_spawn(
+    inner: impl Fn(&Server, &Path) -> anyhow::Result<Child> + Send + Sync + 'static,
+) -> (
     impl Fn(&Server, &Path) -> anyhow::Result<Child> + Send + Sync + 'static,
     mpsc::Receiver<libc::pid_t>,
     mpsc::Sender<()>,
@@ -2485,8 +2530,6 @@ fn gated_spawn() -> (
     let (spawned_tx, spawned_rx) = mpsc::channel();
     let (gate_tx, gate_rx) = mpsc::channel::<()>();
     let (spawned_tx, gate_rx) = (Mutex::new(spawned_tx), Mutex::new(gate_rx));
-    let pids = Arc::new(Mutex::new(Vec::new()));
-    let inner = fake_spawn("idle", 0, pids.clone());
     let spawn = move |server: &Server, log: &Path| {
         let child = inner(server, log)?;
         let _ = spawned_tx.lock().unwrap().send(child.id() as libc::pid_t);
@@ -2496,11 +2539,39 @@ fn gated_spawn() -> (
     (spawn, spawned_rx, gate_tx)
 }
 
+/// Spawns `idle-blocking-term` into a group of its own with SIGTERM blocked from before
+/// exec, so the child holds every SIGTERM pending until `pidfile` exists.
+fn term_blocked_until(
+    pidfile: PathBuf,
+) -> impl Fn(&Server, &Path) -> anyhow::Result<Child> + Send + Sync + 'static {
+    move |server: &Server, log: &Path| {
+        let out = OpenOptions::new().create(true).append(true).open(log)?;
+        let err = out.try_clone()?;
+        let mut cmd = Command::new(std::env::current_exe()?);
+        // SAFETY: the closure runs between fork and exec and only calls `sigprocmask`,
+        // which is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(|| {
+                set_term_blocked(true);
+                Ok(())
+            });
+        }
+        Ok(cmd
+            .args(["idle-blocking-term", &server.addr.to_string()])
+            .env(PIDFILE_ENV, &pidfile)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            .spawn()?)
+    }
+}
+
 fn quit_waits_for_a_spawn_to_be_recorded() {
     let root = scratch("quit-unrecorded");
     let addr = free_addr();
     let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
-    let (spawn, spawned, gate) = gated_spawn();
+    let (spawn, spawned, gate) = gated_spawn(fake_spawn("idle", 0, Arc::default()));
     let (emit, exits) = recording();
     let sup = spawning(&root, emit, spawn);
 
@@ -2547,7 +2618,9 @@ fn spawn_recorded_after_quit_returned() {
     let root = scratch("quit-then-record");
     let addr = free_addr();
     let (server, d) = managed(addr, std::env::current_exe().unwrap(), MARKER_A);
-    let (spawn, spawned, gate) = gated_spawn();
+    // A child that died before spawn step 4 would leave the slot Exited there, and an
+    // Exited slot fails to start; the child dies only once the pidfile exists.
+    let (spawn, spawned, gate) = gated_spawn(term_blocked_until(pidfile_of(&root, addr)));
     let (emit, exits) = recording();
     let sup = spawning(&root, emit, spawn);
 
@@ -2687,6 +2760,33 @@ fn quit_signals_a_leader_target_alone() {
     );
 }
 
+/// The pid `serve-handling-term-with-member` prints to its server log.
+fn member_of(root: &Path, addr: SocketAddrV4) -> libc::pid_t {
+    let log = std::fs::read_to_string(log_of(root, addr)).unwrap();
+    log.lines()
+        .find_map(|l| l.strip_prefix("member ")?.parse().ok())
+        .unwrap_or_else(|| panic!("no member pid in {log:?}"))
+}
+
+/// Whether `pid` has exited: gone, or a zombie whose stopped parent cannot reap it.
+fn exited(pid: libc::pid_t) -> bool {
+    const SZOMB: u32 = 5; // <sys/proc.h>
+    // SAFETY: `proc_bsdinfo` is plain data; all-zero is a valid value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: the buffer is a `proc_bsdinfo` of the size passed.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    n != size || info.pbi_status == SZOMB
+}
+
 fn quit_kills_a_stopped_server() {
     let root = scratch("quit-stopped");
     let addr = free_addr();
@@ -2696,7 +2796,7 @@ fn quit_kills_a_stopped_server() {
     let sup = spawning(
         &root,
         emit,
-        fake_spawn("serve-handling-term", 0, pids.clone()),
+        fake_spawn("serve-handling-term-with-member", 0, pids.clone()),
     );
     assert_eq!(
         sup.ensure(Some(&server), &d),
@@ -2706,12 +2806,14 @@ fn quit_kills_a_stopped_server() {
         })
     );
     let pid = pids.lock().unwrap()[0];
+    let member = member_of(&root, addr);
     let pidfile = pidfile_of(&root, addr);
     proc::signal_pid(pid, libc::SIGSTOP);
     assert!(
         exits.recv_timeout(Duration::from_millis(500)).is_err(),
         "the reaper took the stop for an exit"
     );
+    assert!(!exited(member), "the member died before quit");
     assert!(pidfile.exists(), "the pidfile of a stopped server is gone");
     assert!(
         take_lock(&root, addr.port()).is_none(),
@@ -2723,7 +2825,13 @@ fn quit_kills_a_stopped_server() {
         let sup = sup.clone();
         std::thread::spawn(move || sup.stop_owned())
     };
-    std::thread::sleep(Duration::from_millis(4500));
+    // The member is not stopped and keeps SIGTERM's default action, so its death shows
+    // the group SIGTERM that the stopped leader holds pending.
+    assert!(
+        until(Duration::from_secs(2), || exited(member)),
+        "stop_owned did not signal the stopped server's group"
+    );
+    std::thread::sleep(Duration::from_millis(4500).saturating_sub(started.elapsed()));
     assert!(
         proc::alive(pid),
         "the stopped leader acted on SIGTERM: {:?} after {:?}",
