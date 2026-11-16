@@ -804,7 +804,7 @@ fn new_id() -> Result<String> {
     use std::io::Read;
     let mut b = [0u8; 2];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
-    let now = jiff::Zoned::now();
+    let now = jiff::ZonedDateTime::now();
     Ok(format!(
         "{}-{:02x}{:02x}",
         now.strftime("%Y%m%d-%H%M%S"),

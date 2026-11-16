@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, Zoned};
+use jiff::{Timestamp, ZonedDateTime};
 use serde_json::Value;
 
 use crate::reports::{Basis, Brief, ChangeKind, Completeness, Confidence, Health, Steer, Verb};
@@ -32,7 +32,7 @@ pub fn esc(s: &str) -> String {
 struct Ctx<'a> {
     data: &'a Value,
     tz: TimeZone,
-    now: Zoned,
+    now: ZonedDateTime,
     brief: Option<Brief>,
     day: String,
 }
@@ -47,7 +47,7 @@ impl<'a> Ctx<'a> {
             .as_str()
             .and_then(|t| t.parse::<Timestamp>().ok())
             .unwrap_or_else(Timestamp::now)
-            .to_zoned(tz.clone());
+            .to_zoned_datetime(tz.clone());
         let brief = data["brief"]["report"]
             .is_object()
             .then(|| serde_json::from_value::<Brief>(data["brief"]["report"].clone()).ok())
@@ -78,7 +78,7 @@ impl<'a> Ctx<'a> {
 
     /// `Thu 29 Oct, 16:00` in the profile's timezone; the time alone today.
     fn stamp(&self, iso: &str) -> String {
-        let Some(z) = parse_instant(iso).map(|t| t.to_zoned(self.tz.clone())) else {
+        let Some(z) = parse_instant(iso).map(|t| t.to_zoned_datetime(self.tz.clone())) else {
             return self.date(iso);
         };
         if z.date() == self.today() {
@@ -113,7 +113,7 @@ fn day_name(d: Date) -> String {
 fn parse_instant(s: &str) -> Option<Timestamp> {
     s.parse::<Timestamp>()
         .ok()
-        .or_else(|| s.parse::<Zoned>().ok().map(|z| z.timestamp()))
+        .or_else(|| s.parse::<ZonedDateTime>().ok().map(|z| z.timestamp()))
 }
 
 /// The ink band: greeting, the brief's headline as display type, the run.
@@ -201,7 +201,7 @@ fn run_pill(cx: &Ctx, b: &Brief) -> String {
     let at = run["at"]
         .as_str()
         .and_then(parse_instant)
-        .map(|t| t.to_zoned(cx.tz.clone()));
+        .map(|t| t.to_zoned_datetime(cx.tz.clone()));
     parts.push(match at {
         Some(z) if z.date() == cx.today() => format!(
             r#"brief <b class="num">{}</b> <span class="tz">{}</span>"#,
@@ -243,10 +243,15 @@ const FALLBACK: &str = r#"<div class="celebrate"><div class="card wins-card"><h3
 pub fn body(data: &Value) -> String {
     let cx = Ctx::new(data);
     let Some(b) = &cx.brief else {
-        return FALLBACK.to_owned();
+        let mut s = FALLBACK.to_owned();
+        s.push_str(&crate::constraints::section(data));
+        s.push_str(&crate::delivery::section(data));
+        return s;
     };
     let mut s = String::from(r#"<div class="today" data-ssr>"#);
     actions(&mut s, &cx, b);
+    s.push_str(&crate::constraints::section(data));
+    s.push_str(&crate::delivery::section(data));
     week(&mut s, &cx, b);
     ribbon(&mut s, &cx, b);
     changes(&mut s, b);
@@ -948,6 +953,20 @@ const IC_CAL: &str = r#"<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><
 const IC_MAIL: &str = r#"<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="m2.5 4.5 5.5 4 5.5-4"/></svg>"#;
 const IC_LINK: &str = r#"<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5 9.5 6.5M7 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M9 11.5l-1 1A2.5 2.5 0 0 1 4.5 9l1-1"/></svg>"#;
 const IC_FACT: &str = r#"<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13V8M8 13V3M13 13V6"/></svg>"#;
+
+/// A ticket or PR reference as a link chip: a URL by what it points at, a
+/// bare key (`API-32`) as a ticket.
+pub fn ref_chip(t: &str) -> String {
+    match url_of(t.trim()) {
+        Some(u) => chip_for(&u),
+        None => chip(IC_TICKET, t.trim(), None, t),
+    }
+}
+
+/// A source chip with any icon markup (a `design::icon`), linked when `href` is.
+pub fn link_chip(icon: &str, label: &str, href: Option<&str>, title: &str) -> String {
+    chip(icon, label, href, title)
+}
 
 fn chip(icon: &str, label: &str, href: Option<&str>, title: &str) -> String {
     match href {

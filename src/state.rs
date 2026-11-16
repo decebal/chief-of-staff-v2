@@ -650,7 +650,7 @@ pub fn commit(
 /// UTC, microseconds, `+00:00`: the form Python's `isoformat()` writes.
 pub fn now() -> String {
     jiff::Timestamp::now()
-        .to_zoned(jiff::tz::TimeZone::UTC)
+        .to_zoned_datetime(jiff::tz::TimeZone::UTC)
         .strftime("%Y-%m-%dT%H:%M:%S%.6f+00:00")
         .to_string()
 }

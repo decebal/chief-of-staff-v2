@@ -40,6 +40,56 @@ pub fn inline(template: &str) -> Result<String> {
         .replace("<!--__COS_MARK__-->", MARK.trim()))
 }
 
+/// The window's icon set (`apps/desktop/ui/vendor/lucide`), read here so a
+/// served page draws the same icons without a script.
+const LUCIDE: &str = include_str!("../apps/desktop/ui/vendor/lucide/icons-0.556.0.js");
+
+/// Lucide's `name` as inline SVG (class `ico`, stroked in the text's colour,
+/// `aria-hidden`: the label beside it says it in words). Empty when the set
+/// lacks the name. Values are the vendored file's own; nothing a user wrote
+/// reaches this markup.
+pub fn icon(name: &str) -> String {
+    let key = format!("\n  \"{name}\": ");
+    let Some(at) = LUCIDE.find(&key) else {
+        return String::new();
+    };
+    let line = LUCIDE[at + key.len()..]
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .replace("[ \"", "[\"");
+    let mut out = String::from(r#"<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">"#);
+    let mut rest = line.as_str();
+    while let Some(i) = rest.find("[\"") {
+        rest = &rest[i + 2..];
+        let Some(j) = rest.find('"') else { break };
+        let tag = &rest[..j];
+        let (Some(open), Some(close)) = (rest.find('{'), rest.find('}')) else {
+            break;
+        };
+        out.push('<');
+        out.push_str(tag);
+        let mut attrs = &rest[open + 1..close];
+        while let Some(colon) = attrs.find(':') {
+            let name = attrs[..colon].trim().trim_start_matches(',').trim();
+            let after = &attrs[colon + 1..];
+            let (Some(q1), Some(q2)) = (
+                after.find('"'),
+                after[after.find('"').unwrap_or(0) + 1..].find('"'),
+            ) else {
+                break;
+            };
+            let value = &after[q1 + 1..q1 + 1 + q2];
+            out.push_str(&format!(r#" {name}="{value}""#));
+            attrs = &after[q1 + q2 + 2..];
+        }
+        out.push_str("/>");
+        rest = &rest[close + 1..];
+    }
+    out.push_str("</svg>");
+    out
+}
+
 fn data_url(font: &[u8]) -> String {
     format!("url(\"data:font/woff2;base64,{}\")", base64(font))
 }

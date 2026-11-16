@@ -96,7 +96,7 @@ fn unapproved_local_facts_are_never_collected() {
 
 #[test]
 fn calendar_window_is_this_week_plus_tomorrow_on_sunday() {
-    let at = |s: &str| s.parse::<jiff::Zoned>().unwrap();
+    let at = |s: &str| s.parse::<jiff::ZonedDateTime>().unwrap();
     let sunday = dates_at(at("2026-10-18T19:00:00-05:00[America/Chicago]"));
     assert_eq!(sunday.calendar_end, "2026-10-19");
     let wednesday = dates_at(at("2026-10-14T09:00:00-05:00[America/Chicago]"));

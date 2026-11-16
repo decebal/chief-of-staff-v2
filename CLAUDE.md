@@ -61,6 +61,8 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 | `src/mcp.rs` + `src/dashboard.html` | MCP server (stdio = all tools, HTTP = read-only) and the MCP App view |
 | `src/report.rs` + `src/report.html` | the HTML report; `vendor/markdy/` is inlined into it |
 | `src/today.rs` | the report's hero and Brief tab, rendered server-side (`tests/today.rs`: actions first, no raw URL text, dates in words) |
+| `src/delivery.rs` | the Today page's delivery board: each Jira ticket with its PRs, code state, what the dev cluster runs and the next step, from `context/delivery.json` (strict, versioned); `cos` only renders it, the user or an agent writes it (`tests/delivery.rs`) |
+| `src/constraints.rs` | the Today page's limiting factors: what currently stops a release, each with evidence, owner, confidence and the move that loosens it, from `context/constraints.json` (strict, versioned), limiting first; the brief reads the open factors and may only propose changes (`tests/constraints.rs`) |
 | `src/staff.rs` | `cos staff-sync`: refresh a configured staff role from an enrolled AllStack coordinator (bounded reads, revision checks, owner parking kept); the Plan tab's Staff card reads it (`docs/managed-staff.md`) |
 | `src/history.rs` | the archive under `out/history/`, backfilled two months per run |
 | `src/dash.rs` | `cos dash`, the live localhost page |

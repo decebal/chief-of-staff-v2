@@ -26,6 +26,13 @@ the desktop window links them directly.
 | `marked/LICENSE.md` | same tarball, `LICENSE` (MIT) | 18.1.2 | 2,942 B | `8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c` |
 | `dompurify/purify-3.4.17.min.js` | `dist/purify.min.js` from <https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz> | dompurify 3.4.17 | 29,828 B | `cd37898f9782adf54820c413191b5691803f0f137c799d6edcfd38523b4c2c31` |
 | `dompurify/LICENSE` | same tarball, `LICENSE` (Apache 2.0, used under that half of its MPL-2.0 OR Apache-2.0 dual licence) | 3.4.17 | 11,358 B | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
+| `lucide/icons-0.556.0.js` | the `__iconNode` arrays of 81 icons in `dist/esm/icons/<name>.js` from lucide-react 0.556.0, React keys dropped, as `window.LUCIDE[name] = [[tag, attributes], …]` | lucide-react 0.556.0 | 16,411 B | `b0e5fe3007043791a1a19f58867a0363155530c01e0221a4357fb61e007ed62d` |
+| `lucide/LICENSE` | same package, `LICENSE` (ISC, with the MIT notice for the Feather portions) | 0.556.0 | 2,004 B | `3c57143f22dac950efebf84002e360bba5458c7b90fe583b0667aaaef1a7256e` |
+
+The pages `cos` serves (the Today report) draw Lucide icons as inline SVG from
+`cos::design::icon`, which reads `lucide/icons-0.556.0.js` at compile time: one
+stroke width (2), sized by `--icon-xs`, coloured by `currentColor`, and
+`aria-hidden` beside a label that says the same in words.
 
 Tarball sha256, as downloaded on 2026-10-28: `basecoat-css-1.1.0.tgz`
 `46eb1cedcd3845013d03a2f46341c63ec51f97185cef932eeb79a332a7c12b48`,

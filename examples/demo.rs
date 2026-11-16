@@ -47,7 +47,7 @@ fn main() -> Result<()> {
         "{} looks like a repo; point the demo at an empty directory",
         home.display()
     );
-    let today = jiff::Zoned::now().date();
+    let today = jiff::ZonedDateTime::now().date();
     let mut rng = Rng(0x00C0_FFEE_2026);
 
     write(
@@ -367,7 +367,7 @@ fn facts(today: Date, rng: &mut Rng) -> Facts {
         }
     }
     Facts {
-        collected_at: jiff::Zoned::now().to_string(),
+        collected_at: jiff::ZonedDateTime::now().to_string(),
         merged_since: ago(7).to_string(),
         tasks,
         mine_open,

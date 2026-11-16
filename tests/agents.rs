@@ -800,18 +800,13 @@ fn count_reports_a_starting_run_as_starting_and_live() {
 fn live_supervisors_holds_live_pids_only_and_writes_nothing() {
     let root = scratch("supervisors");
     let home = root.join("home");
-    let live = agents::spawn(
-        &at(&home),
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        Path::new(COS),
-    )
-    .unwrap();
-    let lost = agents::spawn(
-        &at(&home),
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        Path::new(COS),
-    )
-    .unwrap();
+    // The default is one slot on a four-core runner: the second would queue forever.
+    let both = || Request {
+        slots: Some(2),
+        ..request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP")
+    };
+    let live = agents::spawn(&at(&home), both(), Path::new(COS)).unwrap();
+    let lost = agents::spawn(&at(&home), both(), Path::new(COS)).unwrap();
     let live_st = wait_for(&home, &live.id, |s| s.status == Status::Running);
     let lost_st = wait_for(&home, &lost.id, |s| s.status == Status::Running);
     let live_sleeper = sleeper(&live.workdir);

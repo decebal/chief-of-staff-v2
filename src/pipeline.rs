@@ -122,12 +122,12 @@ pub struct Dates {
 fn dates_in(workspace: &std::path::Path) -> Dates {
     let tz = crate::state::profile(workspace).and_then(|p| crate::state::timezone(&p));
     dates_at(match tz {
-        Some(tz) => jiff::Zoned::now().with_time_zone(tz),
-        None => jiff::Zoned::now(),
+        Some(tz) => jiff::ZonedDateTime::now().with_time_zone(tz),
+        None => jiff::ZonedDateTime::now(),
     })
 }
 
-pub fn dates_at(now: jiff::Zoned) -> Dates {
+pub fn dates_at(now: jiff::ZonedDateTime) -> Dates {
     let today = now.date();
     let to_sunday = 7 - i64::from(today.weekday().to_monday_one_offset());
     let calendar_end = today.saturating_add(jiff::Span::new().days(to_sunday.max(1)));
@@ -334,8 +334,9 @@ pub fn tickets_rule(workspace: &Path) -> String {
 
 fn grounding(home: &Path, workspace: &Path, facts: &Facts) -> String {
     format!(
-        "{}\n\n{}",
+        "{}{}\n\n{}",
         crate::context::block(home, workspace),
+        crate::constraints::prompt_block(home),
         facts_block(facts)
     )
 }
@@ -553,7 +554,9 @@ impl Config {
             })?;
         list.pages
             .retain(|p| p.url.starts_with("https://") && !p.title.trim().is_empty());
-        list.listed_at = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string();
+        list.listed_at = jiff::ZonedDateTime::now()
+            .strftime("%Y-%m-%d %H:%M")
+            .to_string();
         Ok((list, cost))
     }
 
