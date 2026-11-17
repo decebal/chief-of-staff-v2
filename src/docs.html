@@ -451,8 +451,11 @@ const DATA = "__DOCS_DATA__";
   const colorOf = (label) => cssVar(tokenOf(label));
   const channels = (c) => { const m = /^#?([0-9a-f]{6})$/i.exec(c); const v = m ? parseInt(m[1], 16) : 0x888888; return [v >> 16 & 255, v >> 8 & 255, v & 255]; };
   const darker = (c) => "#" + channels(c).map((x) => Math.round(x * 0.72).toString(16).padStart(2, "0")).join("");
-  const inkOn = (c) => { const [r, g, b] = channels(c).map((x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.32 ? cssVar("brand-ink") : cssVar("brand-white"); };
+  const lum = (c) => { const [r, g, b] = channels(c).map((x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  // Whichever ink reads better on this fill; a fixed luminance cut gave mid-tones white text under 4.5:1.
+  const inkOn = (c) => { const ink = cssVar("brand-ink"), white = cssVar("brand-white"); return ratio(c, ink) >= ratio(c, white) ? ink : white; };
   const snake = (k) => String(k || "").trim().toUpperCase().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "") || "LINKS_TO";
   const BET = (g) => `#bet:${g}`, TOPIC = (t) => `#topic:${t}`;
 

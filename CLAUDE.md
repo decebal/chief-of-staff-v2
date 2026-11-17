@@ -52,7 +52,7 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 | `src/handoff.rs` | the kit's nine-part handoff, from a tracked deliverable |
 | `src/proc.rs` | bounded child processes: one deadline, kill the group, reap |
 | `src/agents/` | `cos agents`: spawn, supervise, monitor and stop Claude Code / Codex agents in worktrees; `slots.rs` run slots and the build lock, `seed.rs` worktree seeding, `judge.rs` the verdict from diff, checks and scope (never the agent's summary), `policy.rs` hiring defaults from `context/agents.json`, `hire.rs` the plan before any spawn (repo resolution, refusal), `fit.rs` the pre-hire fit check over the policy's `fit` vocabulary, `watch.rs` stalled/looping flags from the stream, `ledger.rs` the verdict ledger and scorecard |
-| `apps/desktop/` | Tauri 2 app over the `cos` lib: the report on `cosreport://` in a sandboxed iframe, the Agents tab (staff roster by role, run verdicts, hire dialog); `tests/ipc.rs` drives its commands on the mock runtime; `examples/preview.rs` serves the window's UI to a browser over the same commands; `task desktop-app` installs `~/Applications/Chief of Staff.app` |
+| `apps/desktop/` | Tauri 2 app over the `cos` lib: the report on `cosreport://` in a sandboxed iframe, the Agents tab (staff roster by role, run verdicts, hire dialog); `tests/ipc.rs` drives its commands on the mock runtime; `examples/preview.rs` serves the window's UI to a browser over the same commands; `task desktop-app` installs `~/Applications/Chief of Staff.app`. The main window is built in setup (`"create": false`) with navigation and new-window hooks: http, https and mailto links from the window or any frame open in the default browser, the app's pages and its loopback dashboards stay in place, other schemes are refused (`tests/links.rs`) |
 | `apps/desktop/ui/tokens.css` + `src/design.rs` | the one design token file (colour light/dark, Geist type scale, radii) over vendored Basecoat and Geist (`ui/vendor/README.md`); `design.rs` inlines it with the fonts into every page `cos` serves; `tests/design.rs` fails any page styling outside it |
 | `src/gather.rs` | `cn` / `gh` facts collected without the model |
 | `src/pipeline.rs` | brief and ask, shared by CLI and MCP |
@@ -72,6 +72,7 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 | `.claude/skills/ritual/` | the ritual skill: Think, Spec, Plan, Build, Review, Ship, Reflect, and the `ritual-*` markers `cos flows` reads |
 | `.claude/skills/ritual-full/`, `.claude/skills/semantic-isa/` | ritual with every tool on (EGM, a Semantic ISA section per design, two reviewers, `cos` hires); planned work in this repo runs as a `ritual-full` flow. All three skills are vendored byte-for-byte from decebal-claude-skills |
 | `examples/demo.rs` | the synthetic home behind every screenshot (`task demo`), with fictional Chronis stores and a stand-in `cn` for `/flows` |
+| `examples/wcag.rs` | the WCAG measurement as an autoresearch JSONL evaluator: axe-core over every view, dialog and dashboard of the window and its pages, light and dark, each theme on a fresh page, Chrome on a mock keychain (`docs/wcag.md`) |
 
 Screenshots in `docs/assets/` come only from `task screenshots` on the demo
 home. Never capture a real `COS_HOME`: briefs quote mail, calendar and tickets.

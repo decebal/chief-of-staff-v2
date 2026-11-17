@@ -11,6 +11,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Chief of Staff",
         "width": 1320,
         "height": 900,
