@@ -27,6 +27,7 @@ pub mod harness;
 pub mod hire;
 pub mod judge;
 pub mod ledger;
+pub mod osc;
 pub mod policy;
 pub mod seed;
 pub mod slots;
@@ -395,7 +396,63 @@ pub fn infer_repo(prompt: &str, projects: &Path) -> Option<PathBuf> {
 /// its supervisor detached. Returns once the supervisor is started; the agent
 /// itself runs in the background. The agent's env pins `triple`, so a `cos`
 /// it runs resolves the business that spawned it.
-pub fn spawn(triple: &Triple, mut req: Request, cos: &Path) -> Result<Spec> {
+pub fn spawn(triple: &Triple, req: Request, cos: &Path) -> Result<Spec> {
+    let Prepared {
+        spec,
+        home,
+        workspace,
+        projects,
+    } = prepare(triple, req)?;
+    let d = dir(&home, &spec.id);
+
+    let log = std::fs::File::create(d.join("supervisor.log"))?;
+    let mut cmd = Command::new(cos);
+    cmd.arg("--home")
+        .arg(&home)
+        .args(["agents", "supervise", &spec.id])
+        .env_remove("COS_BUSINESS")
+        .env("COS_HOME", &home)
+        .env("COS_WORKSPACE", &workspace)
+        .env("COS_PROJECTS", &projects)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    // SAFETY: setsid is async-signal-safe and touches no memory. Its own
+    // session keeps a closed terminal or a Ctrl-C there from reaching the agent.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().context("start the agent supervisor")?;
+    // Reaped here so a long-lived parent (`cos mcp`) collects no zombies.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(spec)
+}
+
+/// The same hire, run in a herdr terminal instead of under a cos supervisor.
+/// herdr owns the process; cos keeps the spec and worktree so it can judge the
+/// result later, and starts no supervisor of its own — one owner per run.
+pub fn spawn_in_herdr(triple: &Triple, req: Request) -> Result<(Spec, String)> {
+    let Prepared { spec, .. } = prepare(triple, req)?;
+    let addr = crate::herdr::open(&spec)?;
+    Ok((spec, addr))
+}
+
+struct Prepared {
+    spec: Spec,
+    home: PathBuf,
+    workspace: PathBuf,
+    projects: PathBuf,
+}
+
+/// Builds the run directory, worktree and spec and records them, up to the point
+/// a run is owned by whoever starts the harness. Shared by `spawn` (a cos
+/// supervisor) and `spawn_in_herdr` (a herdr terminal).
+fn prepare(triple: &Triple, mut req: Request) -> Result<Prepared> {
     if req.prompt.trim().is_empty() {
         bail!("empty prompt");
     }
@@ -458,32 +515,12 @@ pub fn spawn(triple: &Triple, mut req: Request, cos: &Path) -> Result<Spec> {
     write_json(&d.join("spec.json"), &spec)?;
     write_state(&RunDir { path: d.clone() }, &State::default())?;
 
-    let log = std::fs::File::create(d.join("supervisor.log"))?;
-    let mut cmd = Command::new(cos);
-    cmd.arg("--home")
-        .arg(&home)
-        .args(["agents", "supervise", &id])
-        .env_remove("COS_BUSINESS")
-        .env("COS_HOME", &home)
-        .env("COS_WORKSPACE", &workspace)
-        .env("COS_PROJECTS", &projects)
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    // SAFETY: setsid is async-signal-safe and touches no memory. Its own
-    // session keeps a closed terminal or a Ctrl-C there from reaching the agent.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    let mut child = cmd.spawn().context("start the agent supervisor")?;
-    // Reaped here so a long-lived parent (`cos mcp`) collects no zombies.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(spec)
+    Ok(Prepared {
+        spec,
+        home,
+        workspace,
+        projects,
+    })
 }
 
 /// Every run that resolves, newest first. An id that fails `run_dir` or `read`
