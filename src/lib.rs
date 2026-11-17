@@ -12,6 +12,7 @@ pub mod docs;
 pub mod flows;
 pub mod gather;
 pub mod handoff;
+pub mod herdr;
 pub mod history;
 pub mod mcp;
 pub mod pipeline;

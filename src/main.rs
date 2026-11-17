@@ -280,6 +280,10 @@ enum AgentCmd {
         /// contract and mandate fill what the other flags leave empty.
         #[arg(long)]
         role: Option<String>,
+        /// Run the hire in a herdr terminal — a live space you watch in herdr —
+        /// instead of under a cos supervisor. Pick the harness with --harness.
+        #[arg(long)]
+        herdr: bool,
     },
     /// Judge an ended agent again: its diff, its checks, its scope.
     Judge { id: String },
@@ -300,7 +304,12 @@ enum AgentCmd {
     /// Every agent: status, tool calls, cost, latest activity.
     Ls,
     /// The table, redrawn every 2 s until no agent is running.
-    Watch,
+    Watch {
+        /// Emit one OSC 7501 status record per agent instead of the table, for
+        /// a fleet runner (herdr) that reads the pty.
+        #[arg(long)]
+        osc: bool,
+    },
     /// One agent in full, with the command to take it over interactively.
     Show { id: String },
     /// Its activity, one line per tool call or message.
@@ -766,6 +775,7 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
             scope,
             done_when,
             role,
+            herdr,
         } => {
             use agents::hire::Ask;
             let picked: Vec<Ask> = match (from, prompt) {
@@ -838,8 +848,14 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
                         budget: cli.budget.is_some(),
                     },
                 })?;
-                let spec = agents::spawn(t, req, &cos)?;
-                println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
+                if *herdr {
+                    let (spec, addr) = agents::spawn_in_herdr(t, req)?;
+                    println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
+                    eprintln!("herdr: {addr}  ·  watch: hc attach cos-{}", spec.id);
+                } else {
+                    let spec = agents::spawn(t, req, &cos)?;
+                    println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
+                }
             }
             if !cli.dry_run {
                 eprintln!("watch: cos agents watch   ·   live page: cos dash → /agents");
@@ -852,10 +868,18 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
             note_skipped(&listing.skipped);
             Ok(())
         }
-        AgentCmd::Watch => loop {
+        AgentCmd::Watch { osc } => loop {
             let listing = agents::list(home)?;
-            print!("\x1b[2J\x1b[H{}", agents::view::table(&listing.runs));
-            note_skipped(&listing.skipped);
+            if *osc {
+                let mut out = std::io::stdout().lock();
+                for (spec, state) in &listing.runs {
+                    agents::osc::report(&mut out, &spec.id, &spec.title, state)?;
+                }
+                std::io::Write::flush(&mut out)?;
+            } else {
+                print!("\x1b[2J\x1b[H{}", agents::view::table(&listing.runs));
+                note_skipped(&listing.skipped);
+            }
             if listing.skipped.is_empty() && listing.runs.iter().all(|(_, s)| s.status.terminal()) {
                 return Ok(());
             }
