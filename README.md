@@ -233,6 +233,7 @@ cos --home /tmp/cos-demo dash
 |---|---|
 | [Usage](docs/usage.md) | customising, agents and the hiring policy, Codex timeouts, the remote connector |
 | [Ritual flows](docs/ritual.md) | the seven steps, the `ritual-*` markers, approval and what it does not stop, how `cos flows` infers a step |
+| [WCAG measurement](docs/wcag.md) | axe-core over every view and page, light and dark: the evaluator in `examples/wcag.rs`, the 2026-11-17 result (42 violation nodes to 0), what axe cannot decide |
 | [Managed staff](docs/managed-staff.md) | configured mandates, AllStack evidence refresh, handoffs and parking |
 | [Design](docs/design.md) | how it works, and the measurements behind each decision |
 | [Desktop plan](docs/plans/2026-10-21-desktop-app.md) | the workspace split, the agent governor and seeding, and the Tauri app |

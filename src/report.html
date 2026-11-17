@@ -393,7 +393,7 @@
   <div role="tabpanel" id="right" aria-labelledby="tab-right" hidden></div>
   <div role="tabpanel" id="history" aria-labelledby="tab-history" hidden></div>
 </main>
-<div id="tip" role="tooltip"></div>
+<div id="tip" role="tooltip" hidden></div>
 
 <script>/*__MARKDY__*/</script>
 <script>
@@ -544,23 +544,25 @@ const DATA = "__COS_DATA__";
 
   // ---- tooltip (hover and keyboard focus show the same thing)
   const tip = $("tip");
-  const showTip = (el, x, y) => { tip.textContent = el.dataset.tip; tip.style.opacity = 1;
+  // Hidden, not transparent: an empty tooltip stays in the accessibility tree.
+  const hideTip = () => { tip.style.opacity = 0; tip.hidden = true; };
+  const showTip = (el, x, y) => { tip.textContent = el.dataset.tip; tip.hidden = false; tip.style.opacity = 1;
     tip.style.left = Math.min(x + 12, innerWidth - 330) + "px"; tip.style.top = (y + 12) + "px"; };
   document.addEventListener("mousemove", (e) => {
     const m = e.target.closest("[data-tip]");
-    if (m) showTip(m, e.clientX, e.clientY); else tip.style.opacity = 0;
+    if (m) showTip(m, e.clientX, e.clientY); else hideTip();
   });
   document.addEventListener("focusin", (e) => {
     const m = e.target.closest("[data-tip]");
     if (!m) return; const r = m.getBoundingClientRect(); showTip(m, r.right, r.top);
   });
-  document.addEventListener("focusout", () => { tip.style.opacity = 0; });
+  document.addEventListener("focusout", hideTip);
 
   // ---- chart primitives (SVG, thin marks, 2px gaps, recessive grid)
   // Drawn 1:1 at the container's pixel width, so text never scales with the
   // card. A hidden tab measures 0 wide; its charts redraw when shown.
   const widthOf = (el) => Math.max(200, el.clientWidth || 520);
-  const svgOpen = (W, H) => `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">`;
+  const svgOpen = (W, H, name) => `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(name)}">`;
   const clip = (s) => s.length > 26 ? s.slice(0, 25) + "…" : s;
   const charts = [];
   const chart = (el, draw) => { charts.push([el, draw]); draw(); };
@@ -587,7 +589,7 @@ const DATA = "__COS_DATA__";
     const W = widthOf(el), H = 140, L = 26, B = 22, T = 8;
     const max = niceMax(Math.max(1, ...items.map((d) => d.v)));
     const bw = (W - L) / items.length;
-    let s = svgOpen(W, H + B);
+    let s = svgOpen(W, H + B, `Bar chart of ${items.length} values; the table view below lists them`);
     for (const t of ticks(max)) {
       const y = T + H - (H - T) * t / max;
       s += `<line x1="${L}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--chart-grid)" stroke-width="1"/>`;
@@ -610,7 +612,7 @@ const DATA = "__COS_DATA__";
     const W = widthOf(el), rowH = 24, L = 170, R = 28;
     const H = items.length * rowH;
     const max = niceMax(Math.max(1, ...items.map((d) => d.v)));
-    let s = svgOpen(W, H + 4);
+    let s = svgOpen(W, H + 4, `Bar chart of ${items.length} values; the table view below lists them`);
     items.forEach((d, i) => {
       const y = i * rowH + 3, w = (W - L - R) * d.v / max;
       s += `<text class="axis-label" x="${L - 8}" y="${y + 13}" text-anchor="end">${esc(clip(d.label))}</text>`;
@@ -627,7 +629,7 @@ const DATA = "__COS_DATA__";
     const W = widthOf(el), rowH = 24, L = 170, R = 30;
     const H = rows.length * rowH;
     const max = niceMax(Math.max(1, ...rows.map((r) => keys.reduce((a, k) => a + (r[k] || 0), 0))));
-    let s = svgOpen(W, H + 4);
+    let s = svgOpen(W, H + 4, `Stacked bar chart of ${rows.length} rows; the table view below lists them`);
     rows.forEach((r, i) => {
       const y = i * rowH + 3; let x = L; const total = keys.reduce((a, k) => a + (r[k] || 0), 0);
       s += `<text class="axis-label" x="${L - 8}" y="${y + 13}" text-anchor="end" data-tip="${esc(r.label)}">${esc(clip(r.label))}</text>`;
@@ -946,7 +948,7 @@ const DATA = "__COS_DATA__";
     const max = niceMax(Math.max(1, ...pts.map((p) => p.v)));
     const x = (i) => pts.length === 1 ? L + (W - L - R) / 2 : L + (W - L - R) * i / (pts.length - 1);
     const y = (v) => T + (H2 - T) * (1 - v / max);
-    let s = svgOpen(W, H2 + B);
+    let s = svgOpen(W, H2 + B, `Line chart of ${pts.length} days; the table view below lists them`);
     for (const t of ticks(max)) {
       s += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="var(--chart-grid)"/>`;
       s += `<text class="axis-label" x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${t}</text>`;
@@ -979,7 +981,7 @@ const DATA = "__COS_DATA__";
     const isKnown = (d) => known.has(ymd(d).slice(0, 7)) || d >= recent;
     let unknown = 0;
     const fills = ["var(--ramp-0)", "var(--ramp-1)", "var(--ramp-2)", "var(--ramp-3)", "var(--ramp-4)"];
-    let s = `<svg width="${W}" height="${H3}" viewBox="0 0 ${W} ${H3}" role="img" class="heat">`;
+    let s = `<svg width="${W}" height="${H3}" viewBox="0 0 ${W} ${H3}" role="img" aria-label="Merged pull requests per day over the past year" class="heat">`;
     ["Mon", "Wed", "Fri"].forEach((d, i) => { s += `<text class="axis-label" x="0" y="${T + (i * 2) * step + 9}">${d}</text>`; });
     let lastMonth = -1, total = 0;
     days.forEach((d, i) => {

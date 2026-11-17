@@ -815,6 +815,59 @@ pub fn report_response<R: Runtime>(
         .expect("static response parts")
 }
 
+/// Where a link the window or one of its frames asks for goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link {
+    /// The window's own pages, the report scheme and the dashboards the app
+    /// serves on the loopback address: they load in place.
+    InApp,
+    /// http, https and mailto: the default browser or mail app.
+    Browser,
+    /// Anything else (file:, javascript:, a custom scheme): not opened.
+    Refused,
+}
+
+pub fn link_kind(url: &tauri::Url) -> Link {
+    let local = url.host_str().is_some_and(|h| {
+        h == "localhost" || h.ends_with(".localhost") || h == "127.0.0.1" || h == "[::1]"
+    });
+    match url.scheme() {
+        "tauri" | "cosreport" | "about" | "data" | "blob" | "ipc" | "asset" => Link::InApp,
+        "http" | "https" if local => Link::InApp,
+        "http" | "https" | "mailto" => Link::Browser,
+        _ => Link::Refused,
+    }
+}
+
+/// Hands `url` to `open` when it may leave the app; a refused one is told on
+/// the dev channel (the scheme only: the address may carry anything). True
+/// when it went out.
+pub fn send_out(url: &tauri::Url, open: impl FnOnce(String)) -> bool {
+    match link_kind(url) {
+        Link::Browser => {
+            open(url.to_string());
+            true
+        }
+        Link::InApp => false,
+        Link::Refused => {
+            eprintln!(
+                "link refused: the app opens http, https and mailto, not {}:",
+                url.scheme()
+            );
+            false
+        }
+    }
+}
+
+/// `open <url>` on a thread of its own: the hooks run on the window's thread.
+fn open_in_browser(url: String) {
+    std::thread::spawn(move || {
+        if let Err(e) = cos::report::open(Path::new(&url)) {
+            eprintln!("link: could not open it in the browser: {e:#}");
+        }
+    });
+}
+
 /// The whole `cosreport` scheme: the Origin rule, then the docs room or the report.
 pub fn cosreport_response<R: Runtime>(
     app: &AppHandle<R>,
@@ -1476,6 +1529,33 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             app.manage(App::new(&start));
             app.manage(start);
             app.manage(RowCache::default());
+            // The main window is built here rather than from the config alone
+            // (`"create": false`), so its links can be routed: a frame's
+            // `target="_blank"` link or a navigation away from the app opens
+            // in the default browser, never inside the window.
+            let windows: Vec<_> = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .filter(|w| !w.create)
+                .cloned()
+                .collect();
+            for w in windows {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &w)?
+                    .on_navigation(|url| match link_kind(url) {
+                        Link::InApp => true,
+                        _ => {
+                            send_out(url, open_in_browser);
+                            false
+                        }
+                    })
+                    .on_new_window(|url, _| {
+                        send_out(&url, open_in_browser);
+                        tauri::webview::NewWindowResponse::Deny
+                    })
+                    .build()?;
+            }
             watch(app.handle().clone());
             Ok(())
         })

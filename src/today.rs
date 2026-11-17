@@ -717,7 +717,7 @@ fn ribbon(s: &mut String, cx: &Ctx, b: &Brief) {
         if is_today && (START..=END).contains(&now_m) {
             let _ = write!(
                 s,
-                r#"<i class="now" style="left:{:.2}%" aria-label="now {}"></i>"#,
+                r#"<i class="now" style="left:{:.2}%" role="img" aria-label="now {}"></i>"#,
                 pct(now_m),
                 cx.now.strftime("%H:%M")
             );
