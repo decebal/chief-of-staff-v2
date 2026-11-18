@@ -1,14 +1,13 @@
 //! Hiring, tracking and the scorecard end to end: `context/agents.json`
-//! filling a spawn, the supervisor flagging trouble from the stream, and the
-//! ledger every verdict lands in.
+//! filling a hire, the verdict cos records from the worktree, and the ledger
+//! every verdict lands in.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cos::agents::judge::Outcome;
 use cos::agents::policy::{self, Explicit};
-use cos::agents::watch::Kind;
 use cos::agents::{self, Contract, Harness, Request, Spec, State, Status, ledger};
 
 const COS: &str = env!("CARGO_BIN_EXE_cos");
@@ -85,17 +84,46 @@ fn request(repo: &Path, prompt: &str) -> Request {
     }
 }
 
+/// Prepares the hire (policy and role applied, worktree cut), runs the stand-in
+/// harness in it as a herdr space would, folds its stream into the recorded
+/// state, judges the worktree and appends the ledger row — the result cos keeps
+/// when a space ends, without needing herdr.
 fn judged(home: &Path, req: Request) -> (Spec, State) {
-    let spec = agents::spawn(&at(home), req, Path::new(COS)).unwrap();
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let (spec, st) = agents::read(home, &spec.id).unwrap();
-        if st.verdict.is_some() {
-            return (spec, st);
+    let spec = agents::prepare_spec(&at(home), req).unwrap();
+    let out = agents::harness::command(&spec).output().unwrap();
+    let mut state = State::default();
+    let mut failed = None;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let t = agents::harness::read(spec.harness, line);
+        if let Some(l) = t.last {
+            state.last = l;
         }
-        assert!(Instant::now() < until, "never judged: {st:?}");
-        std::thread::sleep(Duration::from_millis(100));
+        state.tool_calls += t.tool_calls;
+        if t.cost_usd.is_some() {
+            state.cost_usd = t.cost_usd;
+        }
+        if let Some(s) = t.summary {
+            state.summary = s;
+        }
+        if t.failed.is_some() {
+            failed = t.failed;
+        }
     }
+    state.exit = out.status.code();
+    state.status = if out.status.success() && failed.is_none() {
+        Status::Done
+    } else {
+        Status::Failed
+    };
+    state.error = failed;
+    state.verdict = Some(agents::judge::judge(&spec, &state, None));
+
+    let d = agents::root(home).join(&spec.id);
+    std::fs::write(d.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+    if let Some(row) = agents::ledger::row(&spec, &state) {
+        agents::ledger::append(home, &row).unwrap();
+    }
+    (spec, state)
 }
 
 const POLICY: &str = r#"{
@@ -167,34 +195,6 @@ fn a_broken_policy_is_ignored_and_says_why() {
         p.note.unwrap().contains("unknown field"),
         "a typo must not hire silently"
     );
-}
-
-#[test]
-fn an_agent_repeating_one_call_is_flagged_looping() {
-    let (home, repo) = setup("loop", None);
-    let (_, st) = judged(&home, request(&repo, "LOOP please"));
-    assert_eq!(st.status, Status::Done);
-    assert_eq!(st.flagged, [Kind::Looping]);
-    assert!(st.flags.is_empty(), "current flags clear when it ends");
-    assert_eq!(ledger::read(&home)[0].flagged, [Kind::Looping]);
-}
-
-#[test]
-fn an_agent_gone_quiet_is_flagged_stalled_while_it_runs() {
-    let (home, repo) = setup("stall", Some(r#"{ "defaults": { "stall_secs": 1 } }"#));
-    let spec = agents::spawn(&at(&home), request(&repo, "SLEEP"), Path::new(COS)).unwrap();
-    let until = Instant::now() + Duration::from_secs(15);
-    loop {
-        let (_, st) = agents::read(&home, &spec.id).unwrap();
-        if st.flags.iter().any(|f| f.kind == Kind::Stalled) {
-            assert_eq!(st.status, Status::Running);
-            break;
-        }
-        assert!(Instant::now() < until, "never flagged: {st:?}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let st = agents::stop(&home, &spec.id, Duration::from_secs(10)).unwrap();
-    assert_eq!(st.status, Status::Killed);
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn a_tester_drafts_the_plan_and_is_judged_on_it_then_you_record_the_result() {
 #[test]
 fn a_result_is_recorded_only_on_a_judged_run() {
     let (home, repo) = setup("record-live", None);
-    let spec = agents::spawn(&at(&home), request(&repo, "SLEEP"), Path::new(COS)).unwrap();
+    let spec = agents::prepare_spec(&at(&home), request(&repo, "edit a file")).unwrap();
     let err = agents::record(
         &home,
         &spec.id,
@@ -408,7 +408,6 @@ fn a_result_is_recorded_only_on_a_judged_run() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("once it is judged"), "{err}");
-    agents::stop(&home, &spec.id, Duration::from_secs(10)).unwrap();
 }
 
 #[test]
@@ -418,7 +417,7 @@ fn hiring_the_head_or_an_unknown_role_starts_nothing() {
         let mut req = request(&repo, "edit a file");
         req.role = Some(role.into());
         assert!(
-            agents::spawn(&at(&home), req, Path::new(COS)).is_err(),
+            agents::spawn_in_herdr(&at(&home), req).is_err(),
             "{role} was hired"
         );
     }

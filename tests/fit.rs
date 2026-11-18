@@ -264,7 +264,7 @@ fn a_researcher_needs_no_repo_and_a_builder_without_one_is_refused_at_spawn_too(
         explicit: policy::Explicit::default(),
         role: Some("builder".into()),
     };
-    let err = cos::agents::spawn(&pinned(&home), req, Path::new("/bin/false")).unwrap_err();
+    let err = cos::agents::spawn_in_herdr(&pinned(&home), req).unwrap_err();
     assert!(err.to_string().contains("works in a repo"), "{err}");
     assert!(
         cos::agents::list(&home).unwrap().runs.is_empty(),

@@ -1,26 +1,14 @@
-//! The judge, end to end: a stand-in harness under the real supervisor in a
-//! real git worktree, then the verdict `cos` records from what it left.
+//! The judge, end to end: the stand-in harness run in a real git worktree
+//! exactly as a hire would, then the verdict `cos` records from what it left.
+//! herdr owns the run in production; the judge reads the worktree the same way.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use cos::agents::{
-    self, Contract, Expects, Harness, Outcome, Request, Spec, State, Status, Verdict,
-};
+use cos::agents::{self, Contract, Expects, Harness, Outcome, Spec, State, Status, Verdict};
 
-const COS: &str = env!("CARGO_BIN_EXE_cos");
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
-
-fn at(home: &Path) -> cos::business::Triple {
-    cos::business::Triple {
-        home: home.to_owned(),
-        workspace: home.to_owned(),
-        projects: home.join("projects"),
-        business: None,
-        layer: cos::business::Layer::Flags,
-    }
-}
 
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cos-judge-{name}-{}", std::process::id()));
@@ -47,6 +35,12 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(st.success(), "git {args:?}");
 }
 
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}");
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
 fn repo(root: &Path) -> PathBuf {
     let r = root.join("projects/demo-repo");
     std::fs::create_dir_all(&r).unwrap();
@@ -67,36 +61,71 @@ fn run(name: &str, prompt: &str, contract: Contract) -> (State, Verdict) {
 fn judged(name: &str, prompt: &str, contract: Contract) -> (PathBuf, Spec, State, Verdict) {
     let root = scratch(name);
     let (home, repo) = (root.join("home"), repo(&root));
-    let spec = agents::spawn(
-        &at(&home),
-        Request {
-            harness: Harness::Claude,
-            program: Some(FAKE_CLAUDE.into()),
-            model: None,
-            repo: Some(repo),
-            worktree: true,
-            title: "test task".into(),
-            source: "test".into(),
-            prompt: prompt.into(),
-            deadline: Duration::from_secs(30),
-            budget_usd: 1.0,
-            slots: None,
-            contract,
-            explicit: Default::default(),
-            role: None,
-        },
-        Path::new(COS),
-    )
-    .unwrap();
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let (spec, st) = agents::read(&home, &spec.id).unwrap();
-        if let Some(v) = st.verdict.clone() {
-            return (home, spec, st, v);
+    let id = "test-run".to_string();
+    let base = git_out(&repo, &["rev-parse", "HEAD"]);
+    let d = agents::root(&home).join(&id);
+    std::fs::create_dir_all(&d).unwrap();
+    let workdir = d.join("tree");
+    git(
+        &repo,
+        &["worktree", "add", "--detach", &workdir.to_string_lossy(), &base],
+    );
+
+    let spec = Spec {
+        id,
+        harness: Harness::Claude,
+        program: FAKE_CLAUDE.into(),
+        model: None,
+        repo: Some(repo),
+        base: Some(base),
+        workdir,
+        worktree: true,
+        title: "test task".into(),
+        source: "test".into(),
+        prompt: prompt.into(),
+        deadline_secs: 30,
+        budget_usd: 1.0,
+        created: String::new(),
+        slots: None,
+        contract,
+        limits: Default::default(),
+        role: None,
+    };
+
+    // Run the harness as a hire would (herdr owns this in production), then fold
+    // its stream into the state cos records.
+    let out = agents::harness::command(&spec).output().unwrap();
+    let mut state = State::default();
+    let mut failed = None;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let t = agents::harness::read(spec.harness, line);
+        if let Some(l) = t.last {
+            state.last = l;
         }
-        assert!(Instant::now() < until, "never judged: {st:?}");
-        std::thread::sleep(Duration::from_millis(100));
+        state.tool_calls += t.tool_calls;
+        if t.cost_usd.is_some() {
+            state.cost_usd = t.cost_usd;
+        }
+        if let Some(s) = t.summary {
+            state.summary = s;
+        }
+        if t.failed.is_some() {
+            failed = t.failed;
+        }
     }
+    state.exit = out.status.code();
+    state.status = if out.status.success() && failed.is_none() {
+        Status::Done
+    } else {
+        Status::Failed
+    };
+    state.error = failed;
+
+    let verdict = agents::judge::judge(&spec, &state, None);
+    state.verdict = Some(verdict.clone());
+    std::fs::write(d.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
+    std::fs::write(d.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+    (home, spec, state, verdict)
 }
 
 fn contract(checks: &[&str], scope: &[&str]) -> Contract {
