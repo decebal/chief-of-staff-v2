@@ -798,7 +798,6 @@ pub fn report_response<R: Runtime>(
             })
             .map(String::into_bytes)
             .map_err(|e| format!("{e:#}")),
-        "/flows" => Ok(cos::flows::page_cached(&s.workspace, &s.projects).into_bytes()),
         _ => cos::dash::archived(&s.home, path)
             .ok_or_else(|| "not found".to_owned())
             .and_then(|f| std::fs::read(f).map_err(err)),
@@ -813,6 +812,80 @@ pub fn report_response<R: Runtime>(
         .header("Cache-Control", "no-store")
         .body(bytes)
         .expect("static response parts")
+}
+
+/// `cosreport://localhost/flows`: the Flows page of the app business's
+/// projects, its script held to its own inline code by `flows::PAGE_CSP`;
+/// `?fresh=1` (the page's Refresh) scans again inside the cache's lifetime.
+/// Everything else in the query belongs to the page.
+pub fn flows_response<R: Runtime>(
+    app: &AppHandle<R>,
+    query: Option<&str>,
+) -> tauri::http::Response<Vec<u8>> {
+    let s = app.state::<App>().get();
+    let fresh = query.is_some_and(|q| q.split('&').any(|p| p == "fresh=1"));
+    let pages = app.state::<FlowPages>().0.clone();
+    let held = (!fresh)
+        .then(|| pages.cached(&s.workspace, &s.projects))
+        .flatten();
+    let body = match held {
+        Some((age, html)) => {
+            if age >= cos::flows::STALE {
+                flows_behind(app.clone());
+            }
+            html
+        }
+        None => pages.scan(&s.workspace, &s.projects, fresh, &flows_progress(app)),
+    };
+    tauri::http::Response::builder()
+        .status(200)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("Cache-Control", "no-store")
+        .header("Content-Security-Policy", cos::flows::PAGE_CSP)
+        .body(body.into_bytes())
+        .expect("static response parts")
+}
+
+/// The Flows pages this window serves, one held per workspace and projects
+/// directory, so a business switch never shows another business's flows.
+pub struct FlowPages(pub std::sync::Arc<cos::flows::Pages>);
+
+#[derive(Clone, Serialize)]
+struct FlowsProgress {
+    done: usize,
+    total: usize,
+    repo: String,
+}
+
+/// `flows-progress` for each repo a scan moves to, so the tab can say
+/// "reading 3 of 8 repos" while the frame waits.
+fn flows_progress<R: Runtime>(app: &AppHandle<R>) -> impl Fn(usize, usize, &str) + Sync + use<R> {
+    let app = app.clone();
+    move |done, total, repo| {
+        let _ = app.emit(
+            "flows-progress",
+            FlowsProgress {
+                done,
+                total,
+                repo: repo.to_owned(),
+            },
+        );
+    }
+}
+
+/// Scans the flows on a thread of its own unless a scan is running, keeps
+/// the page, and emits `flows-changed` so the tab swaps it in.
+fn flows_behind<R: Runtime>(app: AppHandle<R>) {
+    std::thread::spawn(move || {
+        let s = app.state::<App>().get();
+        let pages = app.state::<FlowPages>().0.clone();
+        if pages
+            .try_scan(&s.workspace, &s.projects, &flows_progress(&app))
+            .is_some()
+        {
+            let _ = app.emit("flows-changed", ());
+        }
+    });
 }
 
 /// Where a link the window or one of its frames asks for goes.
@@ -892,6 +965,8 @@ pub fn cosreport_response<R: Runtime>(
     }
     if path.starts_with("/docs") {
         docs_response(app, req)
+    } else if path == "/flows" {
+        flows_response(app, req.uri().query())
     } else {
         report_response(app, path)
     }
@@ -1313,6 +1388,283 @@ async fn agent_tasks(app: tauri::State<'_, App>, from: agents::From) -> Res<Vec<
     blocking(move || agents::tasks(&home, from)).await
 }
 
+/// The brief started from the window: one at a time, owned by this process.
+#[derive(Default, Clone, Serialize)]
+struct BriefRun {
+    running: bool,
+    /// The business it runs for.
+    business: Option<String>,
+    /// Seconds since the epoch.
+    started: Option<u64>,
+    ended: Option<u64>,
+    ok: Option<bool>,
+    deferred: bool,
+    /// Why it failed, in its own last words.
+    said: Option<String>,
+}
+
+#[derive(Default)]
+struct Brief(Mutex<BriefRun>);
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// Starts `cos brief` for the app business as a child this process owns
+/// (`pipeline::brief_child`: one deadline, killed and reaped), unless one is
+/// running. Returns at once; `brief-changed` fires as it starts and ends, and
+/// the report refreshes from the watcher when the run writes.
+#[tauri::command]
+fn brief_run<R: Runtime>(
+    handle: AppHandle<R>,
+    app: tauri::State<'_, App>,
+    brief: tauri::State<'_, Brief>,
+    business: String,
+) -> Res<BriefRun> {
+    let s = app.get();
+    named(&s, &business)?;
+    let cos = s.cos.clone().ok_or(
+        "no cos binary: set COS_BIN, build it (`cargo build`), or `task install`".to_owned(),
+    )?;
+    let mut b = brief.0.lock().map_err(err)?;
+    if b.running {
+        return Err("a brief is already running".into());
+    }
+    *b = BriefRun {
+        running: true,
+        business: Some(s.business.clone()),
+        started: Some(now_secs()),
+        ..BriefRun::default()
+    };
+    let snapshot = b.clone();
+    drop(b);
+    let _ = handle.emit("brief-changed", &snapshot);
+    std::thread::spawn(move || {
+        let out = cos::pipeline::brief_child(&cos, &s.home, &s.workspace, &s.projects);
+        let state = handle.state::<Brief>();
+        let Ok(mut b) = state.0.lock() else {
+            return;
+        };
+        b.running = false;
+        b.ended = Some(now_secs());
+        match out {
+            Ok(o) => {
+                b.ok = Some(o.ok);
+                b.deferred = o.deferred;
+                b.said = (!o.ok).then_some(o.said);
+            }
+            Err(e) => {
+                b.ok = Some(false);
+                b.said = Some(format!("{e:#}"));
+            }
+        }
+        let snapshot = b.clone();
+        drop(b);
+        let _ = handle.emit("brief-changed", &snapshot);
+        let _ = handle.emit("report-changed", ());
+    });
+    Ok(snapshot)
+}
+
+/// Whether a brief started here is running, and how the last one ended.
+#[tauri::command]
+fn brief_status(brief: tauri::State<'_, Brief>) -> Res<BriefRun> {
+    Ok(brief.0.lock().map_err(err)?.clone())
+}
+
+/// The main checkout named `repo` under the app business's projects
+/// directory, if it keeps a task store: the only repos a ritual command acts in.
+fn flow_repo(projects: &Path, repo: &str) -> anyhow::Result<PathBuf> {
+    cos::flows::repos(projects)?
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == repo))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no repo named {repo} with a task store under {}",
+                projects.display()
+            )
+        })
+}
+
+/// The Flows tab's approval cards: each flow waiting at the gate. Reads
+/// stores only when the profile approves the `tasks` source, like `/flows`.
+#[tauri::command]
+async fn ritual_gates(app: tauri::State<'_, App>) -> Res<Value> {
+    let s = app.get();
+    blocking(move || {
+        if !cos::context::local_reads(&s.workspace).tasks {
+            return Ok(json!({
+                "gates": [],
+                "gaps": ["the profile does not approve a tasks source, so no task store was read"],
+                "steps": cos::ritual::STRIP,
+            }));
+        }
+        let (gates, gaps) = cos::ritual::gates(
+            &s.projects,
+            &cos::flows::cn_program(),
+            cos::flows::SCAN_BUDGET,
+        );
+        let gates: Vec<Value> = gates
+            .iter()
+            .map(|g| {
+                let mut v = serde_json::to_value(g).unwrap_or_default();
+                v["clean"] = json!(g.clean());
+                v["by"] = json!(
+                    flow_repo(&s.projects, &g.repo)
+                        .ok()
+                        .and_then(|r| cos::ritual::approver(&s.workspace, &r))
+                );
+                v
+            })
+            .collect();
+        Ok(json!({ "gates": gates, "gaps": gaps, "steps": cos::ritual::STRIP }))
+    })
+    .await
+}
+
+/// The card's Approve: the approval `cos ritual approve` records, after the
+/// inline confirm in the window. `by` is the approver `ritual_gates` showed.
+#[tauri::command(rename_all = "snake_case")]
+async fn ritual_approve(
+    app: tauri::State<'_, App>,
+    business: String,
+    repo: String,
+    epic: String,
+    design: String,
+    review: Option<String>,
+    without_review: bool,
+) -> Res<Value> {
+    let s = app.get();
+    named(&s, &business)?;
+    blocking(move || {
+        let dir = flow_repo(&s.projects, &repo)?;
+        let by = cos::ritual::approver(&s.workspace, &dir).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no approver name: set \"owner\" in the workspace profile, or git user.name in {repo}"
+            )
+        })?;
+        let (line, check) = cos::ritual::approve_in_app(
+            &cos::flows::cn_program(),
+            &dir,
+            &epic,
+            &design,
+            &by,
+            review.as_deref(),
+            without_review,
+        )?;
+        Ok(json!({ "line": line, "approved": check.ok(), "check": check.describe() }))
+    })
+    .await
+}
+
+/// Opens a file the card links to (the brief, the design, a review) in its
+/// default app. Only paths the waiting flow's card names.
+#[tauri::command]
+async fn ritual_open(
+    app: tauri::State<'_, App>,
+    repo: String,
+    epic: String,
+    path: String,
+) -> Res<()> {
+    let s = app.get();
+    blocking(move || {
+        let dir = flow_repo(&s.projects, &repo)?;
+        let (gates, _) = cos::ritual::gates(
+            &s.projects,
+            &cos::flows::cn_program(),
+            cos::flows::SCAN_BUDGET,
+        );
+        let g = gates
+            .iter()
+            .find(|g| g.repo == repo && g.epic == epic)
+            .ok_or_else(|| anyhow::anyhow!("{epic} is not waiting for approval in {repo}"))?;
+        let named = g.brief.as_deref() == Some(path.as_str())
+            || g.design == path
+            || g.review.iter().chain(&g.history).any(|r| r.path == path);
+        anyhow::ensure!(named, "{path} is not on {epic}'s card");
+        let path = cos::flows::openable_path(&path)?.to_owned();
+        let tasks =
+            cos::flows::read_tasks(&cos::flows::cn_program(), &dir, Duration::from_secs(20))?;
+        open_located(&s.home, &dir, &tasks, &epic, &path)
+    })
+    .await
+}
+
+/// Locates `path` for `epic` (its branch's worktree, the repo, or the
+/// exported committed copy) and opens it, only when the canonical file sits
+/// inside the directory it was found under and is still Markdown or HTML.
+fn open_located(
+    home: &Path,
+    dir: &Path,
+    tasks: &[cos::flows::Task],
+    epic: &str,
+    path: &str,
+) -> anyhow::Result<()> {
+    let branch = tasks
+        .iter()
+        .find(|t| t.id == epic)
+        .map(|t| cos::flows::Markers::parse(t.description.as_deref().unwrap_or("")))
+        .and_then(|m| m.get("branch").map(str::to_owned));
+    let export = home.join("out/ritual").join(epic);
+    let at = cos::ritual::locate(dir, branch.as_deref(), path, &export)?;
+    let file = cos::flows::contained(&at.root, &at.file)?;
+    cos::report::open(&file)
+}
+
+/// The Flows page's Hire: one bead read again from its repo's task store
+/// (`flows::bead_to_hire`), as the Hire dialog's work. The page names the
+/// bead; the prompt, the repo and the refusals come from here.
+#[tauri::command]
+async fn flow_bead(
+    app: tauri::State<'_, App>,
+    repo: String,
+    epic: String,
+    bead: String,
+) -> Res<Value> {
+    let s = app.get();
+    blocking(move || {
+        let dir = flow_repo(&s.projects, &repo)?;
+        let tasks =
+            cos::flows::read_tasks(&cos::flows::cn_program(), &dir, Duration::from_secs(20))?;
+        let b = cos::flows::bead_to_hire(&repo, &tasks, &epic, &bead)?;
+        Ok(json!({
+            "id": b.id,
+            "title": format!("{} {}", b.id, b.title),
+            "prompt": b.handoff,
+            "repo": dir,
+            "owner": b.owner,
+            "criteria": b.criteria.len() + b.criteria_more,
+            "source": format!("bead:{repo}/{}", b.id),
+        }))
+    })
+    .await
+}
+
+/// The Flows page's Open: a file or link one of `epic`'s `ritual-*` lines
+/// names (`flows::OPEN_KEYS`), never a path or URL from the page. Checked by
+/// `flows::open_target` and `flows::contained` before `open` sees it.
+#[tauri::command]
+async fn flow_open(app: tauri::State<'_, App>, repo: String, epic: String, key: String) -> Res<()> {
+    let s = app.get();
+    blocking(move || {
+        anyhow::ensure!(
+            cos::flows::OPEN_KEYS.contains(&key.as_str()),
+            "{key} is not a file a flow names"
+        );
+        let dir = flow_repo(&s.projects, &repo)?;
+        let tasks =
+            cos::flows::read_tasks(&cos::flows::cn_program(), &dir, Duration::from_secs(20))?;
+        match cos::flows::open_target(&tasks, &epic, &key)? {
+            cos::flows::Target::Url(url) => cos::report::open(Path::new(&url)),
+            cos::flows::Target::Path(path) => open_located(&s.home, &dir, &tasks, &epic, &path),
+        }
+    })
+    .await
+}
+
 /// Git repos directly under the projects directory, for the spawn form.
 #[tauri::command]
 fn repos(app: tauri::State<'_, App>) -> Vec<String> {
@@ -1502,6 +1854,8 @@ pub fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
 /// environment and the config directory at setup), the watcher, the commands.
 pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder<R> {
     builder
+        .manage(Brief::default())
+        .manage(FlowPages(Default::default()))
         .register_asynchronous_uri_scheme_protocol("cosreport", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             std::thread::spawn(move || responder.respond(cosreport_response(&app, &req)));
@@ -1557,6 +1911,8 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
                     .build()?;
             }
             watch(app.handle().clone());
+            // Off the window's path, so the Flows tab's first open shows a page at once.
+            flows_behind(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1564,6 +1920,13 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             switch_business,
             businesses,
             brief_seen,
+            brief_run,
+            brief_status,
+            ritual_gates,
+            ritual_approve,
+            ritual_open,
+            flow_open,
+            flow_bead,
             dashboards,
             dashboard_open,
             agents_list,

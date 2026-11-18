@@ -19,7 +19,7 @@
 //! Objective `wcag_nodes`: violation nodes plus colour-contrast nodes axe could
 //! not decide, summed over every state and both themes; a node axe declined to
 //! judge has not passed. Gates: `build`, and `states_rendered` (every state
-//! reached its view and settled, and the window still draws its tabs).
+//! reached its view and settled, and the window still draws its tab icons).
 //! axe decides part of WCAG: keyboard order, reflow at 320 px and what a screen
 //! reader is told when a view changes are not in this number.
 
@@ -40,14 +40,8 @@ use serde_json::{Value, json};
 
 const TAGS: &[&str] = &["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 const WORKERS: usize = 3;
-/// Chrome never reads the login keychain: a fresh profile otherwise asks it
-/// for "Chrome Safe Storage" and stalls when nobody answers.
-const CHROME_FLAGS: &[&str] = &[
-    "--use-mock-keychain",
-    "--password-store=basic",
-    "--force-prefers-reduced-motion",
-    "--hide-scrollbars",
-];
+/// On top of `cdp::Chrome`'s own (a mock keychain among them).
+const CHROME_FLAGS: &[&str] = &["--force-prefers-reduced-motion", "--hide-scrollbars"];
 
 /// Resolves once `root` exists and its element count has held still for one
 /// second; false after twelve.
@@ -447,7 +441,29 @@ fn states(port: u16, work: &Path) -> Vec<State> {
             None,
             "#view-agents.active",
         ),
-        state("flows", 0, "/cosreport/flows", None, "body"),
+        state(
+            "window-settings",
+            0,
+            "/#tab=today&settings=open",
+            None,
+            "#settings[open]",
+        ),
+        state("flows-board", 0, "/cosreport/flows", None, "body"),
+        state(
+            "flows-flow",
+            0,
+            "/cosreport/flows#v=flow&f=api-gateway/t-a1f0&b=t-a1f2",
+            None,
+            "body",
+        ),
+        state("flows-map", 0, "/cosreport/flows#v=map", None, "body"),
+        state(
+            "flows-palette",
+            0,
+            "/cosreport/flows#pal=repo:",
+            None,
+            "body",
+        ),
         state("docs-bets", 0, "/cosreport/docs", None, "body"),
         state(
             "docs-topic",
@@ -556,8 +572,8 @@ fn audit(st: &State, theme: &str, ports: &[u16], axe: &str, profile: &Path) -> T
     let root = serde_json::to_string(&st.root).unwrap();
     let mut rendered = c.eval(&format!("{SETTLE}({root})")) == json!(true);
     if st.window {
-        rendered &=
-            c.eval(r#"document.querySelectorAll(".app-nav .app-tab").length >= 4"#) == json!(true);
+        rendered &= c.eval(r#"document.querySelectorAll(".app-nav .app-tab svg").length >= 4"#)
+            == json!(true);
     }
     c.eval(&format!("{axe}\n;true"));
     let tags = serde_json::to_string(TAGS).unwrap();

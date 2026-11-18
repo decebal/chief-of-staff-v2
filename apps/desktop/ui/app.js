@@ -1,24 +1,12 @@
 // Every value from the backend reaches the DOM through textContent or a
 // property, never innerHTML: titles, verdicts and activity lines quote agent
-// output.
+// output. `$`, `el`, `fill`, `icon` and `stateView` come from states.js.
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const REPORT = navigator.userAgent.includes("Windows")
   ? "http://cosreport.localhost/"
   : "cosreport://localhost/";
-
-const $ = (id) => document.getElementById(id);
-const el = (tag, props = {}, ...kids) => {
-  const { tone, ...rest } = props;
-  const n = Object.assign(document.createElement(tag), rest);
-  if (tone) n.dataset.tone = tone;
-  n.append(...kids.filter((k) => k != null && k !== false));
-  return n;
-};
-
-// replaceChildren would print a missing optional child as the text "null".
-const fill = (node, ...kids) => node.replaceChildren(...kids.filter((k) => k != null && k !== false));
 
 const ui = {
   pane: "staff",
@@ -33,9 +21,10 @@ const ui = {
   deliverables: [],
   inflight: false,
   again: false,
+  // Each list has been read once: before that an empty list is not "none".
+  loaded: { agents: false, staff: false },
+  slots: null,
 };
-
-const logDev = (where, e) => console.debug(`[cos] ${where}`, e);
 
 // Basecoat's own variants read `.dark`; the tokens follow color-scheme.
 const media = matchMedia("(prefers-color-scheme: dark)");
@@ -78,6 +67,11 @@ const outcome = (v) => (v ? badge(...(OUTCOME[v.outcome] ?? [v.outcome, "muted"]
 const roleTitle = (id) =>
   id == null ? "Unassigned" : (ui.roles.find((r) => r.role.id === id)?.role.title ?? id);
 const isLive = (a) => LIVE.includes(a.state.status);
+const sm = (node, variant) => {
+  node.dataset.variant = variant;
+  node.dataset.size = "sm";
+  return node;
+};
 const kv = (pairs) =>
   pairs
     .filter(([, v]) => v != null && v !== "" && !(Array.isArray(v) && !v.length))
@@ -90,17 +84,26 @@ const kv = (pairs) =>
       ),
     ]);
 
-// ---- header, workspace, views
+// ---- header: the business behind the gear, views
 
 async function loadPaths() {
   const p = await invoke("paths");
   ui.business = p.business;
+  ui.paths = p;
   $("biz-name").textContent = p.business;
-  $("biz-pin").textContent = `pinned by ${p.pinned}`;
+  $("ws-name").textContent = p.business;
+  $("biz-pin").textContent = p.pinned ? `Pinned by ${p.pinned}: this window stays on it.` : "";
   $("biz-pin").hidden = !p.pinned;
-  $("ws-path").textContent = p.workspace;
-  $("ws-path").title = `home ${p.home}\nprojects ${p.projects}\ncos ${p.cos ?? "not found"}`;
-  ui.slots = p.slots;
+  fill(
+    $("ws-paths"),
+    ...kv([
+      ["workspace", p.workspace, true],
+      ["home", p.home, true],
+      ["projects", p.projects, true],
+      ["cos", p.cos ?? "not found", true],
+    ]),
+  );
+  ui.slots = Number.isInteger(p?.slots) ? p.slots : null;
   ui.cos = p.cos;
   renderSlots();
 }
@@ -108,12 +111,23 @@ async function loadPaths() {
 function renderSlots() {
   const running = ui.agents.filter((a) => ["running", "seeding"].includes(a.state.status)).length;
   const queued = ui.agents.filter((a) => a.state.status === "queued").length;
-  $("slots").textContent = `${running} of ${ui.slots} slots busy${queued ? ` · ${queued} waiting` : ""}`;
+  // Nothing until the backend has said how many slots there are.
+  $("slots").hidden = ui.slots == null;
+  fill($("slots"), ui.slots == null ? null : icon("cpu"), ui.slots == null ? "" : `${running} of ${ui.slots} slots busy${queued ? ` · ${queued} waiting` : ""}`);
   const live = running + queued;
   $("agent-count").textContent = String(live);
   $("agent-count").hidden = !live;
   $("runs-count").textContent = ui.agents.length ? String(ui.agents.length) : "";
 }
+
+$("ws-switch").addEventListener("click", () => {
+  $("settings").open = false;
+  openSwitcher(switchTo);
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && $("settings").open) $("settings").open = false;
+});
 
 const VIEWS = ["today", "agents", "flows", "docs", "dash"];
 const SWITCH_PANES = ["staff", "runs", "scorecard"];
@@ -143,11 +157,15 @@ function openTab(view, pane, dash) {
   if (view !== "dash") window.hideDash();
   // Loaded on first open: the room scans every monitored repo.
   if (view === "docs" && !$("docs-frame").src) {
-    $("docs-frame").src = docsUrl();
+    frameLoad("docs-frame", docsUrl(), {
+      title: "Opening the documentation room",
+      waiting: () => "It reads the docs of every repo the profile watches.",
+    });
   }
   // Every open reads the stores again: a flow's step changes as beads close.
   if (view === "flows") {
-    $("flows-frame").src = `${REPORT}flows?t=${Date.now()}`;
+    flowsHost.load(false, true);
+    gates.refresh().catch((e) => logDev("ritual_gates", e));
   }
   if (view === "agents" && SWITCH_PANES.includes(pane)) showPane(pane);
   const args = view === "today" && seenArgs();
@@ -175,6 +193,7 @@ async function openFromHash() {
   } else if (VIEWS.includes(tab)) {
     openTab(tab, h.get("pane") ?? "");
   }
+  if (h.get("settings") === "open") $("settings").open = true;
   shownBrief.routed = true;
   const args = seenArgs();
   if (args) invoke("brief_seen", args).catch(seenFailed);
@@ -218,19 +237,23 @@ window.addEventListener("message", async (ev) => {
 
 // The report frame has no storage of its own (sandboxed, opaque origin): it
 // reports its tab and scroll here so a reload after a run lands where it was,
-// and its Hire buttons open the hire dialog with that brief action picked.
+// its Hire buttons open the hire dialog with that brief action picked, and
+// its Run brief asks for a run: the message carries nothing the run uses.
 const reportState = { tab: "", y: 0 };
 window.addEventListener("message", (ev) => {
   const frame = $("report").contentWindow;
   if (ev.source !== frame) return;
   const d = ev.data ?? {};
   if (d.type === "cos-report-ready") {
-    frame.postMessage({ type: "cos-host", hire: true }, "*");
+    frame.postMessage({ type: "cos-host", hire: true, runBrief: true }, "*");
+    if (briefNow) frame.postMessage(briefNow, "*");
     if (d.brief != null) {
       shownBrief.last = { file: d.brief, mtime: d.mtime };
       const args = seenArgs();
       if (args) invoke("brief_seen", args).catch(seenFailed);
     }
+  } else if (d.type === "cos-run-brief") {
+    runBrief();
   } else if (d.type === "cos-report-state") {
     reportState.tab = /^[a-z]+$/.test(d.tab ?? "") ? d.tab : "";
     reportState.y = Number.isFinite(d.y) ? Math.max(0, Math.round(d.y)) : 0;
@@ -240,9 +263,14 @@ window.addEventListener("message", (ev) => {
   }
 });
 
+// A report already shown is swapped without a state over it: runs rewrite it often.
 function reloadReport() {
   const hash = reportState.tab ? `#${reportState.tab}` : "";
-  $("report").src = `${REPORT}?t=${Date.now()}&y=${reportState.y}${hash}`;
+  frameLoad("report", `${REPORT}?t=${Date.now()}&y=${reportState.y}${hash}`, {
+    title: "Opening today's report",
+    waiting: () => "It is put together from the latest brief, the goals and the workspace.",
+    quiet: true,
+  });
 }
 
 // ---- agents: panes
@@ -304,15 +332,19 @@ async function refreshAgents() {
   ui.inflight = true;
   try {
     ui.agents = await invoke("agents_list");
+    ui.loaded.agents = true;
     $("agents-error").hidden = true;
     render();
   } catch (e) {
     logDev("agents_list", e);
-    const retry = el("button", { className: "btn", textContent: "Retry", type: "button" });
-    retry.dataset.variant = "outline";
-    retry.dataset.size = "sm";
-    retry.addEventListener("click", refreshAgents);
-    $("agents-error").replaceChildren(`Could not read the agents: ${e} `, retry);
+    fill(
+      $("agents-error"),
+      stateView("unreachable", {
+        title: "Could not read the agents",
+        detail: `The runs of this business could not be read: ${e}`,
+        action: { icon: "rotate-ccw", label: "Retry", onClick: refreshAgents },
+      }),
+    );
     $("agents-error").hidden = false;
   } finally {
     ui.inflight = false;
@@ -342,7 +374,29 @@ async function refreshStaff() {
   else logDev("agents_scorecard", scores.reason);
   ui.summary = summary.status === "fulfilled" ? summary.value : null;
   ui.deliverables = deliverables.status === "fulfilled" ? deliverables.value : [];
+  ui.loaded.staff = true;
+  ui.staffError = roles.status === "rejected" ? String(roles.reason) : null;
   render();
+}
+
+// A drawn icon per role, so a card is found by its picture as well as its name.
+const ROLE_ICON = {
+  "chief-of-staff": "briefcase",
+  builder: "hammer",
+  reviewer: "search-check",
+  "ritual-shaper": "compass",
+  "ritual-goldfish": "fish",
+  researcher: "book-open",
+  investigator: "map",
+  "docs-keeper": "file-text",
+  "release-clerk": "package",
+  tester: "flask-conical",
+};
+const roleIcon = (id) => (id == null ? "inbox" : (ROLE_ICON[id] ?? "bot"));
+function roleGlyph(id) {
+  const s = el("span", { className: "role-icon" }, icon(roleIcon(id)));
+  s.dataset.role = id ?? "unassigned";
+  return s;
 }
 
 // ---- staff
@@ -351,34 +405,49 @@ function renderStaff() {
   const head = ui.roles.find((r) => r.role.head)?.role;
   const card = $("head-card");
   if (!head) {
-    card.replaceChildren(el("header", {}, el("h2", { textContent: "Chief of staff" }), el("p", { textContent: "Reading the hiring policy…" })));
+    card.replaceChildren(
+      el("header", {}, el("h2", { className: "with-icon" }, icon("briefcase"), "Chief of staff")),
+      el(
+        "section",
+        {},
+        ui.staffError
+          ? stateView("unreachable", {
+              title: "The hiring policy could not be read",
+              detail: ui.staffError,
+              action: { icon: "rotate-ccw", label: "Retry", onClick: refreshStaff },
+            })
+          : stateView("reading", { title: "Reading the hiring policy…", line: true }),
+      ),
+    );
   } else {
     const s = ui.summary;
     const facts = !s
-      ? [el("p", { className: "muted", textContent: "The latest brief could not be read." })]
+      ? [stateView("unreachable", { title: "The latest brief could not be read.", line: true, action: { icon: "rotate-ccw", label: "Retry", onClick: refreshStaff } })]
       : s.day
         ? [
             el(
               "ul",
               { className: "stats" },
-              stat(s.day, "latest brief"),
-              stat(s.actions, "actions for you"),
-              stat(s.prompts, "handoffs written"),
-              stat(s.openDeliverables, "open deliverables"),
+              stat(s.day, "latest brief", "calendar"),
+              stat(s.actions, "actions for you", "hand"),
+              stat(s.prompts, "handoffs written", "send"),
+              stat(s.openDeliverables, "open deliverables", "package"),
             ),
           ]
-        : [
-            el("p", { className: "muted", textContent: `No brief saved yet: run cos brief. ${s.openDeliverables} open deliverables in the workspace.` }),
-          ];
+        : [stateView("empty", { title: `No brief saved yet: Run brief on the Today tab writes one. ${s.openDeliverables} open deliverables in the workspace.`, line: true })];
     card.replaceChildren(
       el(
         "header",
         {},
-        el("h2", {}, el("span", { className: "role-kicker", textContent: "Head" }), head.title),
+        el("h2", {}, icon("briefcase"), el("span", { className: "role-kicker", textContent: "Head" }), head.title),
         el("p", { textContent: head.mandate }),
       ),
       el("section", {}, ...facts, el("p", { className: "muted small", textContent: `${head.sandbox} ${head.judged}` })),
     );
+  }
+  if (!ui.loaded.staff) {
+    fill($("roles"), stateView("reading", { title: "Reading the staff…", line: true }));
+    return;
   }
 
   const cards = ui.roles.filter((r) => !r.role.head).map(({ role }) => roleCard(role.id, role.title, role.mandate));
@@ -388,8 +457,8 @@ function renderStaff() {
   $("roles").replaceChildren(...cards);
 }
 
-function stat(value, label) {
-  return el("li", {}, el("b", { className: "num", textContent: String(value ?? "—") }), el("span", { textContent: label }));
+function stat(value, label, glyph) {
+  return el("li", {}, el("b", { className: "num", textContent: String(value ?? "—") }), el("span", { className: "with-icon" }, glyph ? icon(glyph, { className: "xs" }) : null, label));
 }
 
 function roleCard(id, title, mandate) {
@@ -406,23 +475,31 @@ function roleCard(id, title, mandate) {
     ? el(
         "ul",
         { className: "stats compact" },
-        stat(sc.runs, "runs"),
-        stat(pct(sc.accepted, sc.runs), "accepted"),
-        stat(sc.needs_you, "need you"),
-        stat(money(sc.median_cost_usd), "median cost"),
+        stat(sc.runs, "runs", "repeat"),
+        stat(pct(sc.accepted, sc.runs), "accepted", "check"),
+        stat(sc.needs_you, "need you", "hand"),
+        stat(money(sc.median_cost_usd), "median cost", "coins"),
       )
-    : el("p", { className: "muted", textContent: mine.length ? "No verdict yet." : "Not hired yet." });
+    : stateView("empty", { title: mine.length ? "No verdict yet." : "Not hired yet.", line: true });
   const hire = id
-    ? el("button", { className: "btn", type: "button", textContent: "Hire", onclick: (ev) => { ev.stopPropagation(); openHire({ role: id }); } })
+    ? iconButton("user-plus", "Hire", {
+        variant: "outline",
+        onClick: (ev) => {
+          ev.stopPropagation();
+          openHire({ role: id });
+        },
+      })
     : null;
-  if (hire) {
-    hire.dataset.variant = "outline";
-    hire.dataset.size = "sm";
-  }
   const card = el(
     "article",
     { className: "card role", tabIndex: 0 },
-    el("header", {}, el("h3", { textContent: title }), el("p", { className: "clamp", textContent: mandate }), hire ? el("div", { className: "card-action" }, hire) : null),
+    el(
+      "header",
+      {},
+      el("h3", { className: "with-icon" }, roleGlyph(id), title),
+      el("p", { className: "clamp", textContent: mandate }),
+      hire ? el("div", { className: "card-action" }, hire) : null,
+    ),
     el("section", {}, now.length ? el("div", { className: "badges" }, ...now) : null, record),
   );
   card.dataset.size = "sm";
@@ -441,16 +518,11 @@ function renderRole() {
   const entry = ui.roles.find((r) => r.role.id === ui.role);
   const role = entry?.role;
   const t = entry?.terms ?? {};
-  const back = el("button", { className: "btn", type: "button", textContent: "← Staff", onclick: () => showPane("staff") });
-  back.dataset.variant = "ghost";
-  back.dataset.size = "sm";
+  const back = iconButton("arrow-left", "Staff", { onClick: () => showPane("staff") });
   const title = role?.title ?? "Unassigned";
-  const head = el("div", { className: "pane-head" }, back, el("h2", { textContent: title }));
+  const head = el("div", { className: "pane-head" }, back, el("h2", { className: "with-icon" }, roleGlyph(role?.id ?? null), title));
   if (role) {
-    const hire = el("button", { className: "btn", type: "button", textContent: "Hire", onclick: () => openHire({ role: role.id }) });
-    hire.dataset.variant = "primary";
-    hire.dataset.size = "sm";
-    head.append(el("div", { className: "actions" }, hire));
+    head.append(el("div", { className: "actions" }, iconButton("user-plus", "Hire", { variant: "primary", onClick: () => openHire({ role: role.id }) })));
   }
 
   const mine = ui.agents.filter((a) => (a.spec.role ?? null) === ui.role);
@@ -507,9 +579,9 @@ function renderRole() {
 
   const scoreTable = scores.length
     ? table(["harness", "model", "repo", "runs", "accepted", "needs you", "rejected", "overclaimed", "cost", "time"], scores.map((s) => [s.harness, s.model ?? "default", s.repo ?? "(scratch)", s.runs, s.accepted, s.needs_you, s.rejected, s.overclaimed, money(s.median_cost_usd), duration(s.median_secs)]), 3)
-    : emptyNote("No verdicts in this role yet.");
+    : stateView("empty", { title: "No verdicts in this role yet.", line: true });
 
-  const liveList = live.length ? runTable(live) : emptyNote("Nobody on this right now.");
+  const liveList = live.length ? runTable(live) : stateView("empty", { title: "Nobody on this right now.", line: true });
   const verdicts = judged.length
     ? el(
         "ul",
@@ -531,7 +603,7 @@ function renderRole() {
           return li;
         }),
       )
-    : emptyNote("No finished work in this role yet.");
+    : stateView("empty", { title: "No finished work in this role yet.", line: true });
 
   const waiting = role
     ? ui.deliverables.length
@@ -539,13 +611,11 @@ function renderRole() {
           "ul",
           { className: "waiting" },
           ...ui.deliverables.map((d) => {
-            const go = el("button", { className: "btn", type: "button", textContent: "Hire for this", onclick: () => openHire({ role: role.id, deliverable: d.id }) });
-            go.dataset.variant = "outline";
-            go.dataset.size = "sm";
+            const go = iconButton("user-plus", "Hire for this", { variant: "outline", onClick: () => openHire({ role: role.id, deliverable: d.id }) });
             return el("li", {}, el("code", { textContent: d.id }), el("span", { className: "title", textContent: d.title }), el("span", { className: "muted", textContent: d.goal ?? d.goalId ?? "" }), go);
           }),
         )
-      : emptyNote("No open deliverables in the workspace.")
+      : stateView("empty", { title: "No open deliverables in the workspace.", line: true })
     : null;
 
   fill(
@@ -561,10 +631,6 @@ function renderRole() {
 
 function section(title, body) {
   return el("section", { className: "block" }, el("h3", { className: "section-title", textContent: title }), body);
-}
-
-function emptyNote(text) {
-  return el("p", { className: "muted empty-note", textContent: text });
 }
 
 function table(head, rows, firstNumeric) {
@@ -620,6 +686,17 @@ function renderRuns() {
   $("agents").tBodies[0].replaceChildren(...ui.agents.map(runRow));
   $("agents").hidden = !ui.agents.length;
   $("no-agents").hidden = ui.agents.length > 0;
+  if (ui.agents.length) return;
+  fill(
+    $("no-agents"),
+    ui.loaded.agents
+      ? stateView("empty", {
+          title: "No runs yet",
+          detail: "Hire one from the staff. Each runs in its own worktree under a supervisor that outlives this window.",
+          action: { icon: "user-plus", label: "Hire", variant: "primary", onClick: () => openHire({}) },
+        })
+      : stateView("reading", { title: "Reading the runs of this business…" }),
+  );
 }
 
 // ---- one run
@@ -725,7 +802,7 @@ const feed = {
     this.entries = new Map();
     this.calls = new Map();
     this.pulled = false;
-    $("d-feed").replaceChildren();
+    fill($("d-feed"), el("li", { className: "feed-note" }, stateView("reading", { title: "Reading its activity…", line: true })));
   },
   async pull(id, live) {
     if (this.pulling) return this.pulling;
@@ -749,6 +826,7 @@ const feed = {
   },
   add(e) {
     if (this.entries.has(e.key)) return;
+    $("d-feed").querySelector(".feed-note")?.remove();
     if (e.kind === "result") {
       const row = this.calls.get(e.call);
       if (row) {
@@ -780,15 +858,13 @@ const feed = {
   },
   empty(live) {
     const list = $("d-feed");
-    const note = list.querySelector(".empty-entry");
     if (this.entries.size) {
-      note?.remove();
+      list.querySelector(".feed-note")?.remove();
       return;
     }
     if (!this.pulled) return;
     const text = live ? "Nothing yet: the agent has not called a tool or said anything." : "No activity recorded.";
-    if (note) note.textContent = text;
-    else list.append(el("li", { className: "empty-entry muted", textContent: text }));
+    fill(list, el("li", { className: "feed-note" }, stateView("empty", { title: text, line: true })));
   },
 };
 
@@ -810,9 +886,9 @@ function renderRecorded(state) {
           r.notes ? el("p", { textContent: r.notes }) : null,
           r.evidence?.length ? el("ul", { className: "codes" }, ...r.evidence.map((x) => el("li", { textContent: x }))) : null,
         ].filter(Boolean)
-      : [el("p", { className: "muted", textContent: "Nothing recorded yet." })]),
+      : [stateView("empty", { title: "Nothing recorded yet.", line: true })]),
   );
-  $("r-save").textContent = r ? "Replace result" : "Record result";
+  setLabel($("r-save"), r ? "Replace result" : "Record result");
 }
 
 $("d-record").addEventListener("submit", async (ev) => {
@@ -833,7 +909,7 @@ $("d-record").addEventListener("submit", async (ev) => {
 });
 
 function verdictView(v, live) {
-  if (!v) return [el("p", { className: "muted", textContent: live ? "Judged when it ends." : "Being judged: the checks are running." })];
+  if (!v) return [stateView(live ? "reading" : "refreshing", { title: live ? "Judged when it ends." : "Being judged: the checks are running.", line: true })];
   const out = [el("div", { className: "badges" }, outcome(v), el("span", { className: "muted", textContent: `judged ${v.judged.replace("T", " ").slice(0, 19)}` }))];
   out.push(
     v.reasons.length
@@ -877,7 +953,7 @@ $("d-stop").addEventListener("click", async () => {
 
 $("d-rejudge").addEventListener("click", async () => {
   $("d-rejudge").disabled = true;
-  $("d-verdict").replaceChildren(el("p", { className: "muted", textContent: "Re-running the checks…" }));
+  $("d-verdict").replaceChildren(stateView("reading", { title: "Re-running the checks…", line: true }));
   try {
     await invoke("agents_rejudge", { business: ui.business, id: ui.run });
   } catch (e) {
@@ -927,11 +1003,18 @@ function renderScores() {
   );
   $("scores").hidden = !rows.length;
   $("no-scores").hidden = rows.length > 0;
+  if (rows.length) return;
+  fill(
+    $("no-scores"),
+    ui.loaded.staff
+      ? stateView("empty", { title: "No verdicts yet", detail: "A row lands here each time an agent ends and is judged." })
+      : stateView("reading", { title: "Reading the ledger…" }),
+  );
 }
 
 // ---- hire
 
-const hire = { tasks: { brief: [], goals: [] }, edited: false, seq: 0, plan: null };
+const hire = { tasks: { brief: [], goals: [] }, edited: false, seq: 0, plan: null, bead: null };
 
 async function loadRepos() {
   for (const r of await invoke("repos")) {
@@ -955,7 +1038,7 @@ async function loadTasks(from) {
 }
 
 function work() {
-  return document.querySelector('input[name="h-work"]:checked').value;
+  return document.querySelector('input[name="h-work"]:checked')?.value ?? "own";
 }
 
 const lines = (id) =>
@@ -999,7 +1082,13 @@ function hireArgs() {
     contract: hire.edited ? { checks: lines("h-checks"), scope: lines("h-scope") } : {},
   };
   const w = work();
-  if (w === "deliverable") {
+  if (w === "bead") {
+    if (!hire.bead) return { missing: "Open Hire from a bead in Flows, or pick another kind of work." };
+    args.prompt = hire.bead.prompt;
+    args.title = args.title || hire.bead.title;
+    args.source = hire.bead.source;
+    args.repo = args.repo || hire.bead.repo;
+  } else if (w === "deliverable") {
     if (!$("h-deliverable").value) return { missing: "Pick a deliverable, or choose another kind of work." };
     args.deliverable = $("h-deliverable").value;
   } else if (w === "own") {
@@ -1073,13 +1162,15 @@ function renderFit(plan, problem) {
   }
   if (f.suggest) {
     const title = roleTitle(f.suggest);
-    const b = el("button", { className: "btn", type: "button", textContent: `Hire the ${title} instead`, onclick: () => {
-      $("h-role").value = f.suggest;
-      fillRole();
-    } });
-    b.dataset.variant = "outline";
-    b.dataset.size = "sm";
-    actions.append(b);
+    actions.append(
+      iconButton("user-plus", `Hire the ${title} instead`, {
+        variant: "outline",
+        onClick: () => {
+          $("h-role").value = f.suggest;
+          fillRole();
+        },
+      }),
+    );
   }
 
   $("h-repo-from").textContent = plan.repo
@@ -1097,8 +1188,21 @@ function renderFit(plan, problem) {
   $("h-go").disabled = Boolean(plan.refused);
 }
 
-async function openHire({ role, deliverable, brief } = {}) {
-  $("h-msg").textContent = "";
+// A role card opens this with its role picked; a brief action, a deliverable
+// or a Flows bead opens it with that work picked. A bead arrives as
+// `flow_bead` read it from its store.
+async function openHire({ role, deliverable, brief, bead } = {}) {
+  hire.bead = bead ?? null;
+  $("h-bead-choice").hidden = !bead;
+  $("h-bead").hidden = !bead;
+  if (bead) {
+    const notes = [bead.title];
+    if (bead.owner) notes.push(`Claimed by ${bead.owner}: the hire works beside them.`);
+    if (!bead.criteria) notes.push("No acceptance criteria on this bead: the run is judged on its diff and checks alone.");
+    $("h-bead").textContent = notes.join(" ");
+  }
+  $("h-msg").replaceChildren();
+  $("h-title").value = "";
   $("h-role").replaceChildren(...ui.roles.filter((r) => !r.role.head).map((r) => el("option", { value: r.role.id, textContent: r.role.title })));
   if (role) $("h-role").value = role;
   $("h-deliverable").replaceChildren(
@@ -1108,7 +1212,14 @@ async function openHire({ role, deliverable, brief } = {}) {
   );
   if (deliverable) $("h-deliverable").value = deliverable;
   $("h-repo").value = "";
-  const pick = brief ? "brief" : deliverable || ui.deliverables.length ? "deliverable" : "own";
+  if (bead) {
+    if (![...$("h-repo").options].some((o) => o.value === bead.repo)) {
+      $("h-repo").append(el("option", { value: bead.repo, textContent: bead.repo.split("/").pop() }));
+    }
+    $("h-repo").value = bead.repo;
+    $("h-title").value = bead.title;
+  }
+  const pick = bead ? "bead" : brief ? "brief" : deliverable || ui.deliverables.length ? "deliverable" : "own";
   document.querySelector(`input[name="h-work"][value="${pick}"]`).checked = true;
   fillRole();
   $("hire-dialog").showModal();
@@ -1134,26 +1245,419 @@ $("hire-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const msg = $("h-msg");
   if (!ui.cos) {
-    msg.textContent = "No cos binary found: build it (cargo build) or set COS_BIN.";
+    fill(msg, stateView("unreachable", { title: "No cos binary found: build it (cargo build) or set COS_BIN.", line: true }));
     return;
   }
   const { args, missing } = hireArgs();
-  if (!args) return void (msg.textContent = missing);
-  msg.textContent = "Starting…";
+  if (!args) return void fill(msg, stateView("empty", { title: missing, line: true }));
+  fill(msg, stateView("reading", { title: "Starting the run: a worktree, then its supervisor…", line: true }));
   $("h-go").disabled = true;
   try {
     const specs = await invoke("agents_spawn", { business: ui.business, args });
     $("hire-dialog").close();
+    msg.replaceChildren();
     await refreshAgents();
     ui.from = "runs";
     openRun(specs[0].id);
     document.querySelector('.app-tab[data-view="agents"]').click();
   } catch (e) {
-    msg.textContent = String(e);
+    fill(msg, stateView("unreachable", { title: `Not started: ${e}`, line: true, action: { icon: "rotate-ccw", label: "Try again", onClick: () => $("hire-form").requestSubmit() } }));
   } finally {
     $("h-go").disabled = Boolean(hire.plan?.refused);
   }
 });
+
+// ---- run brief: one at a time, owned by the app; Today refreshes when it writes.
+// The button sits on the report's tab bar; the window tells the frame the state.
+
+let briefNow = null;
+
+function tellBrief(state, text, title = "") {
+  briefNow = { type: "cos-brief-state", state, text, title };
+  $("report").contentWindow?.postMessage(briefNow, "*");
+}
+
+function renderBrief(s) {
+  // A run for another business says nothing about this window's report.
+  const mine = !s?.business || s.business === ui.business;
+  const st = !s || !mine ? "idle" : s.running ? "running" : s.ok === true ? "done" : s.ok === false ? "error" : "idle";
+  const text = !s || !mine
+    ? ""
+    : s.running
+      ? "brief running…"
+      : s.ok === true
+        ? "brief done"
+        : s.ok === false
+          ? s.deferred
+            ? "brief put off: the Mac was asleep"
+            : "brief failed: hover for why"
+          : "";
+  tellBrief(st, text, mine ? (s?.said ?? "") : "");
+  const pill = framePill("report-box", "report-status");
+  if (s?.running && mine) fill(pill, icon("loader-circle", { className: "spin" }), s.started ? `brief running · started ${spanWords(nowSecs() - s.started)} ago` : "brief running…");
+  pill.hidden = !(s?.running && mine);
+  clearTimeout(renderBrief.poll);
+  if (s?.running) renderBrief.poll = setTimeout(pollBrief, 2000);
+}
+
+async function pollBrief() {
+  try {
+    renderBrief(await invoke("brief_status"));
+  } catch (e) {
+    logDev("brief_status", e);
+  }
+}
+
+async function runBrief() {
+  if (briefNow?.state === "running") return;
+  tellBrief("running", "brief starting…");
+  try {
+    renderBrief(await invoke("brief_run", { business: ui.business }));
+  } catch (e) {
+    tellBrief("error", String(e));
+  }
+}
+
+// ---- flows: the approval gate. The flows page runs its own script in a
+// sandboxed frame with an opaque origin and no IPC, so the cards and their
+// Approve button live here, in the window, and the page asks for anything
+// else by message: each message is checked here before it acts.
+
+const FLOW_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const FLOW_KEYS = ["brief", "design", "plan", "review", "report", "pr"];
+// Per business: pins and the view are names in that business's projects.
+const flowsPrefsKey = () => `cos.flows.v1.${ui.business ?? ""}`;
+const flowsHost = {
+  hash: "",
+  prefs() {
+    try {
+      return JSON.parse(localStorage.getItem(flowsPrefsKey()) || "{}") || {};
+    } catch {
+      return {};
+    }
+  },
+  // Where the scan is: "reading 3 of 8 repos (api-gateway)", from `flows-progress`.
+  progress: null,
+  waiting() {
+    const p = flowsHost.progress;
+    return p ? `Reading ${p.done + 1} of ${p.total} repos (${p.repo}) with cn.` : "Every ritual flow in this business's projects, read with cn.";
+  },
+  // Every reload carries the page's own view (its hash) and the stored
+  // preferences. A held page comes back at once; `fresh` (Refresh) scans first.
+  load(fresh, quiet = false) {
+    const q = new URLSearchParams({ t: String(Date.now()), prefs: JSON.stringify(this.prefs()) });
+    if (fresh) q.set("fresh", "1");
+    frameLoad("flows-frame", `${REPORT}flows?${q}#${this.hash}`, { title: "Reading your flows", waiting: this.waiting, quiet });
+  },
+  // Only the shape the page writes: known keys, short strings, at most 200 pins.
+  savePrefs(p) {
+    if (!p || typeof p !== "object") return;
+    const pins = Array.isArray(p.pins) ? p.pins.filter((x) => typeof x === "string" && x.length <= 200).slice(0, 200) : [];
+    const pick = (v, ok) => (ok.includes(v) ? v : undefined);
+    const clean = {
+      pins,
+      side: pick(p.side, ["open", "closed"]),
+      group: pick(p.group, ["none", "repo", "owner"]),
+      sort: pick(p.sort, ["needs", "ready", "touched", "title", "id"]),
+      engine: pick(p.engine, ["auto", "svg"]),
+    };
+    try {
+      localStorage.setItem(flowsPrefsKey(), JSON.stringify(clean));
+    } catch (e) {
+      logDev("flows prefs", e);
+    }
+  },
+  async open(repo, epic, key) {
+    const box = $("flow-open-error");
+    box.textContent = "";
+    box.hidden = true;
+    try {
+      await invoke("flow_open", { repo, epic, key });
+    } catch (e) {
+      box.textContent = `Could not open the ${key} of ${epic}: ${e}`;
+      box.hidden = false;
+    }
+  },
+  // The page names the bead; `flow_bead` reads it again and refuses one
+  // that is done or still waits on another.
+  async hire(repo, epic, bead) {
+    const box = $("flow-open-error");
+    box.textContent = "";
+    box.hidden = true;
+    try {
+      const b = await invoke("flow_bead", { repo, epic, bead });
+      document.querySelector('.app-tab[data-view="agents"]').click();
+      await openHire({ bead: b });
+    } catch (e) {
+      box.textContent = `Could not hire for ${bead}: ${e}`;
+      box.hidden = false;
+    }
+  },
+  async gate(repo, epic) {
+    const find = () => [...$("flow-gates").querySelectorAll("article.gate")].find((a) => a.dataset.key === `${repo}/${epic}`);
+    if (!find()) await gates.refresh().catch((e) => logDev("ritual_gates", e));
+    const card = find();
+    if (!card) return;
+    card.scrollIntoView({ block: "nearest" });
+    card.querySelector(".gate-actions button")?.focus();
+  },
+};
+
+window.addEventListener("message", (ev) => {
+  if (ev.source !== $("flows-frame").contentWindow) return;
+  const d = ev.data ?? {};
+  const ids = FLOW_ID.test(d.repo ?? "") && FLOW_ID.test(d.epic ?? "");
+  if (d.type === "cos-flows-state" && typeof d.hash === "string" && d.hash.length <= 2000) {
+    flowsHost.hash = d.hash.replace(/^#/, "");
+  } else if (d.type === "cos-flows-prefs") {
+    flowsHost.savePrefs(d.prefs);
+  } else if (d.type === "cos-flows-gate" && ids) {
+    flowsHost.gate(d.repo, d.epic);
+  } else if (d.type === "cos-flows-hire" && ids && FLOW_ID.test(d.bead ?? "")) {
+    flowsHost.hire(d.repo, d.epic, d.bead);
+  } else if (d.type === "cos-flows-open" && ids && FLOW_KEYS.includes(d.key)) {
+    flowsHost.open(d.repo, d.epic, d.key);
+  } else if (d.type === "cos-flows-rescan") {
+    if (typeof d.hash === "string" && d.hash.length <= 2000) flowsHost.hash = d.hash.replace(/^#/, "");
+    flowsHost.load(true);
+    gates.refresh().catch((e) => logDev("ritual_gates", e));
+  }
+});
+
+const STEP_NAME = { think: "Think", spec: "Spec", approve: "Approve", plan: "Plan", build: "Build", review: "Review", ship: "Ship", reflect: "Reflect" };
+const sha12 = (sha) => (sha ? sha.slice(0, 12) : "—");
+const fileName = (p) => p.split("/").pop();
+const counts = (r) => `${r.blocking} blocking, ${r.should} should, ${r.nit} nit`;
+
+// The approval's refusals, in words that say what to do next.
+function approveError(e) {
+  const s = String(e);
+  if (s.includes("not clean")) return "The newest review found problems, so it cannot back a plain approval. Read the review and have the design reviewed again, or approve anyway.";
+  if (s.includes("different version")) return "The review read an earlier version of the design. Have it reviewed again, or approve without a current review.";
+  if (s.includes("no approver name")) return s;
+  if (s.includes("the epic's design is")) return `The epic names a different design file: ${s}`;
+  return `Not approved: ${s}`;
+}
+
+const gates = {
+  list: [],
+  steps: [],
+  confirming: null,
+  busy: null,
+  done: {},
+  errors: {},
+
+  failed: null,
+  read: false,
+  async refresh() {
+    if (!this.read) {
+      $("flow-gates").hidden = false;
+      fill($("flow-gates"), stateView("reading", { title: "Reading the designs waiting for your approval…", line: true }));
+    }
+    try {
+      const res = await invoke("ritual_gates");
+      this.steps = res.steps ?? [];
+      this.list = res.gates;
+      this.failed = null;
+      this.read = true;
+    } catch (e) {
+      logDev("ritual_gates", e);
+      this.failed = String(e);
+    }
+    this.done = {};
+    this.errors = {};
+    this.confirming = null;
+    this.render();
+  },
+
+  key: (g) => `${g.repo}/${g.epic}`,
+
+  render() {
+    const box = $("flow-gates");
+    box.hidden = false;
+    if (this.failed) {
+      return fill(box, stateView("unreachable", { title: `The approval gate could not be read: ${this.failed}`, line: true, action: { icon: "rotate-ccw", label: "Retry", onClick: () => this.refresh() } }));
+    }
+    if (!this.list.length) return fill(box, stateView("clear", { title: "No design is waiting for your approval.", line: true }));
+    fill(box, ...this.list.map((g) => this.card(g)));
+  },
+
+  strip(current) {
+    const at = this.steps.indexOf(current);
+    const ol = el(
+      "ol",
+      { className: "strip" },
+      ...this.steps.map((s, i) => {
+        const li = el("li", { textContent: STEP_NAME[s] ?? s, className: i < at ? "past" : "" });
+        if (i === at) li.setAttribute("aria-current", "step");
+        return li;
+      }),
+    );
+    ol.setAttribute("aria-label", "Ritual steps");
+    return ol;
+  },
+
+  open(g, path, errBox) {
+    return async () => {
+      errBox.textContent = "";
+      try {
+        await invoke("ritual_open", { repo: g.repo, epic: g.epic, path });
+      } catch (e) {
+        errBox.textContent = `Could not open ${fileName(path)}: ${e}`;
+      }
+    };
+  },
+
+  link(g, label, path, errBox) {
+    const b = sm(el("button", { className: "btn", type: "button" }, icon("file-text"), el("span", { textContent: label })), "link");
+    b.addEventListener("click", this.open(g, path, errBox));
+    return b;
+  },
+
+  verdict(g) {
+    const r = g.review;
+    if (!r) return el("p", { className: "gate-verdict muted", textContent: "No review of this design yet." });
+    const stale = r.current ? "" : " · it read an earlier version of the design";
+    return el(
+      "p",
+      { className: "gate-verdict" },
+      badge(r.verdict, r.verdict === "clean" && r.current ? "ok" : "warn"),
+      ` Latest review: ${counts(r)}${stale}`,
+    );
+  },
+
+  card(g) {
+    const k = this.key(g);
+    const done = this.done[k];
+    const errBox = el("p", { className: "error small", role: "status" });
+    if (this.errors[k]) errBox.textContent = this.errors[k];
+    const files = el(
+      "div",
+      { className: "gate-files" },
+      g.brief ? this.link(g, "Brief", g.brief, errBox) : null,
+      this.link(g, "Design", g.design, errBox),
+      g.review ? this.link(g, "Latest review", g.review.path, errBox) : null,
+      el("span", { className: "sha", textContent: `sha256 ${sha12(g.design_sha256)}`, title: g.design_sha256 ?? g.design_error ?? "" }),
+    );
+    const history = g.history.length
+      ? el(
+          "details",
+          { className: "small" },
+          el("summary", { textContent: `Earlier reviews (${g.history.length})` }),
+          el(
+            "ul",
+            { className: "rounds" },
+            ...g.history.map((r) =>
+              el("li", {}, this.link(g, fileName(r.path), r.path, errBox), badge(r.verdict, "muted"), el("span", { className: "muted", textContent: counts(r) })),
+            ),
+          ),
+        )
+      : null;
+    const card = el(
+      "article",
+      { className: "gate" },
+      el(
+        "div",
+        { className: "gate-head" },
+        el("h3", { textContent: g.title, title: g.title }),
+        el("span", { className: "id", textContent: g.epic }),
+        el("span", { className: "repo", textContent: g.repo }),
+      ),
+      this.strip(done ? "plan" : g.step),
+      files,
+      this.verdict(g),
+      done ? this.approved(done) : this.actions(g, k),
+      errBox,
+      history,
+    );
+    card.dataset.key = k;
+    if (done) card.dataset.state = "approved";
+    return card;
+  },
+
+  approved(done) {
+    return el("p", { className: "gate-verdict" }, badge("approved", "ok"), ` ${done.check}`);
+  },
+
+  actions(g, k) {
+    if (g.design_error) return el("p", { className: "error small", textContent: g.design_error });
+    if (!g.by) return el("p", { className: "muted small", textContent: `No approver name: set "owner" in the workspace profile, or git user.name in ${g.repo}.` });
+    if (this.confirming === k) return this.confirm(g, k);
+    const errBox = el("p", { className: "error small", role: "status" });
+    const ask = (label, variant) => {
+      const b = sm(el("button", { className: "btn", type: "button" }, icon("badge-check"), el("span", { textContent: label })), variant);
+      b.addEventListener("click", () => {
+        this.confirming = k;
+        delete this.errors[k];
+        this.render();
+      });
+      return b;
+    };
+    const r = g.review;
+    if (r && r.current && r.blocking > 0) {
+      const n = r.blocking;
+      const read = sm(el("button", { className: "btn", type: "button" }, icon("file-search"), el("span", { textContent: `Read ${n} blocking finding${n === 1 ? "" : "s"}` })), "primary");
+      read.addEventListener("click", this.open(g, r.path, errBox));
+      return el("div", { className: "gate-actions" }, read, ask("Approve anyway", "outline"), errBox);
+    }
+    if (g.clean) return el("div", { className: "gate-actions" }, ask("Approve and start Plan", "primary"));
+    if (r && r.current) {
+      const carried = [r.should && `${r.should} should`, r.nit && `${r.nit} nit`].filter(Boolean).join(", ");
+      return el("div", { className: "gate-actions" }, ask(`Approve: ${carried} go to Plan`, "primary"));
+    }
+    return el("div", { className: "gate-actions" }, ask("Approve without a current review", "outline"));
+  },
+
+  confirm(g, k) {
+    const busy = this.busy === k;
+    const yes = sm(el("button", { className: "btn", type: "button", disabled: busy }, icon(busy ? "loader-circle" : "badge-check", { className: busy ? "spin" : "" }), el("span", { textContent: busy ? "Approving…" : "Approve and start Plan" })), "primary");
+    const no = sm(el("button", { className: "btn", type: "button", disabled: busy }, icon("x"), el("span", { textContent: "Cancel" })), "ghost");
+    no.addEventListener("click", () => {
+      this.confirming = null;
+      this.render();
+    });
+    yes.addEventListener("click", () => this.approve(g, k));
+    const box = el(
+      "div",
+      { className: "gate-confirm" },
+      el("p", {}, "Approve ", el("code", { textContent: g.design }), " at sha256 ", el("code", { textContent: sha12(g.design_sha256) }), ` as ${g.by}?`),
+      el("p", {
+        className: "muted small",
+        textContent: g.clean
+          ? `Records the digest on ${g.epic} with the clean review, then approves the epic in its task store.`
+          : `There is no clean review of this version: ${g.epic} records that it was approved without review.`,
+      }),
+      el("div", { className: "gate-actions" }, yes, no),
+    );
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", "Confirm approval");
+    return box;
+  },
+
+  async approve(g, k) {
+    this.busy = k;
+    this.render();
+    try {
+      const res = await invoke("ritual_approve", {
+        business: ui.business,
+        repo: g.repo,
+        epic: g.epic,
+        design: g.design,
+        review: g.clean ? g.review.path : null,
+        without_review: !g.clean,
+      });
+      this.done[k] = res;
+      this.confirming = null;
+      flowsHost.load(true);
+    } catch (e) {
+      this.errors[k] = approveError(e);
+      this.confirming = null;
+    } finally {
+      this.busy = null;
+      this.render();
+    }
+  },
+};
 
 // ---- start
 
@@ -1168,9 +1672,33 @@ listen("agents-changed", () => {
   clearTimeout(staffTimer);
   staffTimer = setTimeout(refreshStaff, 800);
 });
+listen("brief-changed", (ev) => renderBrief(ev.payload));
+// A scan behind a held Flows page: the pill says how far it is, and the
+// page is swapped for the new one when it lands.
+listen("flows-progress", (ev) => {
+  flowsHost.progress = ev.payload;
+  frameWaiting("flows-frame");
+  const pill = framePill("flows-box", "flows-status");
+  if (framing["flows-frame"]?.loaded && !framing["flows-frame"]?.over) {
+    fill(pill, icon("refresh-cw", { className: "spin" }), `refreshing · ${ev.payload.done + 1} of ${ev.payload.total} repos`);
+    pill.hidden = false;
+  }
+});
+listen("flows-changed", () => {
+  flowsHost.progress = null;
+  framePill("flows-box", "flows-status").hidden = true;
+  if ($("view-flows").classList.contains("active")) flowsHost.load(false, true);
+});
 $("biz-open").addEventListener("click", () => openSwitcher(switchTo));
 listen("switch-business", () => openSwitcher(switchTo));
-loadPaths().then(loadRepos).then(openFromHash).catch((e) => logDev("paths", e));
+render();
+loadPaths()
+  .then(() => {
+    loadRepos().catch((e) => logDev("repos", e));
+    return openFromHash();
+  })
+  .then(pollBrief)
+  .catch((e) => logDev("paths", e));
 reloadReport();
 refreshAgents();
 refreshStaff();

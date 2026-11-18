@@ -766,33 +766,7 @@ pub fn markdown_js() -> &'static str {
     JS.get_or_init(|| format!("{}\n;\n{}\n;\n", script_safe(MARKED), script_safe(PURIFY)))
 }
 
-/// `js` with its source-map comment dropped and every `<!--`, `<script` and
-/// `</script` written as `\x3C…`: inside a script element those sequences
-/// change how the HTML parser finds the closing tag. `\x3C` means `<` in a JS
-/// string, template or regex alike, which is where the bundles carry them.
-pub fn script_safe(js: &str) -> String {
-    let mut out = String::with_capacity(js.len());
-    for line in js.lines() {
-        if line.trim_start().starts_with("//# sourceMappingURL=") {
-            continue;
-        }
-        let mut rest = line;
-        while let Some(i) = rest.find('<') {
-            out.push_str(&rest[..i]);
-            let tail = &rest.as_bytes()[i + 1..];
-            let opens = |p: &[u8]| tail.len() >= p.len() && tail[..p.len()].eq_ignore_ascii_case(p);
-            if opens(b"!--") || opens(b"script") || opens(b"/script") {
-                out.push_str("\\x3C");
-            } else {
-                out.push('<');
-            }
-            rest = &rest[i + 1..];
-        }
-        out.push_str(rest);
-        out.push('\n');
-    }
-    out
-}
+pub use crate::design::script_safe;
 
 /// One answer for the room, shared by `cos dash` and the desktop app's
 /// `cosreport://` scheme so both serve the same routes under `/docs`.

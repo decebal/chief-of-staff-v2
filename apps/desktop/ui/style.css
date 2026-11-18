@@ -66,13 +66,68 @@ code { font-size: var(--text-xs); }
 }
 .app-tab[aria-current="page"] .count { background: var(--primary-foreground); color: var(--primary); }
 .where { margin-inline-start: auto; display: flex; gap: 0.5rem; align-items: center; min-width: 0; font-size: var(--text-xs); }
-.btn.path { font-family: var(--font-mono); font-size: var(--text-xs); max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+
+/* settings: the business's directories, behind the gear */
+.settings-menu { position: relative; }
+.settings-menu > summary {
+  list-style: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 2rem; height: 2rem; border-radius: var(--radius-md);
+  font-size: var(--text-base); color: var(--muted-foreground);
+}
+.settings-menu > summary::-webkit-details-marker { display: none; }
+.settings-menu > summary:hover, .settings-menu[open] > summary { background: var(--accent); color: var(--foreground); }
+.settings-menu > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.settings-menu > summary .icon { width: var(--icon-md); height: var(--icon-md); }
+.settings-panel {
+  position: absolute; inset-inline-end: 0; top: calc(100% + 0.25rem); z-index: 20; width: 22rem;
+  padding: 0.75rem; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem;
+  background: var(--popover); color: var(--popover-foreground);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
+}
+.settings-panel .section-title { margin-block-end: 0; }
+.settings-panel [hidden] { display: none; }
+.ws-name { font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-semibold); }
+.ws-where { width: 100%; }
+.ws-where .kv { margin-block-start: 0.375rem; }
+.ws-where .kv dd { overflow-wrap: anywhere; }
 
 /* views */
 main { flex: 1; min-height: 0; }
 .view { display: none; height: 100%; }
 .view.active { display: flex; }
 #report, #docs-frame, #flows-frame, #dash-frame { flex: 1; border: 0; width: 100%; height: 100%; background: var(--background); }
+
+/* A frame (Today, Flows, Docs) with the state over it until it has loaded. */
+.framed { position: relative; flex: 1; min-height: 0; display: flex; }
+.frame-status { position: absolute; bottom: 1rem; inset-inline-end: 1rem; z-index: 4; display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.25rem 0.625rem; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--popover); color: var(--muted-foreground); box-shadow: var(--shadow-sm); font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.frame-status[hidden] { display: none; }
+
+/* Flows: a card per design waiting at the approval gate, above the flows page. */
+#view-flows.active { flex-direction: column; }
+#flow-open-error { padding: 0.5rem 1.5rem 0; }
+#flow-open-error[hidden] { display: none; }
+.gates { flex: none; max-height: 60%; overflow-y: auto; padding: 1rem 1.5rem 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; border-bottom: 1px solid var(--border); }
+.gates[hidden] { display: none; }
+.gates > .state-line { padding-block: 0.125rem; }
+.gate { border: 1px solid var(--border); border-inline-start: 2px solid var(--warning); border-radius: var(--radius-lg); background: var(--card); color: var(--card-foreground); padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.gate[data-state="approved"] { border-inline-start-color: var(--success); }
+.gate-head { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+.gate-head h3 { font-size: var(--text-base); line-height: var(--text-base--line-height); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gate-head .id { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); }
+.gate-head .repo { margin-inline-start: auto; font-size: var(--text-xs); color: var(--muted-foreground); }
+.strip { display: flex; flex-wrap: wrap; gap: 0.25rem; list-style: none; margin: 0; padding: 0; font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.strip li { padding: 0.125rem 0.5rem; border: 1px solid var(--border); border-radius: var(--radius-full); color: var(--muted-foreground); }
+.strip li.past { color: var(--foreground); background: var(--muted); }
+.strip li[aria-current="step"] { color: var(--warning-foreground); background: var(--warning); border-color: var(--warning); font-weight: var(--font-weight-semibold); }
+.gate[data-state="approved"] .strip li[aria-current="step"] { color: var(--success-foreground); background: var(--success); border-color: var(--success); }
+.gate-files { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; font-size: var(--text-sm); }
+.gate-files .sha { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); }
+.gate-verdict { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.gate-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.gate-confirm { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--muted); padding: 0.5rem 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.gate-confirm code { font-family: var(--font-mono); word-break: break-all; }
+.gate .rounds { list-style: none; margin: 0.375rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.gate .rounds li { display: flex; align-items: center; gap: 0.5rem; }
 
 /* dashboards */
 .dash-group { flex: none; display: flex; flex-direction: column; gap: 0.125rem; }
@@ -82,12 +137,12 @@ main { flex: 1; min-height: 0; }
 #dash-notice[hidden], #dash-frame[hidden], #dash-state[hidden] { display: none; }
 #view-dash { flex-direction: column; }
 .dash-state { flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
-.dash-idle { color: var(--muted-foreground); }
 
 /* agents */
 .agents { flex: 1; min-width: 0; overflow-y: auto; padding: 1rem 1.5rem 3rem; display: flex; flex-direction: column; gap: 1rem; }
 .agents-bar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-.agents-bar-end { display: flex; align-items: center; gap: 0.5rem; }
+.agents-bar-end { display: flex; align-items: center; gap: 0.75rem; }
+.agents-bar-end .badge[hidden] { display: none; }
 /* Basecoat's light tab is foreground at 60%: 4.48:1 on --muted, under AA. */
 .tabs [role="tablist"] > [role="tab"]:not([aria-selected="true"]) { color: var(--muted-foreground); }
 .pane { display: flex; flex-direction: column; gap: 1rem; }
@@ -100,7 +155,6 @@ main { flex: 1; min-height: 0; }
   letter-spacing: var(--tracking-wide); color: var(--muted-foreground); margin-block-end: 0.5rem;
 }
 .block { display: flex; flex-direction: column; }
-.empty-note { padding: 0.5rem 0; }
 
 .card.head { border-inline-start: 2px solid var(--brand-amber); }
 .card.head h2 { font-size: var(--text-lg); line-height: var(--text-lg--line-height); display: flex; gap: 0.5rem; align-items: baseline; }
@@ -115,6 +169,12 @@ main { flex: 1; min-height: 0; }
 .card.role:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .card.role h3 { font-size: var(--text-base); line-height: var(--text-base--line-height); }
 .card.role section { display: flex; flex-direction: column; gap: 0.5rem; }
+.role-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; border-radius: var(--radius-md); background: var(--accent); color: var(--brand-text); }
+.role-icon[data-role="ritual-goldfish"], .role-icon[data-role="release-clerk"] { color: var(--brand-accent-text); }
+.role-icon[data-role="unassigned"] { background: var(--muted); color: var(--muted-foreground); }
+.card.role h3.with-icon, .pane-head h2.with-icon { gap: 0.5rem; }
+.card.head h2 > .icon { align-self: center; color: var(--brand-accent-text); }
+.stats .with-icon .icon { color: var(--muted-foreground); }
 .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 .stats { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
@@ -187,7 +247,7 @@ pre {
 .feed .result { grid-column: 3; display: flex; gap: 0.5rem; align-items: baseline; min-width: 0; }
 .feed .result:empty { display: none; }
 .feed .result .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.feed .empty-entry { padding: 0.5rem 0; }
+.feed .feed-note { padding: 0.5rem 0; }
 details.box { padding: 0.75rem 1rem; gap: 0.5rem; }
 details.box summary { cursor: pointer; font-weight: var(--font-weight-medium); }
 summary { cursor: pointer; color: var(--muted-foreground); font-size: var(--text-xs); }
@@ -218,3 +278,72 @@ fieldset.work textarea { grid-column: 2; }
 .switch-list .name { font-weight: var(--font-weight-medium); }
 .switch-list .home { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #biz-open { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#switch-state[hidden], #sidebar-status[hidden], #dash-notice[hidden] { display: none; }
+
+/* Icons: one vendored set (vendor/lucide), drawn by `icon()` in states.js at
+   one stroke width, coloured by the text they sit in. */
+.icon { flex: none; width: var(--icon-sm); height: var(--icon-sm); stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; fill: none; vertical-align: -0.125em; }
+.icon.xs { width: var(--icon-xs); height: var(--icon-xs); }
+.btn .icon, .app-tab .icon, [role="tab"] .icon { width: var(--icon-sm); height: var(--icon-sm); }
+.btn:has(.icon) { gap: 0.375rem; }
+[role="tab"] { display: inline-flex; align-items: center; gap: 0.375rem; }
+.with-icon { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; }
+.spin { animation: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .spin { animation: turn 1.1s linear infinite; }
+}
+@keyframes turn { to { transform: rotate(360deg); } }
+
+/* States: every loading, empty, slow and error state is built by stateView()
+   in states.js. A region gets the state art, an icon, a headline and the next
+   action; a row gets the icon and a line. */
+.state { display: flex; align-items: center; gap: 1.5rem; padding: 1.5rem; border: 1px dashed var(--border); border-radius: var(--radius-lg); background: var(--card); color: var(--card-foreground); }
+.state.over { position: absolute; inset: 0; z-index: 5; border: 0; border-radius: 0; justify-content: center; background: var(--background); }
+.state-text { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; min-width: 0; max-width: var(--measure); }
+.state-title { display: inline-flex; align-items: center; gap: 0.5rem; font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-semibold); }
+.state-detail { font-size: var(--text-sm); line-height: var(--text-sm--line-height); color: var(--muted-foreground); overflow-wrap: anywhere; }
+.state-line { display: flex; align-items: center; gap: 0.5rem; font-size: var(--text-sm); line-height: var(--text-sm--line-height); color: var(--muted-foreground); min-width: 0; }
+.state-line > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.state[data-tone="bad"] .state-title, .state-line[data-tone="bad"] { color: var(--destructive); }
+.state[data-tone="warn"] .state-title .icon, .state-line[data-tone="warn"] .icon { color: var(--warning); }
+.state[data-tone="ok"] .state-title .icon, .state-line[data-tone="ok"] .icon { color: var(--success); }
+.state[data-tone="info"] .state-title .icon, .state-line[data-tone="info"] .icon { color: var(--brand-text); }
+#sidebar-status .state-line, #dash-notice .state-line { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+#sidebar-status .state-line > span, #dash-notice .state-line > span { white-space: normal; }
+
+/* State art (ui/art/art.js): faces lit from the top left, one accent per state. */
+.art { flex: none; width: 10rem; height: 7.5rem; }
+.art .a-top, .art .a-left, .art .a-right, .art .a-hole, .art .a-lit, .art .a-cloud, .art .a-glass { stroke: var(--art-line); stroke-width: 0.75; stroke-linejoin: round; }
+.art .a-top { fill: var(--art-top); }
+.art .a-left { fill: var(--art-left); }
+.art .a-right { fill: var(--art-right); }
+.art .a-hole { fill: var(--art-right); }
+.art .a-floor { fill: var(--art-floor); }
+.art .a-cloud, .art .a-glass { fill: var(--art-top); }
+.art .a-stroke { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; stroke: var(--brand-text); }
+.art .a-accent, .art .a-lit { fill: var(--brand-text); }
+.art .a-mark { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; stroke: var(--card); }
+.art .a-badge { fill: var(--destructive); stroke: var(--card); stroke-width: 1.5; }
+.art .a-dim { opacity: 0.55; }
+.art .a-stale { opacity: 0.8; }
+.art[data-kind="slow"] .a-accent, .art[data-kind="needs_you"] .a-accent { fill: var(--warning); }
+.art[data-kind="slow"] .a-stroke, .art[data-kind="needs_you"] .a-stroke { stroke: var(--warning); }
+.art[data-kind="unreachable"] .a-crack { stroke: var(--destructive); }
+.art[data-kind="empty"] .a-accent { fill: var(--brand-accent-text); }
+.art[data-kind="asleep"] .a-accent { fill: var(--brand-amber); }
+.art[data-kind="asleep"] .a-stroke { stroke: var(--muted-foreground); stroke-width: 1.5; }
+.art[data-kind="starting"] .a-accent, .art[data-kind="starting"] .a-lit { fill: var(--brand-amber); }
+.art[data-kind="starting"] .a-stroke { stroke: var(--brand-amber); }
+.art[data-kind="clear"] .a-accent { fill: var(--success); }
+@media (prefers-reduced-motion: no-preference) {
+  .art .a-wave { animation: art-wave 1.8s ease-out infinite; }
+  .art .w2 { animation-delay: 0.3s; }
+  .art .w3 { animation-delay: 0.6s; }
+  .art .a-spin { transform-box: fill-box; transform-origin: center; animation: turn 2.4s linear infinite; }
+  .art .a-drip { stroke-dasharray: 2 2; animation: art-drip 1s linear infinite; }
+  .art .a-swing { transform-box: fill-box; transform-origin: 50% 0; animation: art-swing 1.6s ease-in-out infinite; }
+  .art .a-rays { animation: art-wave 2.4s ease-in-out infinite; }
+}
+@keyframes art-wave { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@keyframes art-drip { to { stroke-dashoffset: -4; } }
+@keyframes art-swing { 0%, 100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }

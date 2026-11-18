@@ -35,6 +35,15 @@ tasks:
       - timeout 300 cargo clippy --all-targets -- -D warnings
       - timeout 300 cargo test
 
+  test-e2e:
+    desc: The Flows page in headless Chrome (tests/flows_page.rs); COS_E2E_CHROME defaults to Google Chrome
+    env:
+      COS_E2E_CHROME: '{{.COS_E2E_CHROME | default "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}}'
+    cmds:
+      # Compile outside the run, so a cold build cannot eat the tests' time.
+      - timeout 300 cargo test --test flows_page --no-run
+      - timeout 300 cargo test --test flows_page -- --include-ignored --test-threads=1
+
   install:
     desc: cos → ~/.cargo/bin; agents → ~/.claude/agents (for interactive Claude Code)
     deps: [build]

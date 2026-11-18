@@ -100,6 +100,14 @@
   --shadow-sm: 0 1px 2px light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.5));
   --shadow-md: 0 4px 12px light-dark(rgb(0 0 0 / 0.08), rgb(0 0 0 / 0.55));
 
+  /* state art (ui/art/): an isometric stack lit from the top left, so the
+     top face is lightest and the right face darkest in both schemes */
+  --art-top: light-dark(#ffffff, #3a3a3a);
+  --art-left: light-dark(#e3ecf7, #262626);
+  --art-right: light-dark(#c3d6ee, #171717);
+  --art-line: light-dark(#8ec1fb, #545454);
+  --art-floor: light-dark(#eef4fb, #141414);
+
   /* type: Geist Sans for UI, Geist Mono for code, ids and numbers */
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, Menlo, monospace;

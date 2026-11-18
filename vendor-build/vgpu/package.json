@@ -1,0 +1,11 @@
+{
+  "name": "cos-vgpu-vendor",
+  "private": true,
+  "description": "Builds apps/desktop/ui/vendor/vgpu/vgpu-0.6.0.iife.js; see apps/desktop/ui/vendor/README.md",
+  "dependencies": {
+    "@vgpu/core": "0.6.0",
+    "@vgpu/wgsl": "0.6.0",
+    "esbuild": "0.28.2",
+    "vgpu": "0.6.0"
+  }
+}

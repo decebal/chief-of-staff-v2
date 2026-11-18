@@ -89,6 +89,35 @@ fn archived_render_names_its_brief_but_posts_none() {
 }
 
 #[test]
+fn run_brief_sits_on_the_tab_bar_and_shows_only_for_the_desktop_host() {
+    let html = render(&json!({ "brief": { "report": { "headline": "h" } } })).unwrap();
+    let nav = &html[html.find(r#"<nav class="subnav""#).unwrap()..];
+    let nav = &nav[..nav.find("</nav>").unwrap()];
+    let tabs_end = nav.find("</div>").unwrap();
+    let run = &nav[tabs_end..];
+    assert!(nav[..tabs_end].contains(r#"role="tablist""#));
+    assert!(!nav[..tabs_end].contains("brief-run"), "not a tab");
+    // Hidden in the markup, and kept hidden by CSS despite its display: flex.
+    assert!(run.contains(r#"<div id="host-run" class="host-run" hidden>"#));
+    assert!(html.contains(".host-run[hidden] { display: none; }"));
+    assert!(run.contains(r#"<button id="brief-run" class="ghost" type="button" aria-label="Run brief now">Run brief</button>"#));
+    assert!(run.contains(r#"<span id="brief-state" class="small muted" role="status"></span>"#));
+
+    // Revealed only by the parent window saying it can run a brief.
+    let host = &html[html.find("let canHire = false;").unwrap()..];
+    let host = &host[..host.find("const hostRef").unwrap()];
+    assert!(host.contains("if (e.source !== window.parent) return;"));
+    assert!(host.contains("if (d.type === \"cos-host\") {"));
+    assert!(host.contains(r#"$("host-run").hidden = d.runBrief !== true;"#));
+    assert_eq!(host.matches(r#"$("host-run").hidden"#).count(), 1);
+    // The click asks; it sends nothing the run could use.
+    assert!(host.contains(r#"tellHost({ type: "cos-run-brief" });"#));
+    assert!(html.contains(
+        r#"const tellHost = (msg) => { if (framed) window.parent.postMessage(msg, "*"); };"#
+    ));
+}
+
+#[test]
 fn toon_rows_parse_even_with_a_pipe_in_the_title() {
     let out = "[id|type|title|pri|status|claimed|blocked_by|parent|archived]\n\
                t-1|task|Fix a|b split|p1|open||t-9|t-0|false\n\

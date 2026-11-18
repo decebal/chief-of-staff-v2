@@ -39,13 +39,26 @@ pub async fn serve(home: PathBuf, ws: PathBuf, projects: PathBuf, port: u16) -> 
                     // The scan blocks on `cn` for up to its budget: off the runtime's workers.
                     if req.uri().path() == "/flows" && host_ok(&allowed, &req) {
                         let (ws, projects) = (paths.1.clone(), paths.2.clone());
+                        let fresh = req
+                            .uri()
+                            .query()
+                            .is_some_and(|q| q.split('&').any(|p| p == "fresh=1"));
                         let page = tokio::task::spawn_blocking(move || {
-                            crate::flows::page_cached(&ws, &projects)
+                            crate::flows::page_cached(&ws, &projects, fresh)
                         })
                         .await;
                         return Ok::<_, Infallible>(match page {
                             Ok(html) => {
-                                respond(StatusCode::OK, "text/html; charset=utf-8", html.into())
+                                let mut r = respond(
+                                    StatusCode::OK,
+                                    "text/html; charset=utf-8",
+                                    html.into(),
+                                );
+                                r.headers_mut().insert(
+                                    hyper::header::CONTENT_SECURITY_POLICY,
+                                    hyper::header::HeaderValue::from_static(crate::flows::DASH_CSP),
+                                );
+                                r
                             }
                             Err(e) => text(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")),
                         });

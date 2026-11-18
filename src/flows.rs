@@ -4,7 +4,7 @@
 //!
 //! Read-only. Each repo under the projects root with `.chronis/` is read once
 //! with `cn list --format json --all`, all under one deadline. Descriptions are
-//! parsed for `ritual-*` markers and dropped.
+//! parsed for `ritual-*` markers and acceptance criteria, then dropped.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -42,6 +42,29 @@ pub struct Task {
     pub description: Option<String>,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default, deserialize_with = "lenient")]
+    pub priority: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub claimed_by: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub created_at: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub done_at: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub done_reason: Option<String>,
+}
+
+/// A display field `cn` may print in another type one day: a string is kept,
+/// a number becomes its text, anything else is dropped, so one odd field
+/// never turns the whole repo into a gap.
+fn lenient<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +166,97 @@ pub struct Bead {
     pub parent: Option<String>,
     pub blocked_by: Vec<String>,
     pub ready: bool,
+    pub priority: Option<String>,
+    /// `claimed_by`, as the store prints it.
+    pub owner: Option<String>,
+    pub created_at: Option<String>,
+    pub done_at: Option<String>,
+    pub done_reason: Option<String>,
+    /// The longest chain of in-flow blockers under the bead: its column.
+    pub layer: usize,
+    pub criteria: Vec<Criterion>,
+    /// Criteria past the cap, left in the task store.
+    pub criteria_more: usize,
+    /// The beads it waits on that are not done yet; a hire waits with it.
+    pub open_blockers: Vec<String>,
+    /// What a hire or a copied prompt carries: where, what, done when, and
+    /// what it waits on and unblocks (`handoff`).
+    pub handoff: String,
+}
+
+/// One checkbox line under a bead's `## Acceptance criteria`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Criterion {
+    pub done: bool,
+    pub text: String,
+}
+
+/// At most this many criteria per bead reach the page, each at most
+/// `CRITERION_CHARS` characters.
+pub const CRITERIA_CAP: usize = 20;
+pub const CRITERION_CHARS: usize = 300;
+
+/// The `- [ ]` and `- [x]` lines under `## Acceptance criteria`, up to the
+/// next heading; the rest of the description is not kept.
+pub fn criteria(description: &str) -> (Vec<Criterion>, usize) {
+    let mut out = Vec::new();
+    let mut more = 0;
+    let mut inside = false;
+    for line in description.lines() {
+        let t = line.trim();
+        if t.starts_with('#') {
+            inside = t
+                .trim_start_matches('#')
+                .trim()
+                .eq_ignore_ascii_case("acceptance criteria");
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let item = t
+            .strip_prefix("- [ ]")
+            .map(|r| (false, r))
+            .or_else(|| t.strip_prefix("- [x]").map(|r| (true, r)))
+            .or_else(|| t.strip_prefix("- [X]").map(|r| (true, r)));
+        let Some((done, text)) = item else {
+            continue;
+        };
+        if out.len() == CRITERIA_CAP {
+            more += 1;
+            continue;
+        }
+        out.push(Criterion {
+            done,
+            text: truncate(text.trim(), CRITERION_CHARS),
+        });
+    }
+    (out, more)
+}
+
+/// Why a flow's next move is the user's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NeedsYou {
+    /// A design waits for approval.
+    Gate,
+    /// The design changed after it was approved.
+    Drift,
+    /// The newest review found problems.
+    Findings,
+}
+
+fn needs_you(step: Step, approved: bool, markers: &Markers) -> Option<NeedsYou> {
+    let findings = markers
+        .get("review")
+        .and_then(|v| v.split_whitespace().last())
+        == Some("findings");
+    match step {
+        Step::Spec if !approved && markers.get("design").is_some() => Some(NeedsYou::Gate),
+        Step::Drift => Some(NeedsYou::Drift),
+        Step::Review if findings => Some(NeedsYou::Findings),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -169,6 +283,9 @@ pub struct Flow {
     pub markers: Markers,
     pub counts: Counts,
     pub beads: Vec<Bead>,
+    pub needs_you: Option<NeedsYou>,
+    /// The latest `created_at` or `done_at` of its beads.
+    pub touched: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -320,7 +437,15 @@ pub fn flows_in(repo: &str, drift: Option<&DriftCheck>, tasks: &[Task]) -> Vec<F
                 drifted,
                 beads: &beads,
             });
+            let touched = beads
+                .iter()
+                .flat_map(|b| [b.created_at.as_deref(), b.done_at.as_deref()])
+                .flatten()
+                .max()
+                .map(str::to_owned);
             Flow {
+                needs_you: needs_you(step, approved, &markers),
+                touched,
                 repo: repo.to_owned(),
                 id: root.id.clone(),
                 title: root.title.clone(),
@@ -336,8 +461,89 @@ pub fn flows_in(repo: &str, drift: Option<&DriftCheck>, tasks: &[Task]) -> Vec<F
             }
         })
         .collect();
+    for f in &mut flows {
+        let hands: Vec<String> = f.beads.iter().map(|b| handoff(f, b)).collect();
+        for (b, h) in f.beads.iter_mut().zip(hands) {
+            b.handoff = h;
+        }
+    }
     flows.sort_by(|a, b| a.id.cmp(&b.id));
     flows
+}
+
+/// One bead as work for an agent: the repo and flow it sits in, the bead,
+/// its acceptance criteria as the finish line, what it waits on and what it
+/// unblocks, and where the full record is. Built here so the copied prompt
+/// and a hire from the desktop app carry the same words.
+pub fn handoff(flow: &Flow, bead: &Bead) -> String {
+    let title_of = |id: &str| {
+        flow.beads
+            .iter()
+            .find(|b| b.id == id)
+            .map(|b| format!("{id} {}", b.title))
+            .unwrap_or_else(|| format!("{id} (another flow)"))
+    };
+    let mut s = format!(
+        "Work one bead of a ritual flow in the {repo} repo.\n\n\
+         Flow: {fid} {ftitle} (step: {step})\n\
+         Bead: {id} {title}\n",
+        repo = flow.repo,
+        fid = flow.id,
+        ftitle = flow.title,
+        step = flow.step.as_str(),
+        id = bead.id,
+        title = bead.title,
+    );
+    if let Some(p) = &bead.priority {
+        s.push_str(&format!("Priority: {p}\n"));
+    }
+    s.push_str("\nDone when:\n");
+    if bead.criteria.is_empty() {
+        s.push_str(
+            "- (no acceptance criteria on this bead: agree the finish line before changing code)\n",
+        );
+    }
+    for c in &bead.criteria {
+        s.push_str(&format!(
+            "- [{}] {}\n",
+            if c.done { "x" } else { " " },
+            c.text
+        ));
+    }
+    if bead.criteria_more > 0 {
+        s.push_str(&format!(
+            "- and {} more in the task store\n",
+            bead.criteria_more
+        ));
+    }
+    if !bead.blocked_by.is_empty() {
+        s.push_str("\nWaits on:\n");
+        for id in &bead.blocked_by {
+            let open = if bead.open_blockers.contains(id) {
+                " (not done yet)"
+            } else {
+                ""
+            };
+            s.push_str(&format!("- {}{open}\n", title_of(id)));
+        }
+    }
+    let unblocks: Vec<&Bead> = flow
+        .beads
+        .iter()
+        .filter(|b| b.blocked_by.contains(&bead.id))
+        .collect();
+    if !unblocks.is_empty() {
+        s.push_str("\nUnblocks:\n");
+        for b in unblocks {
+            s.push_str(&format!("- {} {}\n", b.id, b.title));
+        }
+    }
+    s.push_str(&format!(
+        "\nRead the full record first: cn show {} --toon\n\
+         Claim it before starting (cn claim {} --toon) and close it with cn done when every criterion holds.\n",
+        bead.id, bead.id
+    ));
+    s
 }
 
 /// All descendants through `parent`, nearest first.
@@ -354,10 +560,14 @@ fn descendants(
             if !seen.insert(child.id.as_str()) {
                 continue;
             }
-            let blocked = child
+            let open_blockers: Vec<String> = child
                 .blocked_by
                 .iter()
-                .any(|b| status.get(b.as_str()).is_none_or(|s| !is_done(s)));
+                .filter(|b| status.get(b.as_str()).is_none_or(|s| !is_done(s)))
+                .cloned()
+                .collect();
+            let blocked = !open_blockers.is_empty();
+            let (criteria, criteria_more) = criteria(child.description.as_deref().unwrap_or(""));
             out.push(Bead {
                 id: child.id.clone(),
                 title: child.title.clone(),
@@ -365,9 +575,26 @@ fn descendants(
                 parent: child.parent.clone(),
                 blocked_by: child.blocked_by.clone(),
                 ready: child.status == "open" && !blocked,
+                priority: child.priority.clone(),
+                owner: child.claimed_by.clone(),
+                created_at: child.created_at.clone(),
+                done_at: child.done_at.clone(),
+                done_reason: child.done_reason.clone(),
+                layer: 0,
+                criteria,
+                criteria_more,
+                open_blockers,
+                handoff: String::new(),
             });
             queue.push(child.id.as_str());
         }
+    }
+    let layer: HashMap<String, usize> = layers(&out)
+        .into_iter()
+        .map(|(id, d)| (id.to_owned(), d))
+        .collect();
+    for b in &mut out {
+        b.layer = layer.get(&b.id).copied().unwrap_or(0);
     }
     out
 }
@@ -473,8 +700,16 @@ pub fn repos(projects: &Path) -> Result<Vec<PathBuf>> {
     Ok(found)
 }
 
+/// Told before each repo is read: (repos done, repos in all, the next one).
+pub type Progress<'a> = &'a (dyn Fn(usize, usize, &str) + Sync);
+
 /// Every flow under `projects`, read with `cn` under one `budget`.
 pub fn scan(projects: &Path, cn: &Path, budget: Duration) -> Scan {
+    scan_with(projects, cn, budget, &|_, _, _| {})
+}
+
+/// `scan`, telling `progress` as it moves from repo to repo.
+pub fn scan_with(projects: &Path, cn: &Path, budget: Duration, progress: Progress) -> Scan {
     let mut out = Scan::default();
     let repos = match repos(projects) {
         Ok(r) => r,
@@ -485,12 +720,13 @@ pub fn scan(projects: &Path, cn: &Path, budget: Duration) -> Scan {
     };
     out.repos = repos.len();
     let deadline = Deadline::after(budget);
-    for repo in repos {
+    for (done, repo) in repos.into_iter().enumerate() {
         let name = repo
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
+        progress(done, out.repos, &name);
         if deadline.expired() {
             out.gaps
                 .push(format!("{name}: not read, the scan ran out of time"));
@@ -515,25 +751,6 @@ pub fn scan(projects: &Path, cn: &Path, budget: Duration) -> Scan {
         }
     }
     out
-}
-
-const STEPS: [Step; 9] = [
-    Step::Think,
-    Step::Spec,
-    Step::Plan,
-    Step::Build,
-    Step::Review,
-    Step::Ship,
-    Step::Reflect,
-    Step::Drift,
-    Step::Done,
-];
-
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -589,74 +806,6 @@ fn layers(beads: &[Bead]) -> HashMap<&str, usize> {
     memo
 }
 
-/// The flow's beads as a layered SVG: blockers on the left, ready beads
-/// outlined. Unitless coordinates; the page's tokens style it.
-pub fn graph_svg(beads: &[Bead]) -> String {
-    const COL: usize = 230;
-    const ROW: usize = 58;
-    const W: usize = 200;
-    const H: usize = 42;
-    if beads.is_empty() {
-        return "<p class=\"empty\">No beads yet.</p>".into();
-    }
-    let layer = layers(beads);
-    let mut rows: BTreeMap<usize, Vec<&Bead>> = BTreeMap::new();
-    for b in beads {
-        rows.entry(layer[b.id.as_str()]).or_default().push(b);
-    }
-    let mut at: HashMap<&str, (usize, usize)> = HashMap::new();
-    for (col, list) in &rows {
-        for (row, b) in list.iter().enumerate() {
-            at.insert(b.id.as_str(), (col * COL + 10, row * ROW + 10));
-        }
-    }
-    let width = rows.len() * COL;
-    let height = rows.values().map(Vec::len).max().unwrap_or(1) * ROW + 10;
-    let mut svg = format!(
-        "<svg class=\"graph\" viewBox=\"0 0 {width} {height}\" role=\"img\" aria-label=\"bead dependency graph\">"
-    );
-    for b in beads {
-        let (x, y) = at[b.id.as_str()];
-        for blocker in &b.blocked_by {
-            if let Some((bx, by)) = at.get(blocker.as_str()) {
-                svg.push_str(&format!(
-                    "<path class=\"edge\" d=\"M{} {} C{} {} {} {} {} {}\"/>",
-                    bx + W,
-                    by + H / 2,
-                    bx + W + 15,
-                    by + H / 2,
-                    x - 15,
-                    y + H / 2,
-                    x,
-                    y + H / 2
-                ));
-            }
-        }
-    }
-    for b in beads {
-        let (x, y) = at[b.id.as_str()];
-        let class = format!(
-            "node {}{}",
-            esc(&b.status),
-            if b.ready { " ready" } else { "" }
-        );
-        svg.push_str(&format!(
-            "<g class=\"{class}\"><title>{} · {} · {}</title><rect x=\"{x}\" y=\"{y}\" width=\"{W}\" height=\"{H}\" rx=\"6\"/><text x=\"{}\" y=\"{}\">{}</text><text class=\"sub\" x=\"{}\" y=\"{}\">{}</text></g>",
-            esc(&b.id),
-            esc(&b.status),
-            esc(&b.title),
-            x + 8,
-            y + 17,
-            esc(&b.id),
-            x + 8,
-            y + 33,
-            esc(&truncate(&b.title, 30)),
-        ));
-    }
-    svg.push_str("</svg>");
-    svg
-}
-
 /// The chronis binary: `COS_CN`, else `cn` on `PATH`.
 pub fn cn_program() -> PathBuf {
     std::env::var_os("COS_CN")
@@ -669,14 +818,16 @@ const PAGE_TTL: Duration = Duration::from_secs(10);
 
 /// `page`, at most one scan at a time: a reload or a second window waits for
 /// the scan already running and gets its result, and a page younger than
-/// `PAGE_TTL` is served without scanning.
-pub fn page_cached(ws: &Path, projects: &Path) -> String {
+/// `PAGE_TTL` is served without scanning unless `fresh` (the page's Rescan).
+/// The page carries the time of its own scan, so a cached one says its age.
+pub fn page_cached(ws: &Path, projects: &Path, fresh: bool) -> String {
     type Entry = (std::time::Instant, PathBuf, PathBuf, String);
     static LAST: std::sync::Mutex<Option<Entry>> = std::sync::Mutex::new(None);
     let mut last = LAST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((at, w, p, html)) = last.as_ref()
+        && !fresh
         && at.elapsed() < PAGE_TTL
         && w == ws
         && p == projects
@@ -693,103 +844,246 @@ pub fn page_cached(ws: &Path, projects: &Path) -> String {
     html
 }
 
+/// The desktop's `/flows`: the last page it rendered, kept so a tab open
+/// shows it at once while a scan runs behind it (2.1 to 2.8 s of `cn` over
+/// 46 flows on the machine this was measured on). One scan at a time.
+#[derive(Default)]
+pub struct Pages {
+    last: std::sync::Mutex<Option<(std::time::Instant, PathBuf, PathBuf, String)>>,
+    scanning: std::sync::Mutex<()>,
+}
+
+impl Pages {
+    /// The page held for this workspace and projects directory, with its age.
+    pub fn cached(&self, ws: &Path, projects: &Path) -> Option<(Duration, String)> {
+        let last = self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        last.as_ref()
+            .filter(|(_, w, p, _)| w == ws && p == projects)
+            .map(|(at, _, _, html)| (at.elapsed(), html.clone()))
+    }
+
+    /// Scans and keeps the page. A caller that finds a scan running waits for
+    /// it and, unless `fresh`, takes its page instead of scanning again.
+    pub fn scan(&self, ws: &Path, projects: &Path, fresh: bool, progress: Progress) -> String {
+        let _one = self
+            .scanning
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !fresh
+            && let Some((age, html)) = self.cached(ws, projects)
+            && age < PAGE_TTL
+        {
+            return html;
+        }
+        self.scan_held(ws, projects, progress)
+    }
+
+    /// Scans only when no scan is running; `None` when one is.
+    pub fn try_scan(&self, ws: &Path, projects: &Path, progress: Progress) -> Option<String> {
+        let _one = self.scanning.try_lock().ok()?;
+        Some(self.scan_held(ws, projects, progress))
+    }
+
+    fn scan_held(&self, ws: &Path, projects: &Path, progress: Progress) -> String {
+        let html = page_with(ws, projects, progress);
+        *self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+            std::time::Instant::now(),
+            ws.to_path_buf(),
+            projects.to_path_buf(),
+            html.clone(),
+        ));
+        html
+    }
+}
+
+/// A held page older than this is shown, and scanned again behind it.
+pub const STALE: Duration = PAGE_TTL;
+
 /// `/flows` for `cos dash` and the desktop app: read only when the profile
 /// approves the `tasks` source, the gate the brief's `cn` facts use.
 pub fn page(ws: &Path, projects: &Path) -> String {
-    if !crate::context::local_reads(ws).tasks {
-        return html(&Scan {
+    page_with(ws, projects, &|_, _, _| {})
+}
+
+/// `page`, telling `progress` as the scan moves from repo to repo.
+pub fn page_with(ws: &Path, projects: &Path, progress: Progress) -> String {
+    let approved = crate::context::local_reads(ws).tasks;
+    let scan = if approved {
+        scan_with(projects, &cn_program(), SCAN_BUDGET, progress)
+    } else {
+        Scan {
             gaps: vec![
                 "the profile does not approve a tasks source, so no task store was read".into(),
             ],
             ..Scan::default()
-        });
-    }
-    html(&scan(projects, &cn_program(), SCAN_BUDGET))
+        }
+    };
+    page_html(&scan, approved).unwrap_or_else(|e| format!("flows page: {e:#}"))
 }
+
+/// The Content-Security-Policy `/flows` is served with: its one inline
+/// script and style, the inlined fonts and images, and nothing to fetch.
+pub const PAGE_CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:";
+/// `PAGE_CSP` for `cos dash`, where the page is top-level: no other site may
+/// frame it, because a framing page would receive the messages it posts to
+/// its parent. The desktop frames it itself, so its copy cannot carry this.
+pub const DASH_CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:; frame-ancestors 'none'";
+
+const TEMPLATE: &str = include_str!("flows.html");
+/// Where the page's one script takes the scan.
+pub const FLOWS_SLOT: &str = "/*__COS_FLOWS__*/";
 
 /// The page `cos dash` serves at `/flows` and the desktop app shows in its
-/// Flows tab.
-pub fn html(scan: &Scan) -> String {
-    let page = crate::design::inline(include_str!("flows.html"))
-        .expect("flows.html carries the token slot");
-    let summary = format!("{} flows in {} repos", scan.flows.len(), scan.repos);
-    let steps: String = STEPS
-        .iter()
-        .filter_map(|s| {
-            let n = scan.flows.iter().filter(|f| f.step == *s).count();
-            (n > 0).then(|| format!("<li><b>{n}</b> {}</li>", s.as_str()))
-        })
-        .collect();
-    let flows: String = if scan.flows.is_empty() {
-        "<p class=\"empty\">No flows yet. The ritual skill starts one with a Chronis epic.</p>"
-            .into()
-    } else {
-        // The first flow being built opens with its graph showing; the rest stay folded.
-        let open = scan
-            .flows
-            .iter()
-            .position(|f| f.step == Step::Build)
-            .unwrap_or(0);
-        scan.flows
-            .iter()
-            .enumerate()
-            .map(|(i, f)| flow_card(f, i == open))
-            .collect()
-    };
-    let gaps = if scan.gaps.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<div class=\"gaps\"><b>Not read</b><ul>{}</ul></div>",
-            scan.gaps
-                .iter()
-                .map(|g| format!("<li>{}</li>", esc(g)))
-                .collect::<String>()
-        )
-    };
-    page.replace("<!--__SUMMARY__-->", &esc(&summary))
-        .replace(
-            "<!--__STEPS__-->",
-            &format!("<ul class=\"steps\">{steps}</ul>"),
-        )
-        .replace("<!--__FLOWS__-->", &flows)
-        .replace("<!--__GAPS__-->", &gaps)
+/// Flows tab: the scan inlined as JSON, drawn by the page's own script.
+/// `tasks_approved` is false when the profile approves no tasks source.
+pub fn page_html(scan: &Scan, tasks_approved: bool) -> Result<String> {
+    page_html_from(TEMPLATE, scan, tasks_approved)
 }
 
-fn flow_card(f: &Flow, open: bool) -> String {
-    let c = &f.counts;
-    let ready = f.beads.iter().filter(|b| b.ready).count();
-    let mut meta = vec![format!(
-        "cn approve: <code>{}</code>",
-        if f.approved { "yes" } else { "no" }
-    )];
-    if f.legacy {
-        meta.push("legacy flow: no <code>ritual-*</code> lines".into());
+/// `page_html` over another template, so a test can hand it one with a slot
+/// missing. The slots are filled before the data, so a title that reads like
+/// a slot stays a title.
+#[doc(hidden)]
+pub fn page_html_from(template: &str, scan: &Scan, tasks_approved: bool) -> Result<String> {
+    anyhow::ensure!(
+        template.contains(FLOWS_SLOT),
+        "flows template lost its data slot"
+    );
+    anyhow::ensure!(
+        template.contains(crate::design::VGPU_SLOT),
+        "flows template lost its vgpu slot"
+    );
+    let scanned_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let data = serde_json::json!({
+        "flows": scan.flows,
+        "gaps": scan.gaps,
+        "repos": scan.repos,
+        "scanned_at": scanned_at,
+        "tasks_approved": tasks_approved,
+    });
+    let json = crate::design::script_json(&data)?;
+    Ok(crate::design::inline(template)?
+        .replacen(crate::design::VGPU_SLOT, crate::design::vgpu_js(), 1)
+        .replacen(FLOWS_SLOT, &json, 1))
+}
+
+/// The `ritual-*` files a flow's page may ask the window to open.
+pub const OPEN_KEYS: [&str; 6] = ["brief", "design", "plan", "review", "report", "pr"];
+
+/// What a `ritual-<key>:` line names, once checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// A path relative to the flow's repo, to be located on its branch.
+    Path(String),
+    /// A GitHub URL.
+    Url(String),
+}
+
+/// One bead of one flow, from the repo's own task list, as a hire works from
+/// it: refused when it is done or waits on a bead that is not. The page only
+/// names it; everything a hire carries is read here.
+pub fn bead_to_hire(repo: &str, tasks: &[Task], epic: &str, bead: &str) -> Result<Bead> {
+    let flow = flows_in(repo, None, tasks)
+        .into_iter()
+        .find(|f| f.id == epic)
+        .with_context(|| format!("{epic} is not a flow in {repo}"))?;
+    let b = flow
+        .beads
+        .into_iter()
+        .find(|b| b.id == bead)
+        .with_context(|| format!("{bead} is not a bead of {epic}"))?;
+    anyhow::ensure!(!is_done(&b.status), "{bead} is already done");
+    anyhow::ensure!(
+        b.open_blockers.is_empty(),
+        "{bead} waits on {}: finish that first",
+        b.open_blockers.join(", ")
+    );
+    Ok(b)
+}
+
+/// The file or link `epic`'s `ritual-<key>:` line names, from the repo's own
+/// task list, refused unless it is safe to hand to `open`: a known key, an
+/// epic the store printed, a GitHub URL, or a relative `.md` or `.html` path
+/// with no `..`. The value never comes from the caller.
+pub fn open_target(tasks: &[Task], epic: &str, key: &str) -> Result<Target> {
+    anyhow::ensure!(OPEN_KEYS.contains(&key), "{key} is not a file a flow names");
+    let task = tasks
+        .iter()
+        .find(|t| t.id == epic)
+        .with_context(|| format!("{epic} is not in this repo's task store"))?;
+    let markers = Markers::parse(task.description.as_deref().unwrap_or(""));
+    let value = markers
+        .get(key)
+        .with_context(|| format!("{epic} names no {key}"))?;
+    let value = if key == "review" {
+        value.split_whitespace().next().unwrap_or("")
+    } else {
+        value.trim()
+    };
+    if value.contains(':') || key == "pr" {
+        anyhow::ensure!(
+            value.starts_with("https://github.com/") && !value.contains(char::is_whitespace),
+            "only GitHub links open from Flows: {value}"
+        );
+        return Ok(Target::Url(value.to_owned()));
     }
-    for (key, value) in &f.markers.0 {
-        meta.push(format!("{}: <code>{}</code>", esc(key), esc(value)));
-    }
-    format!(
-        "<details class=\"flow\"{unfolded}><summary><span class=\"step {step}\">{step}</span><span class=\"repo\">{repo}</span><span class=\"title\">{title} <small>{id}</small></span><span class=\"counts\">{open} open · {prog} in progress · {done} done · {ready} ready{blocked}</span></summary><div class=\"body\"><ul class=\"meta\">{meta}</ul>{graph}<p class=\"legend\">Left to right: blockers first. Outlined in green: ready now.</p></div></details>",
-        unfolded = if open { " open" } else { "" },
-        step = f.step.as_str(),
-        repo = esc(&f.repo),
-        title = esc(&f.title),
-        id = esc(&f.id),
-        open = c.open,
-        prog = c.in_progress,
-        done = c.done,
-        blocked = if c.blocked > 0 {
-            format!(" · {} blocked", c.blocked)
-        } else {
-            String::new()
-        },
-        meta = meta
-            .iter()
-            .map(|m| format!("<li>{m}</li>"))
-            .collect::<String>(),
-        graph = graph_svg(&f.beads),
-    )
+    Ok(Target::Path(openable_path(value)?.to_owned()))
+}
+
+/// `path` when it is relative, has no `..` and names a `.md` or `.html`
+/// file: the shape a ritual file may have before it is located.
+pub fn openable_path(path: &str) -> Result<&str> {
+    let path = path.trim_start_matches("./");
+    let p = Path::new(path);
+    anyhow::ensure!(
+        !path.is_empty() && p.is_relative(),
+        "{path} is not a path inside the repo"
+    );
+    anyhow::ensure!(
+        p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_))),
+        "{path} leaves the repo"
+    );
+    anyhow::ensure!(readable_kind(p), "{path} is not a Markdown or HTML file");
+    Ok(path)
+}
+
+fn readable_kind(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("html"))
+}
+
+/// `file`, canonicalised (symlinks followed), when it sits inside `root` and
+/// is still a Markdown or HTML file: the path that may be handed to `open`.
+pub fn contained(root: &Path, file: &Path) -> Result<PathBuf> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("reading {}", root.display()))?;
+    let real = file
+        .canonicalize()
+        .with_context(|| format!("reading {}", file.display()))?;
+    anyhow::ensure!(
+        real.starts_with(&root),
+        "{} resolves outside {}",
+        file.display(),
+        root.display()
+    );
+    anyhow::ensure!(
+        readable_kind(&real) && real.is_file(),
+        "{} is not a Markdown or HTML file",
+        file.display()
+    );
+    Ok(real)
 }
 
 /// One line per flow, for the terminal.
@@ -798,7 +1092,7 @@ pub fn render(scan: &Scan) -> String {
     for f in &scan.flows {
         let c = &f.counts;
         lines.push(format!(
-            "{:<8} {:<24} {:<10} {}{}  [{} open, {} in progress, {} done{}]",
+            "{:<8} {:<24} {:<10} {}{}  [{} open, {} in progress, {} done{}]{}",
             f.step.as_str(),
             f.repo,
             f.id,
@@ -809,6 +1103,14 @@ pub fn render(scan: &Scan) -> String {
             c.done,
             if c.blocked > 0 {
                 format!(", {} blocked", c.blocked)
+            } else {
+                String::new()
+            },
+            if f.step == Step::Spec && !f.approved && f.markers.get("design").is_some() {
+                format!(
+                    "\n         waiting for your approval: {}",
+                    crate::ritual::APPROVE_WHERE
+                )
             } else {
                 String::new()
             },

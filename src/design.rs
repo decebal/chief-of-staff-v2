@@ -90,6 +90,51 @@ pub fn icon(name: &str) -> String {
     out
 }
 
+/// Where a page's one script takes vgpu, the GPU engine's library: the Flows
+/// page, with an SVG engine beside it (`tests/design.rs`).
+pub const VGPU_SLOT: &str = "/*__COS_VGPU__*/";
+const VGPU: &str = include_str!("../apps/desktop/ui/vendor/vgpu/vgpu-0.6.0.iife.js");
+
+/// vgpu, made safe to sit inside a page's one `<script>`.
+pub fn vgpu_js() -> &'static str {
+    static JS: OnceLock<String> = OnceLock::new();
+    JS.get_or_init(|| format!("{}\n;\n", script_safe(VGPU)))
+}
+
+/// `js` with its source-map comment dropped and every `<!--`, `<script` and
+/// `</script` written as `\x3C…`: inside a script element those sequences
+/// change how the HTML parser finds the closing tag. `\x3C` means `<` in a JS
+/// string, template or regex alike, which is where the bundles carry them.
+pub fn script_safe(js: &str) -> String {
+    let mut out = String::with_capacity(js.len());
+    for line in js.lines() {
+        if line.trim_start().starts_with("//# sourceMappingURL=") {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(i) = rest.find('<') {
+            out.push_str(&rest[..i]);
+            let tail = &rest.as_bytes()[i + 1..];
+            let opens = |p: &[u8]| tail.len() >= p.len() && tail[..p.len()].eq_ignore_ascii_case(p);
+            if opens(b"!--") || opens(b"script") || opens(b"/script") {
+                out.push_str("\\x3C");
+            } else {
+                out.push('<');
+            }
+            rest = &rest[i + 1..];
+        }
+        out.push_str(rest);
+        out.push('\n');
+    }
+    out
+}
+
+/// Data as JSON that can sit inside a `<script>`: every `<` escaped, which
+/// JSON allows only inside strings, so no value changes.
+pub fn script_json<T: serde::Serialize>(data: &T) -> Result<String> {
+    Ok(serde_json::to_string(data)?.replace('<', "\\u003c"))
+}
+
 fn data_url(font: &[u8]) -> String {
     format!("url(\"data:font/woff2;base64,{}\")", base64(font))
 }

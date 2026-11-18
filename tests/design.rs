@@ -35,6 +35,7 @@ fn sources() -> Vec<String> {
         .map(|p| format!("{UI}/{}", p.file_name().unwrap().to_string_lossy()))
         .filter(|rel| rel != TOKEN_FILE)
         .chain(SERVED.iter().map(|s| s.to_string()))
+        .chain([ART_FILE.to_string()])
         .collect();
     out.sort();
     out
@@ -735,4 +736,519 @@ fn each_rule_catches_its_violation() {
     }
     let clean = ".a { color: var(--foreground); border: 1px solid var(--border); font-size: var(--text-sm); border-radius: var(--radius-md); padding: 0.5rem; }\n/* #fff 13px */\n<b>&#39;</b>";
     assert_eq!(violations("sample.css", clean), Vec::<String>::new());
+}
+
+/// The served pages' icons come from the window's set: every icon in it
+/// draws every one of its shapes, whichever way the file spaces them.
+#[test]
+fn every_vendored_icon_draws_all_its_shapes_in_a_served_page() {
+    let file = read("apps/desktop/ui/vendor/lucide/icons-0.556.0.js");
+    let mut n = 0;
+    for line in file.lines().filter(|l| l.starts_with("  \"")) {
+        let name = line.split('"').nth(1).unwrap();
+        let shapes = line.matches("\", {").count();
+        let svg = cos::design::icon(name);
+        assert_eq!(svg.matches("/>").count(), shapes, "{name}: {svg}");
+        assert!(svg.contains(r#"aria-hidden="true""#));
+        n += 1;
+    }
+    assert!(n >= 80, "{n} icons");
+    assert_eq!(cos::design::icon("no-such-icon"), "");
+}
+
+/// The Flows page draws data a task store holds, so it builds every node
+/// with `textContent` and attributes, never by parsing markup.
+#[test]
+fn flows_page_never_writes_html_from_data() {
+    let page = strip_comments(&read("src/flows.html"));
+    for sink in [
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "createContextualFragment",
+        "DOMParser",
+    ] {
+        assert!(!page.contains(sink), "src/flows.html uses {sink}");
+    }
+}
+
+/// A `title` on an iframe is a native tooltip that floats over the page it
+/// frames wherever the pointer rests; the name goes in `aria-label`.
+#[test]
+fn no_iframe_carries_a_hover_tooltip() {
+    let html = read("apps/desktop/ui/index.html");
+    let mut frames = 0;
+    for tag in html.split("<iframe").skip(1) {
+        let tag = &tag[..tag.find('>').unwrap()];
+        frames += 1;
+        assert!(!tag.contains(" title="), "<iframe{tag}>");
+        assert!(tag.contains("aria-label="), "<iframe{tag}> has no name");
+    }
+    assert!(frames >= 4, "found {frames} iframes");
+    for file in WINDOW_JS {
+        let js = read(&format!("{UI}/{file}"));
+        for line in js.lines().filter(|l| l.contains("\"iframe\"")) {
+            assert!(!line.contains("title"), "{file}: {line}");
+        }
+    }
+}
+
+// ---- the Flows Map's GPU engine
+
+const VGPU_FILE: &str = "apps/desktop/ui/vendor/vgpu/vgpu-0.6.0.iife.js";
+/// The pages that take vgpu, each with an SVG engine beside it.
+const GPU_PAGES: &[&str] = &["src/flows.html"];
+const VGPU_CEILING: usize = 220_000;
+
+/// The marked WGSL literals in `page`: (the name it is bound to, its text).
+fn wgsl_literals(page: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (at, m) in page.match_indices("/*wgsl*/`") {
+        let body_start = at + m.len();
+        let end = page[body_start..]
+            .find('`')
+            .map_or(page.len(), |e| body_start + e);
+        let name = page[..at]
+            .trim_end()
+            .strip_suffix('=')
+            .map(|h| {
+                h.trim_end()
+                    .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or("")
+                    .to_owned()
+            })
+            .unwrap_or_default();
+        out.push((name, page[body_start..end].to_owned()));
+    }
+    out
+}
+
+/// A WGSL numeric literal: `1`, `-1.0`, `.9`, `1e3`, `0.5f`, `2u`.
+fn numeric(arg: &str) -> Option<f64> {
+    let a = arg.trim().trim_end_matches(['f', 'h', 'u', 'i']);
+    if !a.chars().any(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    a.parse::<f64>().ok()
+}
+
+/// The top-level arguments of the call whose `(` is at `open`, and the
+/// offset just past its `)`.
+fn call_args(text: &str, open: usize) -> (Vec<String>, usize) {
+    let b = text.as_bytes();
+    let (mut depth, mut start, mut args) = (0usize, open + 1, Vec::new());
+    for (i, c) in b.iter().enumerate().skip(open) {
+        match c {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let last = text[start..i].trim();
+                    if !last.is_empty() {
+                        args.push(last.to_owned());
+                    }
+                    return (args, i + 1);
+                }
+            }
+            b',' if depth == 1 => {
+                args.push(text[start..i].trim().to_owned());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    (args, b.len())
+}
+
+/// A vector constructor in any spelling at the start of `s`: its width and
+/// the offset of its `(`.
+fn vector_ctor(s: &str) -> Option<(usize, usize)> {
+    let rest = s.strip_prefix("vec")?;
+    let width = rest.bytes().next()?;
+    if !(b'2'..=b'4').contains(&width) {
+        return None;
+    }
+    let tail = &rest[1..];
+    for suffix in ["<f32>", "<f16>", "<i32>", "<u32>", "f", "h", "i", "u", ""] {
+        if let Some(after) = tail.strip_prefix(suffix) {
+            let ws = after.len() - after.trim_start().len();
+            if after.trim_start().starts_with('(') {
+                return Some(((width - b'0') as usize, 4 + suffix.len() + ws));
+            }
+        }
+    }
+    None
+}
+
+/// The components of `arg` when it is a numeric literal or a vector built
+/// only from them; `None` for anything that reads a value.
+fn literal_components(arg: &str) -> Option<Vec<f64>> {
+    let a = arg.trim();
+    if let Some(n) = numeric(a) {
+        return Some(vec![n]);
+    }
+    let (width, open) = vector_ctor(a)?;
+    let (args, end) = call_args(a, open);
+    if end != a.len() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for x in &args {
+        out.extend(literal_components(x)?);
+    }
+    if out.len() == 1 {
+        out = vec![out[0]; width];
+    }
+    Some(out)
+}
+
+/// Each way `page` could carry a colour outside the uniform struct.
+fn wgsl_violations(page: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lits = wgsl_literals(page);
+    for (name, body) in &lits {
+        if body.contains("${") {
+            out.push(format!("{name}: interpolation inside a /*wgsl*/ literal"));
+        }
+        let b = body.as_bytes();
+        for (at, _) in body.match_indices("vec") {
+            if at > 0 && word(b[at - 1]) {
+                continue;
+            }
+            let Some((width, open)) = vector_ctor(&body[at..]) else {
+                continue;
+            };
+            if width < 3 {
+                continue;
+            }
+            let (args, end) = call_args(body, at + open);
+            let parts: Option<Vec<f64>> = args.iter().try_fold(Vec::new(), |mut acc, a| {
+                acc.extend(literal_components(a)?);
+                Some(acc)
+            });
+            if parts.is_some_and(|p| p.iter().any(|v| *v != 0.0)) {
+                out.push(format!("{name}: literal colour vector {}", &body[at..end]));
+            }
+        }
+    }
+    let bound: BTreeSet<&str> = lits.iter().map(|(n, _)| n.as_str()).collect();
+    for (at, m) in page.match_indices("prepareShader(") {
+        let (args, _) = call_args(page, at + m.len() - 1);
+        let first = args.first().map(String::as_str).unwrap_or("");
+        let bare = first.starts_with("WGSL_")
+            && first
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_');
+        if !bare || !bound.contains(first) {
+            out.push(format!(
+                "prepareShader({first}) does not name a /*wgsl*/ literal"
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn wgsl_takes_colours_only_from_uniforms() {
+    for file in GPU_PAGES {
+        let page = read(file);
+        assert!(
+            !wgsl_literals(&page).is_empty(),
+            "no /*wgsl*/ literal found in {file}"
+        );
+        let found = wgsl_violations(&page);
+        assert!(
+            found.is_empty(),
+            "{file}: shader colours come from the uniform struct (design tokens):\n{}",
+            found.join("\n")
+        );
+    }
+
+    let wrap = |src: &str| format!("const WGSL_T = /*wgsl*/`{src}`;\nprepareShader(WGSL_T);");
+    for spelling in [
+        "vec3",
+        "vec3f",
+        "vec3h",
+        "vec3<f32>",
+        "vec3<f16>",
+        "vec4",
+        "vec4f",
+        "vec4h",
+        "vec4<f32>",
+        "vec4<f16>",
+    ] {
+        let args = if spelling.starts_with("vec3") {
+            "(1.0, 0.0, 0.0)"
+        } else {
+            "(1.0, 0.0, 0.0, 1.0)"
+        };
+        let sample = wrap(&format!(
+            "@fragment fn fs_main() -> @location(0) vec4f {{ return {spelling}{args}; }}"
+        ));
+        assert!(!wgsl_violations(&sample).is_empty(), "{spelling} missed");
+    }
+    for bad in [
+        "struct O { @builtin(position) p: vec4f, @location(0) c: vec4f };\n@vertex fn vs_main() -> O { var o: O; o.c = vec4f(1.0, 0.0, 0.0, 1.0); return o; }\n@fragment fn fs_main(i: O) -> @location(0) vec4f { return i.c; }",
+        "@fragment fn fs_main() -> @location(0) vec4f { return vec4f(vec2f(.9, .3), vec2f(.1, 1.0)); }",
+        "@fragment fn fs_main() -> @location(0) vec4f { return ${COLOUR}; }",
+    ] {
+        assert!(!wgsl_violations(&wrap(bad)).is_empty(), "missed {bad}");
+    }
+    for good in [
+        "var a = vec4f(0.0);",
+        "let c = vec2f(-1.0, 1.0);",
+        "let q = vec4f(p.xy, 0.0, 1.0);",
+    ] {
+        assert_eq!(wgsl_violations(&wrap(good)), Vec::<String>::new(), "{good}");
+    }
+    for call in [
+        "const WGSL_T = /*wgsl*/`let a = 1.0;`;\nprepareShader(\"@fragment fn f() {}\");",
+        "const WGSL_T = /*wgsl*/`let a = 1.0;`;\nprepareShader(A + B);",
+        "const WGSL_T = /*wgsl*/`let a = 1.0;`;\nprepareShader(WGSL_OTHER);",
+    ] {
+        assert!(!wgsl_violations(call).is_empty(), "missed {call}");
+    }
+}
+
+#[test]
+fn every_gpu_page_keeps_its_svg_fallback() {
+    let with_slot: Vec<&str> = SERVED
+        .iter()
+        .copied()
+        .filter(|rel| read(rel).contains("__COS_VGPU__"))
+        .collect();
+    assert_eq!(
+        with_slot, GPU_PAGES,
+        "vgpu is inlined into the Flows page only"
+    );
+    for file in GPU_PAGES {
+        let page = read(file);
+        for f in ["svgEngine(", "gpuEngine(", "pickEngine("] {
+            assert!(page.contains(f), "{file} defines no {f}");
+        }
+    }
+}
+
+#[test]
+fn the_vendored_vgpu_is_pinned_and_within_its_ceiling() {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(Path::new(ROOT).join(VGPU_FILE)).unwrap();
+    let readme = read("apps/desktop/ui/vendor/README.md");
+    let row = readme
+        .lines()
+        .find(|l| l.starts_with("| `vgpu/vgpu-0.6.0.iife.js`"))
+        .expect("the vendor README has a row for the vgpu file");
+    let pinned = row
+        .rsplit('`')
+        .nth(1)
+        .expect("the row ends with the sha256 in backticks");
+    let actual: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(actual, pinned, "{VGPU_FILE} differs from its README row");
+    assert!(
+        bytes.len() <= VGPU_CEILING,
+        "{VGPU_FILE} is {} B, over the {VGPU_CEILING} B ceiling",
+        bytes.len()
+    );
+    let text = String::from_utf8_lossy(&bytes);
+    for api in [
+        "eval(",
+        "new Function",
+        "Worker(",
+        "createObjectURL",
+        "fetch(",
+        "XMLHttpRequest",
+        "WebSocket",
+        "EventSource",
+        "sendBeacon",
+        "importScripts",
+        "import(",
+        "WebAssembly",
+    ] {
+        assert!(!text.contains(api), "{VGPU_FILE} contains {api}");
+    }
+}
+
+// ---- states: every loading, empty, slow and error state in the window is
+// built by `stateView` in states.js, with an icon always and the state's art
+// at region level.
+
+const ART_FILE: &str = "apps/desktop/ui/art/art.js";
+const ICON_FILE: &str = "apps/desktop/ui/vendor/lucide/icons-0.556.0.js";
+/// Each picture's share of art/art.js: the README's "under ~6 KB each".
+const ART_PER_KIND: usize = 6 * 1024;
+/// The window's scripts, each of which may show a state.
+const WINDOW_JS: &[&str] = &["states.js", "command.js", "sidebar.js", "dash.js", "app.js"];
+
+/// From `head` to the first brace closing a top-level function or a method.
+fn body<'a>(js: &'a str, head: &str) -> &'a str {
+    let at = js.find(head).unwrap_or_else(|| panic!("{head} not found"));
+    let rest = &js[at..];
+    let end = ["\n}\n", "\n};\n", "\n  },\n"]
+        .iter()
+        .filter_map(|e| rest.find(e))
+        .min()
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+#[test]
+fn every_state_renders_through_state_view_with_an_icon_and_art() {
+    let js: String = WINDOW_JS
+        .iter()
+        .map(|f| strip_comments(&read(&format!("{UI}/{f}"))))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let html = read("apps/desktop/ui/index.html");
+    let art = read(ART_FILE);
+    let icons = read(ICON_FILE);
+
+    // Every kind has an icon in the vendored set and a picture in ART.
+    let state = body(&js, "const STATE = {");
+    let kinds: Vec<(&str, &str)> = state
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let (k, v) = l.trim().split_once(": [")?;
+            Some((k, v.split('"').nth(1)?))
+        })
+        .collect();
+    assert!(kinds.len() >= 9, "{kinds:?}");
+    for (kind, glyph) in &kinds {
+        assert!(
+            icons.contains(&format!("\"{glyph}\":")),
+            "{kind}: no icon `{glyph}` in {ICON_FILE}"
+        );
+        assert!(
+            art.contains(&format!("{kind}: svg(\"{kind}\""))
+                || art.contains(&format!("{kind}: svg(\n      \"{kind}\"")),
+            "{kind}: no picture in {ART_FILE}"
+        );
+    }
+    assert!(
+        art.len() <= kinds.len() * ART_PER_KIND,
+        "art.js is {} B for {} pictures",
+        art.len(),
+        kinds.len()
+    );
+    assert!(
+        art.contains(r#"aria-hidden="true""#),
+        "the art is decorative"
+    );
+
+    // stateView draws the icon on both paths and the art on the region path.
+    let view = body(&js, "function stateView(");
+    assert_eq!(
+        view.matches("stateIcon(kind)").count(),
+        2,
+        "an icon in a line and in a region"
+    );
+    assert!(view.contains("stateArt(kind)"), "a region gets its picture");
+    assert!(view.contains(r#"setAttribute("aria-live", "polite")"#));
+
+    // Nothing else builds a state container, and no ad-hoc ones remain. A
+    // business switch is the one reload: it drops every view of the old one.
+    let outside = js
+        .replace(view, "")
+        .replace(body(&js, "async function switchTo("), "");
+    for made in [
+        r#"className: "state-line""#,
+        "className: `state",
+        r#"className: "state""#,
+        r#"className: "empty"#,
+        "emptyNote(",
+        "location.reload",
+    ] {
+        assert!(!outside.contains(made), "`{made}` outside stateView");
+    }
+    assert!(
+        !html.contains(r#"class="empty""#),
+        "index.html has an ad-hoc empty state"
+    );
+
+    // Every view that fetches says so through stateView, or through
+    // frameLoad, which puts one over its frame.
+    for loader in [
+        "async function refreshAgents(",
+        "function renderStaff(",
+        "function renderRuns(",
+        "function renderScores(",
+        "  async refresh() {",
+        "function frameLoad(",
+    ] {
+        assert!(
+            body(&js, loader).contains("stateView("),
+            "{loader} renders a state without stateView"
+        );
+    }
+    for frame in ["function reloadReport(", "  load(fresh, quiet = false) {"] {
+        assert!(
+            body(&js, frame).contains("frameLoad("),
+            "{frame} loads a frame with no state over it"
+        );
+    }
+    assert!(js.contains(r#"frameLoad("docs-frame""#));
+    for file in ["command.js", "sidebar.js", "dash.js"] {
+        assert!(
+            read(&format!("{UI}/{file}")).contains("stateView(\"unreachable\""),
+            "{file} reads the backend with no state for a failed read"
+        );
+    }
+
+    // An icon-only button always has a name.
+    assert!(
+        body(&js, "function iconButton(")
+            .contains(r#"if (iconOnly) b.setAttribute("aria-label", label);"#)
+    );
+    for tag in html.split("<button").skip(1) {
+        let tag = &tag[..tag.find("</button>").unwrap()];
+        let mut text = tag[tag.find('>').unwrap() + 1..].to_owned();
+        while let (Some(a), Some(b)) = (text.find('<'), text.find('>')) {
+            if b < a {
+                break;
+            }
+            text.replace_range(a..=b, "");
+        }
+        assert!(
+            !tag.contains("data-icon") || !text.trim().is_empty() || tag.contains("aria-label="),
+            "a button with only an icon and no aria-label: <button{tag}"
+        );
+    }
+}
+
+/// Motion in the window (state art, spinners) runs only for someone who has
+/// not asked for less: every animation sits inside
+/// `prefers-reduced-motion: no-preference`.
+#[test]
+fn every_animation_respects_reduced_motion() {
+    let css = strip_comments(&read("apps/desktop/ui/style.css"));
+    let b = css.as_bytes();
+    let (mut open, mut gated, mut bad) = (Vec::new(), 0, Vec::new());
+    for i in 0..b.len() {
+        match b[i] {
+            b'{' => {
+                let head = css[..i].rsplit(['}', ';', '{']).next().unwrap_or("");
+                let gate = head.contains("prefers-reduced-motion: no-preference");
+                gated += usize::from(gate);
+                open.push(gate);
+            }
+            b'}' if open.pop() == Some(true) => gated -= 1,
+            _ => {}
+        }
+        if css[i..].starts_with("animation:") && (i == 0 || !(word(b[i - 1]) || b[i - 1] == b'-')) {
+            let v = css[i + 10..].split([';', '}']).next().unwrap_or("").trim();
+            if v != "none" && gated == 0 {
+                bad.push(format!("line {}: animation: {v}", line_of(&css, i)));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "animations outside the reduced-motion gate:\n{}",
+        bad.join("\n")
+    );
 }
