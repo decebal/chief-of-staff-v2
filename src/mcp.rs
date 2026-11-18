@@ -81,10 +81,6 @@ pub struct SpinOffArgs {
     /// The hire is refused when the role cannot do the work from its sandbox.
     #[serde(default)]
     role: Option<String>,
-    /// Run the hire in a herdr terminal — a live space you watch in herdr —
-    /// instead of under a cos supervisor. The harness still comes from `harness`.
-    #[serde(default)]
-    herdr: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -236,9 +232,10 @@ impl Cos {
     }
 
     /// Start a coding agent (Claude Code or Codex) on one item's agent prompt,
-    /// in a detached worktree of the repo it names. Returns at once; the agent
-    /// runs in the background, sandboxed, and stops before anything
-    /// outward-facing. Costs money (capped per agent). Local only.
+    /// in a detached worktree of the repo it names, as a live herdr space you
+    /// watch with `hc attach cos-<id>`. Returns at once; the agent runs in the
+    /// background and cos judges the worktree when the space ends. Costs money
+    /// (capped per agent). Local only.
     #[tool(annotations(read_only_hint = false, open_world_hint = true))]
     async fn spin_off(&self, Parameters(args): Parameters<SpinOffArgs>) -> CallToolResult {
         let home = self.cfg.home.clone();
@@ -246,12 +243,11 @@ impl Cos {
         let projects = self.cfg.projects.clone();
         let budget = self.cfg.budget.unwrap_or(5.0);
         let explicit_budget = self.cfg.budget.is_some();
-        let run = move || -> Result<(agents::Spec, Option<String>)> {
+        let run = move || -> Result<(agents::Spec, String)> {
             let task = agents::tasks(&home, args.from)?
                 .into_iter()
                 .find(|t| t.n == args.item)
                 .ok_or_else(|| anyhow::anyhow!("item {} has no agent prompt", args.item))?;
-            let cos = std::env::current_exe()?;
             let plan = agents::hire::plan(
                 &agents::hire::Where {
                     home: &home,
@@ -287,22 +283,11 @@ impl Cos {
                 business: None,
                 layer: crate::business::Layer::Flags,
             };
-            if args.herdr {
-                let (spec, addr) = agents::spawn_in_herdr(&triple, req)?;
-                Ok((spec, Some(addr)))
-            } else {
-                Ok((agents::spawn(&triple, req, &cos)?, None))
-            }
+            agents::spawn_in_herdr(&triple, req)
         };
         match tokio::task::spawn_blocking(run).await {
-            Ok(Ok((spec, Some(addr)))) => CallToolResult::success(vec![ContentBlock::text(format!(
+            Ok(Ok((spec, addr))) => CallToolResult::success(vec![ContentBlock::text(format!(
                 "started {} in {} as a herdr space ({addr}) — watch it with `hc attach cos-{}`",
-                spec.id,
-                spec.workdir.display(),
-                spec.id
-            ))]),
-            Ok(Ok((spec, None))) => CallToolResult::success(vec![ContentBlock::text(format!(
-                "started {} in {} — follow with the agents tool or `cos agents tail -f {}`",
                 spec.id,
                 spec.workdir.display(),
                 spec.id
