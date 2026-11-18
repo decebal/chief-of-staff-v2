@@ -43,7 +43,10 @@ pub fn open(spec: &Spec) -> Result<String> {
         .output()
         .context("run hc — is herdr installed and its core running?")?;
     if !out.status.success() {
-        bail!("hc run failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "hc run failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }

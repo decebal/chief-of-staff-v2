@@ -4,13 +4,20 @@
   const dialog = document.getElementById("switch-dialog");
   const filter = document.getElementById("switch-filter");
   const list = document.getElementById("switch-list");
-  const msg = document.getElementById("switch-msg");
+  const msg = document.getElementById("switch-state");
 
   let rows = [];
   let shown = [];
   let at = 0;
   let pick = null;
   let returnTo = null;
+  let read = false;
+
+  // One state under the list: reading, nothing found, or why a pick failed.
+  const say = (view) => {
+    msg.replaceChildren(...(view ? [view] : []));
+    msg.hidden = !view;
+  };
 
   const matches = (q) => {
     const byName = rows.filter((r) => r.name.toLowerCase().includes(q));
@@ -53,6 +60,16 @@
     at = Math.min(at, Math.max(shown.length - 1, 0));
     list.replaceChildren(...shown.map(row));
     list.setAttribute("aria-activedescendant", shown.length ? `switch-row-${at}` : "");
+    if (!read) return;
+    say(
+      shown.length
+        ? null
+        : stateView("empty", {
+            title: rows.length ? "No business matches that name or folder." : "No business is registered yet.",
+            detail: rows.length ? "" : "cos business add <name> <home> <workspace> <projects> registers one.",
+            line: true,
+          }),
+    );
   }
 
   function highlight(to) {
@@ -66,13 +83,12 @@
   async function choose(i) {
     const r = shown[i];
     if (!r) return;
-    msg.hidden = true;
+    say(null);
     try {
       await pick(r.name);
       dialog.close();
     } catch (e) {
-      msg.textContent = String(e);
-      msg.hidden = false;
+      say(stateView("unreachable", { title: e instanceof Error ? e.message : String(e), line: true }));
     }
   }
 
@@ -96,13 +112,21 @@
   });
 
   async function loadRows() {
+    say(stateView("reading", { title: "Reading the businesses…", line: true }));
     try {
       rows = await invoke("businesses");
+      read = true;
       at = 0;
       render();
     } catch (e) {
-      msg.textContent = `Could not read the businesses: ${e}`;
-      msg.hidden = false;
+      say(
+        stateView("unreachable", {
+          title: "Could not read the businesses",
+          detail: String(e),
+          line: true,
+          action: { icon: "rotate-ccw", label: "Retry", onClick: loadRows },
+        }),
+      );
     }
   }
 
@@ -113,7 +137,8 @@
     returnTo = document.activeElement;
     filter.value = "";
     at = 0;
-    msg.hidden = true;
+    read = false;
+    say(null);
     list.replaceChildren();
     dialog.showModal();
     filter.focus();

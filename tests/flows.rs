@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use cos::flows::{self, Markers, Step, Task};
-use cos::ritual::{self, ApproveArgs, Check};
+use cos::ritual::{self, ApproveArgs, Check, ReviewAt};
 use cos::state;
 use serde_json::{Value, json};
 
@@ -456,7 +456,7 @@ fn approve_refuses_anything_but_a_clean_review_of_this_exact_design() {
         epic: "e",
         design,
         by: "Ann",
-        review,
+        review: review.map(ReviewAt::File),
         without_review: without,
         yes: false,
     };
@@ -494,7 +494,7 @@ fn approve_records_the_digest_then_approves() {
         epic: "e",
         design,
         by: "Ann",
-        review: Some(clean),
+        review: Some(ReviewAt::File(clean)),
         without_review: false,
         yes: false,
     };
@@ -535,7 +535,7 @@ fn approve_without_review_says_so_on_the_epic() {
 #[test]
 fn approve_with_yes_records_without_asking() {
     let design = "docs/plans/x-design.md";
-    let (_d, r) = ritual_repo("approve-yes", "v1", task("e", "epic", "open", None));
+    let (_d, r) = ritual_repo("approve-yes-lib", "v1", task("e", "epic", "open", None));
     let digest = flows::sha256_file(&r.join(design)).unwrap();
     let args = ApproveArgs {
         epic: "e",
@@ -604,6 +604,7 @@ fn the_cli_refuses_to_approve_without_a_terminal() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("needs a terminal"), "{err}");
     assert!(err.contains("--yes"), "{err}");
+    assert!(err.contains("Flows tab"), "{err}");
     assert_eq!(calls(&r), "", "an agent's piped stdin approves nothing");
 }
 
@@ -666,13 +667,177 @@ fn flows_read_nothing_unless_the_profile_approves_tasks() {
 }
 
 #[test]
-fn the_page_draws_each_flow_and_its_graph_escaped() {
+fn criteria_come_from_the_acceptance_heading_only() {
+    let long = "y".repeat(400);
+    let mut desc = format!(
+        "As a user.\n- [ ] not a criterion, before the heading\n\n## Acceptance criteria\n- [ ] first\n- [x] second done\n  - [X] indented, done\nplain text\n- [ ] {long}\n"
+    );
+    for i in 0..25 {
+        desc.push_str(&format!("- [ ] extra {i}\n"));
+    }
+    desc.push_str("\n## Notes\n- [ ] after the next heading\n");
+    let (got, more) = flows::criteria(&desc);
+    assert_eq!(got.len(), flows::CRITERIA_CAP);
+    assert_eq!(more, 4 + 25 - flows::CRITERIA_CAP);
+    assert_eq!((got[0].done, got[0].text.as_str()), (false, "first"));
+    assert_eq!((got[1].done, got[1].text.as_str()), (true, "second done"));
+    assert!(got[2].done, "an indented [X] counts");
+    assert_eq!(got[3].text.chars().count(), flows::CRITERION_CHARS);
+    assert!(got[3].text.ends_with('…'));
+    assert!(got.iter().all(|c| !c.text.contains("heading")));
+    assert_eq!(flows::criteria("no heading\n- [ ] x\n"), (vec![], 0));
+}
+
+#[test]
+fn older_cn_output_still_parses() {
+    let list = json!([
+        task("e", "epic", "open", None),
+        with(
+            with(
+                task("a", "task", "in-progress", Some("e")),
+                "priority",
+                json!(2)
+            ),
+            "claimed_by",
+            json!({ "odd": true })
+        ),
+        with(
+            with(
+                task("b", "task", "done", Some("e")),
+                "done_at",
+                json!("2026-11-01T10:00:00Z")
+            ),
+            "created_at",
+            json!("2026-10-01T10:00:00Z")
+        ),
+    ]);
+    let flows = flows::flows_in("r", None, &tasks(&list));
+    let a = flows[0].beads.iter().find(|b| b.id == "a").unwrap();
+    assert_eq!(a.priority.as_deref(), Some("2"), "a number becomes text");
+    assert_eq!(a.owner, None, "an object is dropped, not a parse failure");
+    assert_eq!(flows[0].touched.as_deref(), Some("2026-11-01T10:00:00Z"));
+    let bare: Vec<Task> =
+        serde_json::from_value(json!([{ "id": "x", "status": "open", "task_type": "epic" }]))
+            .unwrap();
+    assert_eq!(bare[0].claimed_by, None);
+}
+
+#[test]
+fn needs_you_is_gate_drift_or_findings() {
     let list = json!([
         with(
-            task("e", "epic", "open", None),
-            "title",
-            json!("<script>x</script> export")
+            task("gate", "epic", "open", None),
+            "description",
+            json!("ritual-design: d.md")
         ),
+        with(
+            with(task("rev", "epic", "open", None), "approved", json!(true)),
+            "description",
+            json!("ritual-design: d.md\nritual-review: r.md findings")
+        ),
+        task("rb", "task", "done", Some("rev")),
+        with(
+            with(task("ok", "epic", "open", None), "approved", json!(true)),
+            "description",
+            json!("ritual-design: d.md\nritual-review: r.md clean")
+        ),
+        task("ob", "task", "done", Some("ok")),
+        task("quiet", "epic", "open", None),
+        task("q1", "task", "open", Some("quiet")),
+    ]);
+    let flows = flows::flows_in("r", None, &tasks(&list));
+    let need = |id: &str| flows.iter().find(|f| f.id == id).unwrap().needs_you;
+    assert_eq!(need("gate"), Some(flows::NeedsYou::Gate));
+    assert_eq!(need("rev"), Some(flows::NeedsYou::Findings));
+    assert_eq!(need("ok"), None, "a clean review is Ship");
+    assert_eq!(need("quiet"), None);
+}
+
+#[test]
+fn a_bead_carries_its_handoff_and_a_hire_waits_for_its_blockers() {
+    let list = json!([
+        task("e", "epic", "open", None),
+        task("b1", "task", "done", Some("e")),
+        with(
+            with(
+                task("b2", "task", "open", Some("e")),
+                "blocked_by",
+                json!(["b1"])
+            ),
+            "description",
+            json!(
+                "## Acceptance criteria\n- [ ] the gate lists every term\n- [x] a fixture fails it\n"
+            ),
+        ),
+        with(
+            task("b3", "task", "open", Some("e")),
+            "blocked_by",
+            json!(["b2"])
+        ),
+    ]);
+    let ts = tasks(&list);
+    let flows = flows::flows_in("vm", None, &ts);
+    let b2 = flows[0].beads.iter().find(|b| b.id == "b2").unwrap();
+    assert!(b2.open_blockers.is_empty(), "b1 is done");
+    let h = &b2.handoff;
+    for part in [
+        "in the vm repo",
+        "Flow: e title e",
+        "Bead: b2 title b2",
+        "- [ ] the gate lists every term",
+        "- [x] a fixture fails it",
+        "Waits on:\n- b1 title b1\n",
+        "Unblocks:\n- b3 title b3",
+        "cn show b2 --toon",
+    ] {
+        assert!(h.contains(part), "{part:?} not in\n{h}");
+    }
+    let b3 = flows[0].beads.iter().find(|b| b.id == "b3").unwrap();
+    assert_eq!(b3.open_blockers, ["b2"]);
+    assert!(b3.handoff.contains("b2 title b2 (not done yet)"));
+    assert!(b3.handoff.contains("no acceptance criteria on this bead"));
+
+    assert_eq!(flows::bead_to_hire("vm", &ts, "e", "b2").unwrap().id, "b2");
+    let refused = |bead: &str| {
+        format!(
+            "{:#}",
+            flows::bead_to_hire("vm", &ts, "e", bead).unwrap_err()
+        )
+    };
+    assert!(refused("b3").contains("waits on b2"), "{}", refused("b3"));
+    assert!(refused("b1").contains("already done"), "{}", refused("b1"));
+    assert!(
+        refused("zz").contains("not a bead of e"),
+        "{}",
+        refused("zz")
+    );
+}
+
+#[test]
+fn a_drifted_design_needs_you() {
+    let d = dir("drift-needs");
+    let r = d.0.join("repo");
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::write(r.join("d.md"), "changed").unwrap();
+    let list = json!([with(
+        with(task("e", "epic", "open", None), "approved", json!(true)),
+        "description",
+        json!("ritual-design: d.md\nritual-approved: d.md sha256:0000 by A")
+    )]);
+    let deadline = cos::proc::Deadline::after(Duration::from_secs(20));
+    let check = flows::DriftCheck {
+        dir: &r,
+        until: &deadline,
+    };
+    let flows = flows::flows_in("r", Some(&check), &tasks(&list));
+    assert_eq!(flows[0].step, Step::Drift);
+    assert_eq!(flows[0].needs_you, Some(flows::NeedsYou::Drift));
+}
+
+#[test]
+fn layers_are_carried_on_each_bead() {
+    let list = json!([
+        task("e", "epic", "open", None),
         task("a", "task", "done", Some("e")),
         with(
             task("b", "task", "open", Some("e")),
@@ -682,7 +847,41 @@ fn the_page_draws_each_flow_and_its_graph_escaped() {
         with(
             task("c", "task", "open", Some("e")),
             "blocked_by",
-            json!(["b"])
+            json!(["b", "a", "elsewhere"])
+        ),
+        with(
+            task("x", "task", "open", Some("e")),
+            "blocked_by",
+            json!(["y"])
+        ),
+        with(
+            task("y", "task", "open", Some("e")),
+            "blocked_by",
+            json!(["x"])
+        ),
+    ]);
+    let flows = flows::flows_in("r", None, &tasks(&list));
+    let layer = |id: &str| flows[0].beads.iter().find(|b| b.id == id).unwrap().layer;
+    assert_eq!((layer("a"), layer("b"), layer("c")), (0, 1, 2));
+    assert!(
+        layer("x") <= 2 && layer("y") <= 2 && layer("x") != layer("y"),
+        "a cycle is broken where it is found, so both still get a column"
+    );
+}
+
+#[test]
+fn the_page_inlines_the_scan_escaped() {
+    let list = json!([
+        with(
+            task("e", "epic", "open", None),
+            "title",
+            json!("</script><!-- /*__COS_FLOWS__*/ export")
+        ),
+        task("a", "task", "done", Some("e")),
+        with(
+            task("b", "task", "open", Some("e")),
+            "blocked_by",
+            json!(["a"])
         ),
     ]);
     let scan = flows::Scan {
@@ -690,36 +889,144 @@ fn the_page_draws_each_flow_and_its_graph_escaped() {
         gaps: vec!["web-app: cn list failed".into()],
         repos: 2,
     };
-    let page = flows::html(&scan);
-    assert!(page.contains("1 flows in 2 repos"));
-    assert!(page.contains("&lt;script&gt;x&lt;/script&gt; export"));
-    assert!(!page.contains("<script>x"), "titles are escaped");
-    assert!(page.contains("<span class=\"step build\">build</span>"));
-    assert!(page.contains("class=\"node open ready\""), "b is ready");
-    assert_eq!(page.matches("class=\"edge\"").count(), 2, "a→b and b→c");
+    let page = flows::page_html(&scan, true).unwrap();
+    assert_eq!(page.matches("<script>").count(), 1, "one script");
+    assert_eq!(page.matches("</script>").count(), 1, "no title closes it");
+    assert!(page.contains("\\u003c/script>\\u003c!-- /*__COS_FLOWS__*/ export"));
     assert!(page.contains("web-app: cn list failed"));
     assert!(
         !page.contains("/*__COS_TOKENS__*/"),
         "the tokens are inlined"
     );
+    assert_eq!(
+        page.matches("/*! vgpu 0.6.0 (MIT), vendored for cos */")
+            .count(),
+        1
+    );
+    let template = include_str!("../src/flows.html");
+    for slot in [flows::FLOWS_SLOT, cos::design::VGPU_SLOT] {
+        let err = flows::page_html_from(&template.replace(slot, ""), &scan, true).unwrap_err();
+        assert!(err.to_string().contains("slot"), "{err}");
+    }
 }
 
 #[test]
-fn a_cycle_in_the_beads_still_draws() {
-    let list = json!([
+fn the_page_policy_runs_only_its_own_code_and_fetches_nothing() {
+    assert_eq!(
+        flows::PAGE_CSP,
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:"
+    );
+    assert_eq!(
+        flows::DASH_CSP,
+        format!("{}; frame-ancestors 'none'", flows::PAGE_CSP)
+    );
+}
+
+fn store(desc: &str) -> Vec<Task> {
+    tasks(&json!([with(
         task("e", "epic", "open", None),
-        with(
-            task("a", "task", "open", Some("e")),
-            "blocked_by",
-            json!(["b"])
+        "description",
+        json!(desc)
+    )]))
+}
+
+#[test]
+fn open_targets_come_only_from_the_epics_own_lines() {
+    use flows::Target;
+    let ok = store(
+        "ritual-design: docs/plans/d.md\nritual-review: https://github.com/o/r/pull/1 clean\nritual-pr: https://github.com/o/r/pull/2\nritual-report: ./docs/reports/r.html",
+    );
+    assert_eq!(
+        flows::open_target(&ok, "e", "design").unwrap(),
+        Target::Path("docs/plans/d.md".into())
+    );
+    assert_eq!(
+        flows::open_target(&ok, "e", "review").unwrap(),
+        Target::Url("https://github.com/o/r/pull/1".into())
+    );
+    assert_eq!(
+        flows::open_target(&ok, "e", "pr").unwrap(),
+        Target::Url("https://github.com/o/r/pull/2".into())
+    );
+    assert_eq!(
+        flows::open_target(&ok, "e", "report").unwrap(),
+        Target::Path("docs/reports/r.html".into())
+    );
+    let refused = |desc: &str, epic: &str, key: &str| {
+        flows::open_target(&store(desc), epic, key)
+            .unwrap_err()
+            .to_string()
+    };
+    for (desc, epic, key, why) in [
+        ("ritual-design: d.md", "e", "branch", "not a file"),
+        ("ritual-design: d.md", "other", "design", "not in this repo"),
+        ("ritual-brief: b.md", "e", "design", "names no design"),
+        (
+            "ritual-plan: /etc/passwd.md",
+            "e",
+            "plan",
+            "not a path inside",
         ),
-        with(
-            task("b", "task", "open", Some("e")),
-            "blocked_by",
-            json!(["a"])
+        (
+            "ritual-plan: docs/../../x.md",
+            "e",
+            "plan",
+            "leaves the repo",
         ),
-    ]);
-    let flows = flows::flows_in("r", None, &tasks(&list));
-    let svg = flows::graph_svg(&flows[0].beads);
-    assert_eq!(svg.matches("<g class=\"node").count(), 2);
+        (
+            "ritual-report: run.command",
+            "e",
+            "report",
+            "not a Markdown",
+        ),
+        ("ritual-report: Evil.app", "e", "report", "not a Markdown"),
+        (
+            "ritual-pr: https://evil.example/x",
+            "e",
+            "pr",
+            "only GitHub",
+        ),
+        (
+            "ritual-review: http://github.com/x findings",
+            "e",
+            "review",
+            "only GitHub",
+        ),
+        ("ritual-design: file:///x.md", "e", "design", "only GitHub"),
+        ("ritual-pr: docs/x.md", "e", "pr", "only GitHub"),
+    ] {
+        let err = refused(desc, epic, key);
+        assert!(err.contains(why), "{desc} / {key}: {err}");
+    }
+}
+
+#[test]
+fn contained_follows_links_and_keeps_to_the_root() {
+    let d = dir("contained");
+    let root = d.0.join("repo");
+    let worktree = d.0.join("repo-feature");
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(root.join("docs/d.md"), "# d").unwrap();
+    std::fs::write(worktree.join("w.md"), "# w").unwrap();
+    std::fs::write(root.join("run.command"), "echo hi").unwrap();
+    std::fs::write(d.0.join("outside.md"), "# o").unwrap();
+    std::os::unix::fs::symlink(root.join("run.command"), root.join("x.md")).unwrap();
+    std::os::unix::fs::symlink(d.0.join("outside.md"), root.join("out.md")).unwrap();
+
+    let got = flows::contained(&root, &root.join("docs/d.md")).unwrap();
+    assert_eq!(got, root.join("docs/d.md").canonicalize().unwrap());
+    assert!(
+        flows::contained(&worktree, &worktree.join("w.md")).is_ok(),
+        "a sibling worktree is its own root"
+    );
+    let err = flows::contained(&root, &root.join("x.md"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a Markdown"), "{err}");
+    let err = flows::contained(&root, &root.join("out.md"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("outside"), "{err}");
+    assert!(flows::contained(&root, &root.join("missing.md")).is_err());
 }

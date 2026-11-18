@@ -28,11 +28,16 @@ the desktop window links them directly.
 | `dompurify/LICENSE` | same tarball, `LICENSE` (Apache 2.0, used under that half of its MPL-2.0 OR Apache-2.0 dual licence) | 3.4.17 | 11,358 B | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
 | `lucide/icons-0.556.0.js` | the `__iconNode` arrays of 81 icons in `dist/esm/icons/<name>.js` from lucide-react 0.556.0, React keys dropped, as `window.LUCIDE[name] = [[tag, attributes], …]` | lucide-react 0.556.0 | 16,411 B | `b0e5fe3007043791a1a19f58867a0363155530c01e0221a4357fb61e007ed62d` |
 | `lucide/LICENSE` | same package, `LICENSE` (ISC, with the MIT notice for the Feather portions) | 0.556.0 | 2,004 B | `3c57143f22dac950efebf84002e360bba5458c7b90fe583b0667aaaef1a7256e` |
+| `vgpu/vgpu-0.6.0.iife.js` | built from `vendor-build/vgpu/entry.js` by esbuild 0.28.2 (below) over <https://registry.npmjs.org/vgpu/-/vgpu-0.6.0.tgz>, <https://registry.npmjs.org/@vgpu/core/-/core-0.6.0.tgz>, <https://registry.npmjs.org/@vgpu/wgsl/-/wgsl-0.6.0.tgz>; ceiling 220,000 B | vgpu 0.6.0 | 210,078 B | `91f741c74137c73784a5e829d3cacbf8dc2e367b81f21068e1af905c00ec34d3` |
+| `vgpu/LICENSE` | the `vgpu` tarball, `LICENSE` (MIT) | 0.6.0 | 1,069 B | `779258e329008bdb9330e6c1daad644ff867f164d11c4cc4404350479f3e92ee` |
 
-The pages `cos` serves (the Today report) draw Lucide icons as inline SVG from
-`cos::design::icon`, which reads `lucide/icons-0.556.0.js` at compile time: one
-stroke width (2), sized by `--icon-xs`, coloured by `currentColor`, and
-`aria-hidden` beside a label that says the same in words.
+Lucide is the window's one icon set. `states.js` draws an icon with
+`icon(name)` as inline SVG at one stroke width (2), sized by the `--icon-*`
+tokens and coloured by `currentColor`, so no colour is written for it; a
+decorative icon is `aria-hidden`, an icon-only button carries its label as
+`aria-label` (`tests/design.rs`). The pages `cos` serves (the Today report)
+take the same icons as inline SVG markup from `cos::design::icon`, which reads
+this file at compile time.
 
 Tarball sha256, as downloaded on 2026-10-28: `basecoat-css-1.1.0.tgz`
 `46eb1cedcd3845013d03a2f46341c63ec51f97185cef932eeb79a332a7c12b48`,
@@ -85,6 +90,41 @@ curl -sSfL -o /tmp/vendor-dl/dompurify.tgz https://registry.npmjs.org/dompurify/
 
 A new marked or DOMPurify version also changes the file names in
 `src/docs.rs` and the version banners `tests/docs.rs` counts.
+
+## vgpu
+
+vgpu is the Flows Map's GPU engine (WebGPU layout and drawing); the Map has
+an SVG engine beside it for a machine without a GPU. Unlike the files above,
+copied out of tarballs, it is built: esbuild bundles the exports
+`vendor-build/vgpu/entry.js` names into one IIFE that sets
+`globalThis.vgpu`, and tree-shakes out the rest of vgpu's dependencies (its
+MCP server, zod, the Node adapter). `src/flows.rs` inlines the file into the
+Flows page only, through `design::script_safe`. `tests/design.rs`
+(`the_vendored_vgpu_is_pinned_and_within_its_ceiling`) checks its sha256
+against the table above, the 220,000 B ceiling (the measured size plus under
+5%; raising it needs the reason in the table row) and the absence of every
+network and code-loading API.
+
+Inputs, on 2026-11-12: `vgpu-0.6.0.tgz`
+`eac147d66620a28e7f72cd20b6802854a2797410f8d11545b9d6ba0c2c9e59ce`,
+`core-0.6.0.tgz` `be9341a33b7cbb55c87ee9062c1d7ab442dde36cf0c083785462d79f92eb9910`,
+`wgsl-0.6.0.tgz` `304411c7f143658eeb41f7b9adde3cd3f97e45e6fefc4f3f8b5510a50576dd1e`;
+`vendor-build/vgpu/package-lock.json`
+`678893efd2658e9b3a4d3dd7eed8bbb22f9e6eeb8705ec30354e7dae88beacf5`; esbuild 0.28.2.
+
+Build (from the repo root; needs Node and the network for `npm ci`):
+
+```bash
+npm ci --prefix vendor-build/vgpu
+vendor-build/vgpu/node_modules/.bin/esbuild vendor-build/vgpu/entry.js --bundle --minify --format=iife --platform=browser --target=es2022 --legal-comments=none "--banner:js=/*! vgpu 0.6.0 (MIT), vendored for cos */" --outfile=apps/desktop/ui/vendor/vgpu/vgpu-0.6.0.iife.js
+shasum -a 256 apps/desktop/ui/vendor/vgpu/vgpu-0.6.0.iife.js
+```
+
+Upgrade: change the three versions in `vendor-build/vgpu/package.json`,
+`npm install --prefix vendor-build/vgpu`, rebuild with the new version in the
+banner and the file name, copy `LICENSE` from the `vgpu` tarball, update the
+rows and digests above, the file name in `src/design.rs`, and run
+`task test` and `task test-e2e`.
 
 Unpack, copy the files above, update this table (`shasum -a 256`), then run
 `task test` (the design gates in `tests/design.rs`) and look at every page

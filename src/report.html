@@ -87,7 +87,14 @@
 
   /* sticky sub-nav under the hero */
   .subnav { position: sticky; top: 0; z-index: 5; background: var(--background); border-bottom: 1px solid var(--border); }
-  .subnav-in { max-width: 73.75rem; margin: 0 auto; padding: 0 1.5rem; display: flex; overflow-x: auto; }
+  .subnav-in { max-width: 73.75rem; margin: 0 auto; padding: 0 1.5rem; display: flex; align-items: center; gap: 1rem; overflow-x: auto; }
+  .subnav-tabs { display: flex; }
+  /* Run brief: only when the desktop window has said it can run one */
+  .host-run { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; flex: none; }
+  .host-run[hidden] { display: none; }
+  .host-run .busy::before { content: "● "; color: var(--brand-accent-text); }
+  .host-run button { min-height: 2.75rem; }
+  .host-run button:disabled { cursor: default; color: var(--muted-foreground); }
   .tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none;
     padding: 0.75rem 1rem; font-size: var(--text-sm); color: var(--muted-foreground); flex: none; min-height: 2.75rem; }
   .tab:hover { background: none; color: var(--foreground); }
@@ -379,11 +386,17 @@
 </header>
 
 <nav class="subnav" aria-label="Report sections">
-  <div class="subnav-in" role="tablist">
-    <button class="tab" role="tab" id="tab-left" aria-controls="left" aria-selected="true">Brief</button>
-    <button class="tab" role="tab" id="tab-plan" aria-controls="plan" aria-selected="false">Plan</button>
-    <button class="tab" role="tab" id="tab-right" aria-controls="right" aria-selected="false">Steering</button>
-    <button class="tab" role="tab" id="tab-history" aria-controls="history" aria-selected="false">History</button>
+  <div class="subnav-in">
+    <div class="subnav-tabs" role="tablist">
+      <button class="tab" role="tab" id="tab-left" aria-controls="left" aria-selected="true">Brief</button>
+      <button class="tab" role="tab" id="tab-plan" aria-controls="plan" aria-selected="false">Plan</button>
+      <button class="tab" role="tab" id="tab-right" aria-controls="right" aria-selected="false">Steering</button>
+      <button class="tab" role="tab" id="tab-history" aria-controls="history" aria-selected="false">History</button>
+    </div>
+    <div id="host-run" class="host-run" hidden>
+      <span id="brief-state" class="small muted" role="status"></span>
+      <button id="brief-run" class="ghost" type="button" aria-label="Run brief now">Run brief</button>
+    </div>
   </div>
 </nav>
 
@@ -496,13 +509,31 @@ const DATA = "__COS_DATA__";
     scrollTimer = setTimeout(() => tellHost({ type: "cos-report-state", tab: current(), y: scrollY }), 200);
   }, { passive: true });
 
-  // ---- the host: the desktop app says it can hire; Hire then opens its dialog
+  // ---- the host: the desktop app says what it can do. Hire then opens its
+  // dialog; Run brief appears and asks the window to run one. A browser
+  // (`cos dash`, the MCP view) has no host, so neither changes there.
   let canHire = false;
+  const runBtn = $("brief-run"), runSay = $("brief-state");
   addEventListener("message", (e) => {
-    if (e.source !== window.parent || e.data?.type !== "cos-host") return;
-    canHire = Boolean(e.data.hire);
-    for (const b of document.querySelectorAll("[data-hire]")) b.textContent = canHire ? "Hire" : "Copy prompt";
+    if (e.source !== window.parent) return;
+    const d = e.data ?? {};
+    if (d.type === "cos-host") {
+      canHire = Boolean(d.hire);
+      for (const b of document.querySelectorAll("[data-hire]")) b.textContent = canHire ? "Hire" : "Copy prompt";
+      $("host-run").hidden = d.runBrief !== true;
+    } else if (d.type === "cos-brief-state") {
+      const running = d.state === "running";
+      runBtn.disabled = running;
+      runBtn.textContent = running ? "Running…" : "Run brief";
+      runSay.classList.toggle("busy", running);
+      runSay.textContent = typeof d.text === "string" ? d.text : "";
+      runSay.title = typeof d.title === "string" ? d.title : "";
+    }
   });
+  runBtn.onclick = () => {
+    runBtn.disabled = true;
+    tellHost({ type: "cos-run-brief" });
+  };
   // Only the desktop's live `/` sets hostBrief: an archived or browser page names no brief to mark seen.
   const hostRef = DATA.hostBrief === true && DATA.briefRef;
   tellHost(hostRef ? { type: "cos-report-ready", brief: hostRef.file, mtime: hostRef.mtime } : { type: "cos-report-ready" });

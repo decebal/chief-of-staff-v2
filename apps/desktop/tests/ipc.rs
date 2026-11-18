@@ -703,7 +703,7 @@ fn switch_changes_paths_report_flows() {
     let html = String::from_utf8_lossy(report.body()).into_owned();
     assert!(html.contains("Acme launch goal"), "report did not switch");
     assert_eq!(
-        cos_desktop::report_response(app.handle(), "/flows").status(),
+        cos_desktop::flows_response(app.handle(), None).status(),
         200
     );
 
@@ -1584,6 +1584,12 @@ fn stale_business_writes_refused() {
         (
             "agents_clean",
             json!({ "business": "default", "id": "run-a", "force": true }),
+        ),
+        ("brief_run", json!({ "business": "default" })),
+        (
+            "ritual_approve",
+            json!({ "business": "default", "repo": "demo-repo", "epic": "t-x",
+                    "design": "docs/d.md", "review": null, "without_review": true }),
         ),
     ];
     for (cmd, args) in refused {
@@ -2695,4 +2701,394 @@ probe = { path = "/", contains = "<title>Explicit board</title>" }
         dashboard_open(&w, "explicit", "Explicit board").unwrap_err(),
         json!({ "kind": "UnknownDashboard", "name": "Explicit board" })
     );
+}
+
+#[test]
+fn run_brief_starts_one_owned_brief_for_the_app_business_and_says_when_it_ends() {
+    let root = scratch("brief-run");
+    let stub = root.join("cos-stub.sh");
+    let seen = root.join("args.txt");
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\necho \"$@\" > '{}'\necho \"business=$COS_BUSINESS home=$COS_HOME\" >> '{}'\nsleep 1\necho 'brief: done' >&2\nexit 0\n",
+            seen.display(),
+            seen.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let a = dirs(&root, "default");
+    let start = start(&root, stub, 1, Sources::default());
+    register(&start, "default", &a, true);
+    let (_app, w) = open(start);
+
+    assert_eq!(
+        call(&w, "brief_status", json!({})).unwrap()["running"],
+        false
+    );
+    let stale = call(&w, "brief_run", json!({ "business": "acme" })).unwrap_err();
+    assert!(
+        error_text(&stale).contains("nothing written, run or killed"),
+        "{stale}"
+    );
+    let started = call(&w, "brief_run", json!({ "business": "default" })).unwrap();
+    assert_eq!(started["running"], true);
+    assert_eq!(started["business"], "default");
+    let twice = call(&w, "brief_run", json!({ "business": "default" })).unwrap_err();
+    assert!(error_text(&twice).contains("already running"), "{twice}");
+    let until = Instant::now() + Duration::from_secs(20);
+    let ended = loop {
+        let s = call(&w, "brief_status", json!({})).unwrap();
+        if s["running"] == false {
+            break s;
+        }
+        assert!(Instant::now() < until, "the brief never ended");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(ended["ok"], true, "{ended}");
+    let said = std::fs::read_to_string(&seen).unwrap();
+    let (args, env) = said.split_once('\n').unwrap();
+    assert_eq!(
+        args,
+        format!(
+            "--home {} --workspace {} --projects {} --no-open brief",
+            a.home.display(),
+            a.workspace.display(),
+            a.projects.display()
+        ),
+        "the app business's own directories, and never opening the report"
+    );
+    assert_eq!(
+        env.trim_end(),
+        format!("business= home={}", a.home.display()),
+        "the env is pinned to the same business"
+    );
+}
+
+/// A fictional repo under `projects` whose one epic waits at the approval
+/// gate: the design and a review with findings committed on its branch only.
+fn waiting_flow(projects: &Path, name: &str, design: &str, review: &str) -> String {
+    let r = projects.join(name);
+    std::fs::create_dir_all(r.join(".chronis")).unwrap();
+    git(&r, &["init", "-q", "-b", "main"]);
+    git(&r, &["config", "user.name", "Ann Example"]);
+    git(&r, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&r, &["checkout", "-q", "-b", "feat/x"]);
+    std::fs::create_dir_all(r.join("docs/plans")).unwrap();
+    std::fs::write(r.join(design), format!("# {name}\n")).unwrap();
+    let sha = cos::flows::sha256_file(&r.join(design)).unwrap();
+    std::fs::write(
+        r.join(review),
+        format!(
+            "---\ndesign: {design}\ndesign-sha256: {sha}\nverdict: findings\n---\n\n1. should A: x.\n2. nit B: y.\n"
+        ),
+    )
+    .unwrap();
+    git(&r, &["add", "docs"]);
+    git(&r, &["commit", "-q", "-m", "design"]);
+    git(&r, &["checkout", "-q", "main"]);
+    let epic = json!([{ "id": format!("t-{name}"), "title": format!("{name} feature"), "status": "open",
+        "task_type": "epic", "parent": null, "blocked_by": [], "approved": null, "archived": false,
+        "description": format!("ritual-branch: feat/x\nritual-design: {design}") }]);
+    std::fs::write(r.join(".chronis/tasks.json"), epic.to_string()).unwrap();
+    sha
+}
+
+#[test]
+fn the_flows_tab_approves_a_waiting_design_only_on_a_clean_review_or_by_choice() {
+    let root = scratch("ritual");
+    let a = dirs(&root, "default");
+    let projects = a.projects.clone();
+    let design = "docs/plans/2026-01-05-x-design.md";
+    let review = "docs/plans/2026-01-05-x-design-review.md";
+    let sha = waiting_flow(&projects, "web", design, review);
+    waiting_flow(&projects, "api", design, review);
+    // Only this test reads COS_CN.
+    unsafe {
+        std::env::set_var("COS_CN", format!("{ROOT}/tests/fixtures/fake-cn-store.sh"));
+    }
+    let start = start(&root, cos_bin(), 1, Sources::default());
+    register(&start, "default", &a, true);
+    let (app, w) = open(start);
+    let gates = |w: &Win| call(w, "ritual_gates", json!({})).unwrap();
+
+    let res = gates(&w);
+    assert_eq!(res["steps"][2], "approve");
+    let list = res["gates"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "{res}");
+    let web = list.iter().find(|g| g["repo"] == "web").unwrap();
+    assert_eq!(web["epic"], "t-web");
+    assert_eq!(web["step"], "approve");
+    assert_eq!(web["clean"], false);
+    assert_eq!(web["by"], "Ann Example");
+    assert_eq!(web["design_sha256"], sha.as_str());
+    assert_eq!(web["review"]["verdict"], "findings");
+    assert_eq!(
+        [
+            &web["review"]["blocking"],
+            &web["review"]["should"],
+            &web["review"]["nit"]
+        ],
+        [&json!(0), &json!(1), &json!(1)]
+    );
+
+    let approve = |repo: &str, review: Option<&str>, without: bool| {
+        call(
+            &w,
+            "ritual_approve",
+            json!({ "business": "default", "repo": repo, "epic": format!("t-{repo}"), "design": design,
+                    "review": review, "without_review": without }),
+        )
+    };
+    let refused = approve("web", Some(review), false).unwrap_err();
+    assert!(error_text(&refused).contains("not clean"), "{refused}");
+    assert!(
+        !projects.join("web/.chronis/calls.log").exists(),
+        "a refusal writes nothing"
+    );
+    let outside = approve("../web", None, true).unwrap_err();
+    assert!(error_text(&outside).contains("no repo named"), "{outside}");
+    let unnamed = call(
+        &w,
+        "ritual_open",
+        json!({ "repo": "web", "epic": "t-web", "path": "Cargo.toml" }),
+    )
+    .unwrap_err();
+    assert!(
+        error_text(&unnamed).contains("not on t-web's card"),
+        "{unnamed}"
+    );
+
+    let web_dir = projects.join("web");
+    git(&web_dir, &["checkout", "-q", "feat/x"]);
+    std::fs::write(
+        web_dir.join(review),
+        format!("---\ndesign: {design}\ndesign-sha256: {sha}\nverdict: clean\n---\n"),
+    )
+    .unwrap();
+    git(&web_dir, &["commit", "-q", "-am", "clean review"]);
+    git(&web_dir, &["checkout", "-q", "main"]);
+    let res = gates(&w);
+    let web = res["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["repo"] == "web")
+        .unwrap()
+        .clone();
+    assert_eq!(web["clean"], true, "{web}");
+
+    let done = approve("web", Some(review), false).unwrap();
+    assert_eq!(done["approved"], true, "{done}");
+    assert_eq!(
+        done["line"],
+        format!("ritual-approved: {design} sha256:{sha} by Ann Example")
+    );
+    assert!(done["check"].as_str().unwrap().starts_with("approved:"));
+
+    let bare = approve("api", None, true).unwrap();
+    assert_eq!(bare["approved"], true, "{bare}");
+    assert!(
+        bare["line"]
+            .as_str()
+            .unwrap()
+            .ends_with("by Ann Example without review")
+    );
+    assert_eq!(gates(&w)["gates"], json!([]), "both flows left the gate");
+
+    // The Flows page's Open names a repo, an epic and a key; the value comes
+    // from the epic's own line, and anything unsafe is refused before `open`.
+    let evil = projects.join("evil");
+    std::fs::create_dir_all(evil.join(".chronis")).unwrap();
+    std::fs::write(evil.join("run.command"), "echo hi").unwrap();
+    let epic = json!([{ "id": "t-evil", "title": "evil", "status": "open", "task_type": "epic",
+        "parent": null, "blocked_by": [], "approved": null, "archived": false,
+        "description": "ritual-report: run.command\nritual-plan: ../web/x.md\nritual-pr: https://evil.example/x\nritual-brief: /etc/hosts.md" }]);
+    std::fs::write(evil.join(".chronis/tasks.json"), epic.to_string()).unwrap();
+    let open_err = |repo: &str, epic: &str, key: &str| {
+        call(
+            &w,
+            "flow_open",
+            json!({ "repo": repo, "epic": epic, "key": key }),
+        )
+        .unwrap_err()
+        .as_str()
+        .unwrap()
+        .to_owned()
+    };
+    for (repo, epic, key, why) in [
+        ("web", "t-web", "branch", "not a file a flow names"),
+        ("../web", "t-web", "design", "no repo named"),
+        ("web", "t-nope", "design", "not in this repo's task store"),
+        ("web", "t-web", "plan", "names no plan"),
+        ("evil", "t-evil", "report", "not a Markdown or HTML file"),
+        ("evil", "t-evil", "plan", "leaves the repo"),
+        ("evil", "t-evil", "pr", "only GitHub links"),
+        ("evil", "t-evil", "brief", "not a path inside"),
+    ] {
+        let err = open_err(repo, epic, key);
+        assert!(err.contains(why), "{repo} {epic} {key}: {err}");
+    }
+
+    // The Flows page's Hire names a bead; the prompt and the repo come from
+    // the store, and a bead that waits on another is refused.
+    let beads = projects.join("beads");
+    std::fs::create_dir_all(beads.join(".chronis")).unwrap();
+    let task = |id: &str,
+                kind: &str,
+                status: &str,
+                parent: Option<&str>,
+                blocked: &[&str],
+                desc: &str| {
+        json!({ "id": id, "title": format!("title {id}"), "status": status, "task_type": kind,
+            "parent": parent, "blocked_by": blocked, "approved": null, "archived": false, "description": desc })
+    };
+    let list = json!([
+        task("t-ep", "epic", "open", None, &[], ""),
+        task("t-b1", "task", "done", Some("t-ep"), &[], ""),
+        task(
+            "t-b2",
+            "task",
+            "open",
+            Some("t-ep"),
+            &["t-b1"],
+            "## Acceptance criteria\n- [ ] the gate lists every term\n"
+        ),
+        task("t-b3", "task", "open", Some("t-ep"), &["t-b2"], ""),
+    ]);
+    std::fs::write(beads.join(".chronis/tasks.json"), list.to_string()).unwrap();
+    let bead = |repo: &str, b: &str| {
+        call(
+            &w,
+            "flow_bead",
+            json!({ "repo": repo, "epic": "t-ep", "bead": b }),
+        )
+    };
+    let b2 = bead("beads", "t-b2").unwrap();
+    assert_eq!(b2["title"], "t-b2 title t-b2");
+    assert_eq!(b2["repo"], json!(beads));
+    assert_eq!(b2["criteria"], 1);
+    assert_eq!(b2["source"], "bead:beads/t-b2");
+    let prompt = b2["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains("- [ ] the gate lists every term")
+            && prompt.contains("cn show t-b2 --toon"),
+        "{prompt}"
+    );
+    let blocked = bead("beads", "t-b3").unwrap_err();
+    assert!(error_text(&blocked).contains("waits on t-b2"), "{blocked}");
+    let outside = bead("../beads", "t-b2").unwrap_err();
+    assert!(error_text(&outside).contains("no repo named"), "{outside}");
+
+    let page = cos_desktop::flows_response(app.handle(), Some("fresh=1"));
+    assert_eq!(
+        page.headers()
+            .get("Content-Security-Policy")
+            .and_then(|v| v.to_str().ok()),
+        Some(cos::flows::PAGE_CSP)
+    );
+    assert!(
+        !cos::flows::PAGE_CSP.contains("connect-src"),
+        "the page fetches nothing"
+    );
+    let html = String::from_utf8_lossy(page.body());
+    assert!(
+        html.contains("t-ep"),
+        "the page reads the app business's projects"
+    );
+}
+
+#[test]
+fn the_flows_frame_runs_script_without_same_origin() {
+    let html = std::fs::read_to_string(format!("{ROOT}/apps/desktop/ui/index.html")).unwrap();
+    let tag = html
+        .split("<iframe")
+        .find(|t| t.contains("id=\"flows-frame\""))
+        .expect("the flows frame");
+    let tag = &tag[..tag.find('>').unwrap()];
+    assert!(
+        tag.contains("sandbox=\"allow-scripts allow-popups\""),
+        "{tag}"
+    );
+    assert!(!tag.contains("allow-same-origin"), "{tag}");
+}
+
+#[test]
+fn the_header_holds_the_brand_the_tabs_the_business_and_settings() {
+    let html = std::fs::read_to_string(format!("{ROOT}/apps/desktop/ui/index.html")).unwrap();
+    let start = html
+        .find(r#"<header class="app-header">"#)
+        .expect("the header");
+    let header = &html[start..start + html[start..].find("</header>").unwrap()];
+    for gone in [
+        r#"id="brief-run""#,
+        r#"id="slots""#,
+        "slots busy",
+        "workspace</span>",
+        r#"id="ws-path""#,
+    ] {
+        assert!(!header.contains(gone), "{gone} is in the header");
+    }
+    assert!(header.contains(r#"class="app-nav""#));
+    assert!(header.contains(r#"id="dash-tabs""#), "the dashboards");
+    assert!(header.contains(r#"id="biz-open""#), "the business picker");
+    let settings = &header[header.find(r#"<details id="settings""#).expect("settings")..];
+    assert!(settings.contains(r#"<summary aria-label="Settings">"#));
+    assert!(settings.contains(r#"id="ws-name""#), "the business's name");
+    assert!(
+        settings.contains(r#"<details class="ws-where">"#),
+        "its paths, folded"
+    );
+    assert!(settings.contains(r#"id="ws-switch""#));
+
+    let section = |id: &str| {
+        let at = html.find(&format!(r#"<section id="{id}""#)).expect(id);
+        html[at..at + html[at..].find("</section>").unwrap()].to_string()
+    };
+    // Run brief lives on the report's own tab bar, not in the window.
+    assert!(!html.contains(r#"id="brief-run""#));
+    assert!(!html.contains(r#"id="brief-state""#));
+    assert!(!section("view-today").contains("page-bar"));
+    assert!(
+        section("view-agents")
+            .contains(r#"<span id="slots" class="badge num" data-variant="outline" hidden>"#)
+    );
+
+    let js = std::fs::read_to_string(format!("{ROOT}/apps/desktop/ui/app.js")).unwrap();
+    assert!(
+        js.contains(r#"$("slots").hidden = ui.slots == null;"#),
+        "no slots text before paths answers"
+    );
+    assert!(
+        js.contains(r#"$("ws-name").textContent = p.business;"#),
+        "the name, never the path"
+    );
+}
+
+#[test]
+fn only_the_report_frame_runs_a_brief_and_passes_it_nothing() {
+    let js = std::fs::read_to_string(format!("{ROOT}/apps/desktop/ui/app.js")).unwrap();
+    let start = js.find("const reportState").expect("the report handler");
+    let handler = &js[start..start + js[start..].find("\n});\n").unwrap()];
+    assert!(handler.contains("const frame = $(\"report\").contentWindow;"));
+    assert!(handler.contains("if (ev.source !== frame) return;"));
+    assert!(handler.contains(r#"{ type: "cos-host", hire: true, runBrief: true }"#));
+    assert!(handler.contains("} else if (d.type === \"cos-run-brief\") {\n    runBrief();\n"));
+    assert_eq!(
+        js.matches("cos-run-brief").count(),
+        1,
+        "no other listener runs it"
+    );
+    // Two mentions: its definition and the report handler. Neither takes an argument.
+    assert_eq!(js.matches("runBrief(").count(), 2);
+    assert!(js.contains("async function runBrief() {"));
+    let body = &js[js.find("async function runBrief() {").unwrap()..];
+    let body = &body[..body.find("\n}\n").unwrap()];
+    assert!(
+        body.contains(r#"await invoke("brief_run", { business: ui.business })"#),
+        "the window names its own business; nothing comes from the page"
+    );
+    assert!(body.contains(r#"if (briefNow?.state === "running") return;"#));
 }

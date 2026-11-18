@@ -6,48 +6,1426 @@
 <title>cos flows</title>
 <style>
 /*__COS_TOKENS__*/
-body{margin:0;padding:1.5rem 1rem}
-main{max-width:68.75rem;margin:0 auto}
-h1{font-size:var(--text-xl);line-height:var(--text-xl--line-height);font-weight:var(--font-weight-semibold);letter-spacing:var(--tracking-tight);margin:0 0 0.25rem}
-p{color:var(--muted-foreground);margin:0 0 1rem}
-a{color:var(--brand-text)}
-.steps{display:flex;flex-wrap:wrap;gap:0.5rem;margin:0 0 1rem;padding:0;list-style:none}
-.steps li{font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--muted-foreground)}
-.steps b{font-family:var(--font-mono);font-variant-numeric:tabular-nums;color:var(--foreground)}
-details.flow{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);color:var(--card-foreground);margin:0 0 0.5rem}
-details.flow>summary{display:grid;grid-template-columns:6rem 10rem 1fr auto;gap:0.75rem;align-items:baseline;padding:0.625rem 0.75rem;cursor:pointer;list-style:none}
-details.flow>summary::-webkit-details-marker{display:none}
-.step{font-family:var(--font-mono);font-size:var(--text-xs);line-height:var(--text-xs--line-height);font-weight:var(--font-weight-semibold);border-radius:var(--radius-full);padding:0.125rem 0.5rem;justify-self:start;background:var(--secondary);color:var(--secondary-foreground)}
+html,body{height:100%}
+[hidden]{display:none !important}
+body{margin:0;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:var(--text-sm);line-height:var(--text-sm--line-height);overflow:hidden}
+button{font-family:inherit;font-size:inherit;color:inherit}
+.app{display:grid;grid-template-columns:auto 1fr auto;height:100vh}
+.app.dash-host .host-only{display:none}
+/* sidebar */
+nav.side{width:15rem;border-right:1px solid var(--sidebar-border);background:var(--sidebar);color:var(--sidebar-foreground);display:flex;flex-direction:column;gap:0.75rem;padding:0.75rem;overflow-y:auto;box-sizing:border-box}
+.app.collapsed nav.side{width:3rem;padding:0.75rem 0.375rem;align-items:center}
+.app.collapsed nav.side .wide{display:none}
+nav.side .rail{display:none}
+.app.collapsed nav.side .rail{display:flex;flex-direction:column;gap:0.5rem;align-items:center}
+.side h2{font-size:var(--text-xs);line-height:var(--text-xs--line-height);font-weight:var(--font-weight-semibold);text-transform:uppercase;letter-spacing:var(--tracking-wide);color:var(--muted-foreground);margin:0 0 0.25rem}
+.side input[type=search]{width:100%;box-sizing:border-box;border:1px solid var(--input);border-radius:var(--radius-md);background:var(--background);color:var(--foreground);padding:0.375rem 0.5rem;font-size:var(--text-sm)}
+.side ul{list-style:none;margin:0;padding:0}
+.side li button{display:flex;width:100%;justify-content:space-between;gap:0.5rem;border:0;background:none;padding:0.25rem 0.5rem;border-radius:var(--radius-sm);cursor:pointer;text-align:left}
+.side li button:hover,.side li button[aria-pressed=true]{background:var(--sidebar-accent);color:var(--sidebar-accent-foreground)}
+.side .n{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted-foreground);font-variant-numeric:tabular-nums}
+.side details summary{cursor:pointer;font-size:var(--text-xs);font-weight:var(--font-weight-semibold);text-transform:uppercase;letter-spacing:var(--tracking-wide);color:var(--muted-foreground);padding:0.25rem 0}
+.side label{display:flex;gap:0.5rem;align-items:center;padding:0.125rem 0.25rem;cursor:pointer}
+.side label span:first-of-type{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side .gapline{border:1px solid var(--warning);border-radius:var(--radius-md);padding:0.375rem 0.5rem;font-size:var(--text-xs)}
+.iconbtn{border:1px solid var(--border);background:var(--card);border-radius:var(--radius-md);padding:0.25rem 0.5rem;cursor:pointer;min-width:2rem}
+.iconbtn:hover{background:var(--accent);color:var(--accent-foreground)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
+/* main */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0}
+header.top{display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border)}
+.crumbs{display:flex;gap:0.375rem;align-items:center;min-width:0;overflow:hidden;white-space:nowrap}
+.crumbs button{border:0;background:none;cursor:pointer;padding:0;min-height:1.5rem;color:var(--muted-foreground)}
+.crumbs button:hover{color:var(--foreground);text-decoration:underline}
+.crumbs .here{color:var(--foreground);font-weight:var(--font-weight-medium);overflow:hidden;text-overflow:ellipsis}
+.views{display:flex;border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;flex:none}
+.views button{border:0;background:none;padding:0.25rem 0.75rem;cursor:pointer}
+.views button[aria-selected=true]{background:var(--primary);color:var(--primary-foreground)}
+.find{margin-left:auto;display:flex;align-items:center;gap:0.5rem;border:1px solid var(--input);border-radius:var(--radius-md);padding:0.25rem 0.5rem;background:var(--background);color:var(--muted-foreground);cursor:pointer;min-width:14rem}
+.find kbd,.keys kbd{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 0.25rem;margin-left:auto}
+.scanned{color:var(--muted-foreground);font-size:var(--text-xs);white-space:nowrap}
+.refresh{flex:none;white-space:nowrap}
+.muted{color:var(--muted-foreground)}
+.small{font-size:var(--text-xs);line-height:var(--text-xs--line-height)}
+/* needs you */
+.needs{padding:0.5rem 0.75rem;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:0.375rem}
+.needs h2{margin:0;font-size:var(--text-sm);font-weight:var(--font-weight-semibold)}
+.need{display:flex;align-items:center;gap:0.75rem}
+.need .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act{border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);border-radius:var(--radius-md);padding:0.125rem 0.625rem;cursor:pointer;white-space:nowrap}
+.hire-row{display:flex;flex-wrap:wrap;gap:0.5rem 0.75rem;align-items:center;margin:0.75rem 0}
+.hire-row .act{min-height:1.5rem}
+.hire-row .act:disabled{opacity:.55;cursor:not-allowed}
+.hire-row .handoff{flex-basis:100%}
+.hire-row .handoff pre{white-space:pre-wrap;font-family:var(--font-mono);font-size:var(--text-xs);margin:0.375rem 0 0}
+.act.ghost{background:none;color:var(--foreground);border-color:var(--border)}
+.step{font-family:var(--font-mono);font-size:var(--text-xs);line-height:var(--text-xs--line-height);font-weight:var(--font-weight-semibold);border-radius:var(--radius-full);padding:0.0625rem 0.5rem;background:var(--secondary);color:var(--secondary-foreground);white-space:nowrap}
 .step.think,.step.spec{background:var(--info);color:var(--info-foreground)}
 .step.plan,.step.review{background:var(--warning);color:var(--warning-foreground)}
 .step.build,.step.ship{background:var(--primary);color:var(--primary-foreground)}
 .step.drift{background:var(--destructive);color:var(--destructive-foreground)}
 .step.reflect,.step.done{background:var(--success);color:var(--success-foreground)}
-.repo{color:var(--muted-foreground);font-size:var(--text-sm);line-height:var(--text-sm--line-height);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.title{font-weight:var(--font-weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.title small{color:var(--muted-foreground);font-weight:var(--font-weight-normal);font-family:var(--font-mono);font-size:var(--text-xs)}
-.counts{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--muted-foreground);white-space:nowrap}
-.body{padding:0 0.75rem 0.75rem;border-top:1px solid var(--border)}
-.meta{display:flex;flex-wrap:wrap;gap:0.25rem 1rem;margin:0.5rem 0;padding:0;list-style:none;font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--muted-foreground)}
-.meta code{font-size:var(--text-xs);color:var(--foreground)}
-svg.graph{width:100%;height:auto;display:block}
-svg.graph .edge{fill:none;stroke:var(--chart-axis);stroke-width:1.5}
-svg.graph .node rect{fill:var(--background);stroke:var(--border);stroke-width:1.5}
-svg.graph .node text{fill:var(--foreground);font-family:var(--font-mono);font-size:var(--text-xs)}
-svg.graph .node .sub{fill:var(--muted-foreground);font-family:var(--font-sans)}
-svg.graph .node.done rect{fill:var(--muted)}
-svg.graph .node.done text{fill:var(--muted-foreground)}
-svg.graph .node.in-progress rect{stroke:var(--primary);stroke-width:2.5}
-svg.graph .node.ready rect{stroke:var(--success);stroke-width:2.5}
-.legend{font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--muted-foreground);margin:0.25rem 0 0}
-.gaps{border:1px solid var(--warning);border-radius:var(--radius-md);padding:0.5rem 0.75rem;margin:1rem 0;font-size:var(--text-sm);line-height:var(--text-sm--line-height)}
-.empty{color:var(--muted-foreground)}
+.view{flex:1;min-height:0;position:relative}
+/* board */
+.board{overflow:auto;padding:0.75rem}
+.boardbar{display:flex;gap:0.75rem;align-items:center;margin:0 0 0.5rem;color:var(--muted-foreground);font-size:var(--text-xs)}
+.boardbar select{font-size:var(--text-xs);border:1px solid var(--input);border-radius:var(--radius-sm);background:var(--background);color:var(--foreground);padding:0.125rem 0.25rem}
+.lane{margin:0 0 1rem}
+.lane>h3{margin:0 0 0.375rem;font-size:var(--text-sm);font-weight:var(--font-weight-semibold)}
+.cols{display:flex;gap:0.75rem;align-items:flex-start}
+.col{flex:0 0 16rem;display:flex;flex-direction:column;gap:0.5rem}
+.col>h4{margin:0;display:flex;gap:0.5rem;align-items:center;font-size:var(--text-xs);font-weight:var(--font-weight-semibold);text-transform:uppercase;letter-spacing:var(--tracking-wide);color:var(--muted-foreground)}
+.col.folded{flex-basis:auto}
+.col.folded button.unfold{border:1px dashed var(--border);background:none;border-radius:var(--radius-md);padding:0.5rem 0.75rem;cursor:pointer;color:var(--muted-foreground)}
+.fcard{position:relative;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);color:var(--card-foreground);box-shadow:var(--shadow-sm)}
+.fcard.needs-you{border-color:var(--brand-amber)}
+.fcard>button.open{display:block;width:100%;border:0;background:none;text-align:left;cursor:pointer;padding:0.625rem 2rem 0.625rem 0.75rem;border-radius:var(--radius-lg)}
+.fcard>button.open:hover{background:var(--accent)}
+.fcard .repo{font-size:var(--text-xs);color:var(--muted-foreground)}
+.fcard .title{font-weight:var(--font-weight-medium);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.fcard .id{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted-foreground)}
+.bar{height:0.25rem;border-radius:var(--radius-full);background:var(--muted);margin:0.375rem 0 0.25rem;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--success)}
+.fcard .meta{display:flex;flex-wrap:wrap;gap:0.25rem 0.5rem;font-size:var(--text-xs);color:var(--muted-foreground)}
+.chip{display:inline-flex;align-items:center;gap:0.25rem;font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-full);padding:0 0.375rem;white-space:nowrap}
+.chip.warn{border-color:var(--brand-amber)}
+.pin{position:absolute;top:0.375rem;right:0.375rem;min-width:1.5rem;min-height:1.5rem;display:inline-flex;align-items:center;justify-content:center;border:0;background:none;cursor:pointer;color:var(--muted-foreground);font-size:var(--text-base)}
+.pin[aria-pressed=true]{color:var(--brand-amber)}
+.empty{color:var(--muted-foreground);padding:1rem}
+/* flow view */
+.flowview{display:flex;flex-direction:column}
+ol.rail{display:flex;gap:0.25rem;list-style:none;margin:0;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border);overflow-x:auto}
+ol.rail li{font-size:var(--text-xs);padding:0.125rem 0.5rem;border-radius:var(--radius-full);border:1px solid var(--border);color:var(--muted-foreground);white-space:nowrap}
+ol.rail li.past{color:var(--foreground)}
+ol.rail li[aria-current]{background:var(--primary);border-color:var(--primary);color:var(--primary-foreground);font-weight:var(--font-weight-semibold)}
+ol.rail li button{border:0;background:none;padding:0;cursor:pointer;text-decoration:underline;color:inherit}
+.canvas{flex:1;position:relative;overflow:hidden;background:var(--background);cursor:grab;touch-action:none;outline:0}
+.canvas.panning{cursor:grabbing}
+.world{position:absolute;left:0;top:0;transform-origin:0 0}
+.world svg.edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+.edges path{fill:none;stroke:var(--chart-axis);stroke-width:1.5}
+.edges path.open{stroke:var(--warning);stroke-dasharray:6 4}
+.edges path.crit{stroke:var(--destructive);stroke-width:2.5}
+.world.dim .edges path:not(.lit){opacity:0.15}
+.world.dim .bcard:not(.lit),.world.dim .startnode:not(.lit){opacity:0.3}
+.bcard{position:absolute;box-sizing:border-box;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);color:var(--card-foreground);padding:0.5rem 0.625rem;cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:0.25rem;box-shadow:var(--shadow-sm)}
+.bcard .h{display:flex;gap:0.375rem;align-items:center;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted-foreground)}
+.bcard .h .state{margin-left:auto;font-family:var(--font-sans);font-weight:var(--font-weight-semibold)}
+.bcard .t{font-weight:var(--font-weight-medium);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bcard .f{display:flex;gap:0.5rem;align-items:center;font-size:var(--text-xs);color:var(--muted-foreground);margin-top:auto}
+.bcard .f .bar{flex:1;margin:0}
+.bcard.done{background:var(--muted);color:var(--muted-foreground)}
+.bcard.done .state{color:var(--success)}
+.bcard.active{border:2px solid var(--primary)}
+.bcard.active .state{color:var(--primary)}
+.bcard.ready{border:2px solid var(--success)}
+.bcard.ready .state{color:var(--success)}
+.bcard.blocked{border:1px dashed var(--brand-amber)}
+.bcard.blocked .state{color:var(--warning)}
+.bcard.ghost{border-style:dotted;background:none;box-shadow:none;cursor:default}
+.bcard.sel{outline:2px solid var(--ring);outline-offset:2px}
+.bcard.crit{box-shadow:0 0 0 2px var(--destructive)}
+@media (prefers-reduced-motion:no-preference){.bcard.active{animation:breathe 2s ease-in-out infinite}}
+@keyframes breathe{50%{box-shadow:0 0 0 2px var(--ring)}}
+.startnode{position:absolute;box-sizing:border-box;border-radius:var(--radius-full);border:2px solid var(--primary);background:var(--card);display:flex;align-items:center;justify-content:center;flex-direction:column;cursor:pointer;font-family:var(--font-mono);font-size:var(--text-xs);text-align:center}
+.ctrls{position:absolute;right:0.75rem;bottom:0.75rem;display:flex;gap:0.25rem;align-items:flex-end}
+.ctrls .iconbtn{background:var(--card)}
+.toggle[aria-pressed=true]{background:var(--primary);color:var(--primary-foreground)}
+svg.mini{width:10rem;height:6rem;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--card);cursor:pointer}
+svg.mini rect.b{fill:var(--muted-foreground)}
+svg.mini rect.vp{fill:none;stroke:var(--ring);stroke-width:2;vector-effect:non-scaling-stroke}
+/* map */
+.mapview{display:flex;flex-direction:column}
+.mapbox{flex:1;position:relative;overflow:hidden;cursor:grab;touch-action:none;background:var(--background)}
+.mapbox canvas.gpu{position:absolute;inset:0;width:100%;height:100%}
+.mapbox svg.map{position:absolute;inset:0;width:100%;height:100%}
+.map .mnode rect{fill:var(--card);stroke:var(--border);stroke-width:1.5}
+.map .mnode.done rect{fill:var(--muted)}
+.map .mnode.active rect{stroke:var(--primary);stroke-width:3}
+.map .mnode.ready rect{stroke:var(--success);stroke-width:3}
+.map .mnode.blocked rect{stroke:var(--brand-amber);stroke-dasharray:6 4}
+.map .mnode.start rect{stroke:var(--primary);stroke-width:2}
+.map .mnode.sel rect{stroke:var(--ring);stroke-width:4}
+.map .mnode text{fill:var(--foreground);font-family:var(--font-mono);font-size:var(--text-xs)}
+.map .mnode text.sub{fill:var(--muted-foreground);font-family:var(--font-sans)}
+.map .mnode text.st{font-family:var(--font-sans);font-weight:var(--font-weight-semibold);fill:var(--muted-foreground)}
+.map .mnode text.st.active{fill:var(--primary)}
+.map .mnode text.st.ready{fill:var(--success)}
+.map .mnode text.st.blocked{fill:var(--warning)}
+.map.lod .mnode text{display:none}
+.map .medge{fill:none;stroke:var(--chart-axis);stroke-width:1.5;stroke-linejoin:round}
+.map .medge.open{stroke:var(--warning)}
+.map .medge.hint{stroke-dasharray:5 4}
+.map .band{fill:var(--foreground);font-size:var(--text-sm);font-weight:var(--font-weight-semibold)}
+.map .repo{fill:var(--muted-foreground);font-size:var(--text-lg);font-weight:var(--font-weight-semibold)}
+.map.dim .mnode:not(.lit),.map.dim .medge:not(.lit){opacity:0.2}
+.mapfoot{display:flex;gap:1rem;align-items:center;padding:0.375rem 0.75rem;border-top:1px solid var(--border);font-size:var(--text-xs);color:var(--muted-foreground)}
+.mapfoot details{margin-left:auto}
+.mapfoot details[open]{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:0.375rem 0.5rem}
+/* drawer */
+aside.drawer{width:24rem;border-left:1px solid var(--border);background:var(--popover);color:var(--popover-foreground);overflow-y:auto;padding:0.75rem 1rem;box-sizing:border-box}
+aside.drawer h2{font-size:var(--text-lg);line-height:var(--text-lg--line-height);margin:0.25rem 0 0.5rem}
+aside.drawer .x{float:right}
+aside.drawer dl{display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;margin:0.5rem 0;font-size:var(--text-xs)}
+aside.drawer dt{color:var(--muted-foreground)}
+aside.drawer dd{margin:0;overflow-wrap:anywhere}
+aside.drawer details{margin:0.5rem 0;border-top:1px solid var(--border);padding-top:0.5rem}
+aside.drawer details summary{cursor:pointer;padding-block:0.125rem;font-weight:var(--font-weight-semibold)}
+aside.drawer h3{font-size:var(--text-sm);margin:0.75rem 0 0.25rem}
+ul.crit{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.25rem}
+ul.crit li{display:flex;gap:0.5rem}
+ul.crit li.done{color:var(--muted-foreground)}
+ul.links{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.25rem}
+ul.links li{display:flex;gap:0.5rem;align-items:center}
+ul.links li code{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-xs)}
+.link{border:0;background:none;padding:0;min-height:1.5rem;color:var(--brand-text);cursor:pointer;text-decoration:underline;text-align:left}
+code{font-family:var(--font-mono);font-size:var(--text-xs)}
+@media (max-width:48rem){.app{grid-template-columns:auto 1fr}aside.drawer{position:fixed;left:0;right:0;bottom:0;width:auto;max-height:60vh;border-left:0;border-top:1px solid var(--border)}}
+/* dialogs */
+dialog{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--popover);color:var(--popover-foreground);padding:0;width:min(40rem,90vw);box-shadow:var(--shadow-md)}
+dialog::backdrop{background:var(--overlay)}
+.pal-in{display:flex;flex-wrap:wrap;gap:0.25rem;align-items:center;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border)}
+.pal-in input{flex:1;min-width:10rem;border:0;background:none;color:var(--foreground);font-size:var(--text-base);outline:0;padding:0.25rem}
+.pal-list{max-height:24rem;overflow-y:auto;padding:0.25rem 0;margin:0;list-style:none}
+.pal-list .grp{padding:0.375rem 0.75rem 0.125rem;font-size:var(--text-xs);color:var(--muted-foreground);text-transform:uppercase;letter-spacing:var(--tracking-wide)}
+.pal-list .opt{display:flex;gap:0.5rem;padding:0.375rem 0.75rem;cursor:pointer}
+.pal-list .opt[aria-selected=true]{background:var(--accent);color:var(--accent-foreground)}
+.pal-list .opt .s{margin-left:auto;color:var(--muted-foreground);font-size:var(--text-xs)}
+.keys{padding:1rem}
+.keys table{border-collapse:collapse;width:100%}
+.keys td{padding:0.25rem 0.5rem;border-bottom:1px solid var(--border)}
 </style>
 </head>
 <body>
-<main><h1>Flows</h1><p><!--__SUMMARY__--> · each flow is a Chronis epic; its step comes from its beads and the <code>ritual-*</code> lines on it · <a href="/">report</a></p>
-<!--__STEPS__-->
-<!--__FLOWS__-->
-<!--__GAPS__--></main>
+<div class="app" id="app">
+  <nav class="side" id="side" aria-label="Flows: search, views and filters">
+    <div class="rail">
+      <button class="iconbtn" type="button" data-act="sidebar" aria-label="Open the sidebar">»</button>
+      <button class="iconbtn" type="button" data-act="palette" aria-label="Search (⌘K)">⌕</button>
+      <button class="iconbtn" type="button" data-preset="needs" aria-label="Needs you"><span id="rail-needs">0</span></button>
+    </div>
+    <div class="wide"><input id="q" type="search" placeholder="Search flows and beads ( / )" aria-label="Search flows and beads" autocomplete="off"></div>
+    <div class="wide" id="gapline" hidden></div>
+    <div class="wide"><h2>Views</h2><ul id="presets"></ul></div>
+    <div class="wide"><h2>Pinned</h2><ul id="pins"></ul></div>
+    <div class="wide" id="facets"></div>
+  </nav>
+  <div class="main">
+    <header class="top">
+      <button class="iconbtn" type="button" data-act="sidebar" id="sidebar-toggle" aria-label="Collapse the sidebar (⌘B)" aria-expanded="true">«</button>
+      <div class="crumbs" id="crumbs" aria-label="Where you are"></div>
+      <div class="views" role="tablist" aria-label="View">
+        <button type="button" role="tab" data-view="board" aria-selected="true">Board</button>
+        <button type="button" role="tab" data-view="flow" aria-selected="false">Flow</button>
+        <button type="button" role="tab" data-view="map" aria-selected="false">Map</button>
+      </div>
+      <button class="find" type="button" data-act="palette" aria-label="Search and commands (⌘K)">⌕ Search flows, beads, commands <kbd>⌘K</kbd></button>
+      <span class="scanned" id="scanned"></span>
+      <button class="iconbtn refresh" type="button" data-act="rescan" title="Scan the task stores again (R)"><span aria-hidden="true">⟳</span> Refresh</button>
+    </header>
+    <div class="needs" id="needs" hidden></div>
+    <div class="view board" id="board" role="region" aria-label="Board"></div>
+    <div class="view flowview" id="flow" hidden>
+      <ol class="rail" id="steprail" aria-label="Ritual steps"></ol>
+      <div class="canvas" id="canvas" tabindex="-1" aria-label="Bead graph">
+        <div class="world" id="world"><svg class="edges" id="edges" aria-hidden="true"></svg><div id="cards"></div></div>
+        <div class="ctrls">
+          <button class="iconbtn toggle" type="button" data-act="crit" aria-pressed="false">Critical path</button>
+          <button class="iconbtn" type="button" data-act="zoom-out" aria-label="Zoom out">−</button>
+          <button class="iconbtn" type="button" data-act="zoom-in" aria-label="Zoom in">+</button>
+          <button class="iconbtn" type="button" data-act="fit" aria-label="Fit the graph">Fit</button>
+          <svg class="mini" id="mini" aria-label="Minimap"></svg>
+        </div>
+      </div>
+    </div>
+    <div class="view mapview" id="map" hidden>
+      <div class="mapbox" id="mapbox"><svg class="map" id="mapsvg" role="img" aria-label="Every open bead"><g id="mapworld"></g></svg></div>
+      <div class="mapfoot">
+        <span id="mapnote"></span>
+        <span id="engine-line"></span>
+        <details class="settings"><summary>Graph engine</summary>
+          <label><input type="radio" name="engine" value="auto"> Auto (GPU when it starts in time)</label>
+          <label><input type="radio" name="engine" value="svg"> SVG</label>
+        </details>
+      </div>
+    </div>
+  </div>
+  <aside class="drawer" id="drawer" hidden aria-label="Details"></aside>
+</div>
+<dialog id="palette" aria-label="Search and commands">
+  <div class="pal-in" id="pal-in"><input id="pal-q" type="text" placeholder="Search, or type repo: step: state: owner:" aria-label="Search and commands" autocomplete="off" role="combobox" aria-controls="pal-list" aria-expanded="true"></div>
+  <ul class="pal-list" id="pal-list" role="listbox"></ul>
+</dialog>
+<dialog id="keys" aria-label="Keyboard shortcuts"><div class="keys"><h2>Keyboard</h2><table id="keytable"></table></div></dialog>
+<script>
+/*__COS_VGPU__*/
+const DATA = /*__COS_FLOWS__*/;
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const ds = document.body.dataset;
+  const NS = "http://www.w3.org/2000/svg";
+  const h = (tag, attrs, ...kids) => {
+    const e = document.createElement(tag);
+    for (const k in attrs || {}) {
+      const v = attrs[k];
+      if (v == null || v === false) continue;
+      if (k === "class") e.className = v;
+      else if (k === "text") e.textContent = v;
+      else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+      else e.setAttribute(k, v === true ? "" : v);
+    }
+    for (const c of kids.flat()) if (c != null && c !== false) e.append(c);
+    return e;
+  };
+  const s = (tag, attrs, parent) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs || {}) if (attrs[k] != null) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  };
+  const put = (e, ...kids) => { for (const c of kids.flat()) if (c != null && c !== false) e.append(c); return e; };
+  const clear = (e) => { while (e.firstChild) e.firstChild.remove(); return e; };
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const REDUCED = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---- data
+  const STEPS = ["think", "spec", "plan", "build", "review", "ship", "reflect", "drift", "done"];
+  const STEP_NAME = { think: "Think", spec: "Spec", plan: "Plan", build: "Build", review: "Review", ship: "Ship", reflect: "Reflect", drift: "Drift", done: "Done" };
+  const RAIL = ["think", "spec", "plan", "build", "review", "ship", "reflect"];
+  const RAIL_FILE = { think: "brief", spec: "design", plan: "plan", review: "review", reflect: "report" };
+  const STATE_NAME = { done: "Done", active: "In progress", ready: "Ready", blocked: "Blocked" };
+  const STATE_MARK = { done: "✓", active: "◉", ready: "▶", blocked: "🔒" };
+  const NEED_TEXT = { gate: "Design waits for your approval", drift: "Design changed after approval", findings: "Review found problems" };
+  const flows = (DATA.flows || []).map((f) => ({ ...f, key: `${f.repo}/${f.id}` }));
+  const byKey = new Map(flows.map((f) => [f.key, f]));
+  const beadState = (b) => b.status === "done" ? "done" : b.status === "in-progress" ? "active" : b.ready ? "ready" : "blocked";
+  const ownerName = (o) => { const m = /^([a-z]+):([0-9a-f]{4})/i.exec(o || ""); return m ? `${m[1]} ${m[2]}` : (o || ""); };
+  for (const f of flows) {
+    f.ids = new Set(f.beads.map((b) => b.id));
+    f.tags = new Set();
+    if (f.beads.some((b) => b.ready)) f.tags.add("ready");
+    if (f.counts.in_progress) f.tags.add("active");
+    if (f.counts.blocked) f.tags.add("blocked");
+    if (f.step === "drift") f.tags.add("drift");
+    if (f.legacy) f.tags.add("legacy");
+    f.owners = new Set(f.beads.filter((b) => b.status !== "done" && b.owner).map((b) => b.owner));
+    f.hay = [f.title, f.id, f.repo, ...f.beads.flatMap((b) => [b.title, b.id])].join("\n").toLowerCase();
+  }
+
+  // ---- host: the desktop window, or none under `cos dash`
+  const HOST = window.parent !== window;
+  if (!HOST) $("app").classList.add("dash-host");
+  const post = (msg) => { if (HOST) window.parent.postMessage(msg, "*"); };
+
+  // ---- preferences, handed in by the window as ?prefs=
+  const params = new URLSearchParams(location.search);
+  const prefs = { pins: [], side: "open", group: "none", sort: "touched", engine: "auto" };
+  try {
+    const p = JSON.parse(params.get("prefs") || "{}");
+    if (Array.isArray(p.pins)) prefs.pins = p.pins.filter((x) => typeof x === "string" && byKey.has(x)).slice(0, 200);
+    if (p.side === "closed") prefs.side = "closed";
+    if (["none", "repo", "owner"].includes(p.group)) prefs.group = p.group;
+    if (["needs", "ready", "touched", "title", "id"].includes(p.sort)) prefs.sort = p.sort;
+    if (p.engine === "svg") prefs.engine = "svg";
+  } catch { /* no or bad prefs: defaults */ }
+  if (params.get("engine") === "svg") prefs.engine = "svg";
+  const savePrefs = () => post({ type: "cos-flows-prefs", prefs: { ...prefs } });
+
+  // ---- view state, kept in the hash
+  const FACETS = ["repo", "step", "state", "owner"];
+  const S = { view: "board", flow: null, bead: null, q: "", preset: "all", facets: { repo: new Set(), step: new Set(), state: new Set(), owner: new Set() }, showDone: false, crit: false };
+  const readHash = () => {
+    const p = new URLSearchParams(location.hash.slice(1));
+    S.view = ["board", "flow", "map"].includes(p.get("v")) ? p.get("v") : "board";
+    S.flow = byKey.has(p.get("f") || "") ? p.get("f") : null;
+    if (S.view === "flow" && !S.flow) S.view = "board";
+    S.bead = p.get("b") || null;
+    S.q = (p.get("q") || "").slice(0, 200);
+    S.preset = ["all", "needs", "active", "ready", "blocked", "done"].includes(p.get("p")) ? p.get("p") : "all";
+    for (const k of FACETS) S.facets[k] = new Set((p.get(k) || "").split(",").filter(Boolean));
+    S.showDone = p.get("done") === "1";
+  };
+  const hashOf = () => {
+    const p = new URLSearchParams();
+    if (S.view !== "board") p.set("v", S.view);
+    if (S.flow) p.set("f", S.flow);
+    if (S.bead) p.set("b", S.bead);
+    if (S.q) p.set("q", S.q);
+    if (S.preset !== "all") p.set("p", S.preset);
+    for (const k of FACETS) if (S.facets[k].size) p.set(k, [...S.facets[k]].join(","));
+    if (S.showDone) p.set("done", "1");
+    return p.toString();
+  };
+  // A sandboxed frame's origin is opaque, where history.replaceState refuses any URL: the
+  // fragment is set through location instead, replace() for filters, assign for views.
+  const commit = (push) => {
+    const hsh = hashOf();
+    if (hsh !== location.hash.slice(1)) {
+      if (push) location.hash = hsh; else location.replace(`#${hsh}`);
+    }
+    post({ type: "cos-flows-state", hash: hsh });
+  };
+
+  // ---- filtering
+  const presetOk = (f, p) => p === "all" ? true : p === "needs" ? !!f.needs_you : p === "active" ? f.tags.has("active")
+    : p === "ready" ? f.tags.has("ready") : p === "blocked" ? f.tags.has("blocked") : p === "done" ? f.step === "done" : true;
+  const facetValue = { repo: (f) => [f.repo], step: (f) => [f.step], state: (f) => [...f.tags], owner: (f) => [...f.owners] };
+  const facetOk = (f, skip) => FACETS.every((k) => k === skip || !S.facets[k].size || facetValue[k](f).some((v) => S.facets[k].has(v)));
+  const searchOk = (f) => !S.q || f.hay.includes(S.q.toLowerCase());
+  const visible = (skip) => flows.filter((f) => searchOk(f) && facetOk(f, skip));
+  const shownFlows = () => visible().filter((f) => presetOk(f, S.preset) || (S.preset === "all" && f.step === "done"));
+  const pinned = (f) => prefs.pins.includes(f.key);
+  const sorters = {
+    needs: (a, b) => (!!b.needs_you - !!a.needs_you) || sorters.touched(a, b),
+    ready: (a, b) => b.beads.filter((x) => x.ready).length - a.beads.filter((x) => x.ready).length || sorters.touched(a, b),
+    touched: (a, b) => (b.touched || "").localeCompare(a.touched || "") || a.id.localeCompare(b.id),
+    title: (a, b) => a.title.localeCompare(b.title),
+    id: (a, b) => a.id.localeCompare(b.id),
+  };
+  const ordered = (list) => [...list].sort((a, b) => (pinned(b) - pinned(a)) || (pinned(a) && pinned(b) ? prefs.pins.indexOf(a.key) - prefs.pins.indexOf(b.key) : 0) || sorters[prefs.sort](a, b));
+  // The flow the Flow tab opens when none is chosen: the board's first flow that is not done.
+  const flowFor = () => { const list = ordered(shownFlows()); return list.find((f) => f.step !== "done" && f.beads.length) || list[0] || null; };
+  const filtered = () => !!S.q || S.preset !== "all" || FACETS.some((k) => S.facets[k].size);
+
+  // ---- time in words
+  const ago = (iso) => {
+    const t = Date.parse(iso || ""); if (!Number.isFinite(t)) return "";
+    const m = Math.round((Date.now() - t) / 60000);
+    if (m < 1) return "just now"; if (m < 60) return `${m} minute${m === 1 ? "" : "s"} ago`;
+    const hr = Math.round(m / 60); if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
+    const d = Math.round(hr / 24); return d < 60 ? `${d} day${d === 1 ? "" : "s"} ago` : new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+  };
+  const timeEl = (iso) => h("time", { datetime: iso, text: ago(iso) });
+  const drawScanned = () => { $("scanned").textContent = DATA.scanned_at ? `Scanned ${ago(new Date(DATA.scanned_at).toISOString())}` : ""; };
+
+  // ---- sidebar
+  const PRESETS = [["needs", "Needs you"], ["active", "Active"], ["ready", "Ready"], ["blocked", "Blocked"], ["all", "All"], ["done", "Done"]];
+  const drawSide = () => {
+    const base = visible();
+    clear($("presets")).append(...PRESETS.map(([k, label]) => h("li", {}, h("button", { type: "button", "aria-pressed": String(S.preset === k), "data-preset": k },
+      h("span", { text: label }), h("span", { class: "n", text: String(base.filter((f) => presetOk(f, k)).length) })))));
+    $("rail-needs").textContent = String(flows.filter((f) => f.needs_you).length);
+    const pins = prefs.pins.map((k) => byKey.get(k)).filter(Boolean);
+    clear($("pins")).append(...(pins.length ? pins.map((f) => h("li", {}, h("button", { type: "button", "data-open": f.key }, h("span", { text: f.title }), h("span", { class: "n", text: f.repo }))))
+      : [h("li", { class: "muted small", text: "Star a flow to keep it here." })]));
+    const box = clear($("facets"));
+    for (const k of FACETS) {
+      const counts = new Map();
+      for (const f of visible(k)) for (const v of facetValue[k](f)) counts.set(v, (counts.get(v) || 0) + 1);
+      for (const v of S.facets[k]) if (!counts.has(v)) counts.set(v, 0);
+      const vals = [...counts].sort((a, b) => k === "step" ? STEPS.indexOf(a[0]) - STEPS.indexOf(b[0]) : b[1] - a[1] || a[0].localeCompare(b[0]));
+      const d = h("details", { "data-facet": k }, h("summary", { text: k === "state" ? "State" : k[0].toUpperCase() + k.slice(1) }),
+        ...vals.map(([v, n]) => h("label", {}, h("input", { type: "checkbox", "data-facet": k, value: v, checked: S.facets[k].has(v) }),
+          h("span", { text: k === "owner" ? ownerName(v) : k === "step" ? STEP_NAME[v] || v : v }), h("span", { class: "n", text: String(n) }))));
+      if (k === "repo" || S.facets[k].size || facetOpen.has(k)) d.open = true;
+      d.addEventListener("toggle", () => { if (d.open) facetOpen.add(k); else facetOpen.delete(k); });
+      box.append(d);
+    }
+    const gl = $("gapline");
+    gl.hidden = !(DATA.gaps || []).length;
+    if (!gl.hidden) {
+      clear(gl).append(h("details", { class: "gapline" }, h("summary", { text: `${DATA.gaps.length} ${DATA.gaps.length === 1 ? "repo" : "repos"} not read` }),
+        h("ul", {}, ...DATA.gaps.map((g) => h("li", { class: "small", text: g })))));
+    }
+  };
+  const facetOpen = new Set();
+  const setSide = (state) => {
+    prefs.side = state;
+    $("app").classList.toggle("collapsed", state === "closed");
+    $("sidebar-toggle").setAttribute("aria-expanded", String(state !== "closed"));
+    $("sidebar-toggle").textContent = state === "closed" ? "»" : "«";
+  };
+
+  // ---- top bar
+  const drawTop = () => {
+    for (const b of document.querySelectorAll(".views button")) {
+      b.setAttribute("aria-selected", String(b.dataset.view === S.view));
+      b.disabled = b.dataset.view === "flow" && !S.flow && !flowFor();
+      b.title = b.dataset.view === "flow" && !S.flow ? (flowFor() ? `Opens ${flowFor().title}` : "No flow to open") : "";
+    }
+    const c = clear($("crumbs"));
+    const here = (text) => h("span", { class: "here", "aria-current": "page", text });
+    const f = S.flow && byKey.get(S.flow);
+    c.append(S.view === "board" && !filtered() ? here("Flows") : h("button", { type: "button", "data-go": "board", title: "Every flow, no filters", text: "Flows" }));
+    if (S.view === "map") c.append(h("span", { class: "muted", text: "›" }), here("Map"));
+    if (S.view === "flow" && f) {
+      c.append(h("span", { class: "muted", text: "›" }), h("button", { type: "button", "data-go": "board-repo", text: f.repo }),
+        h("span", { class: "muted", text: "›" }));
+      const b = S.bead && f.beads.find((x) => x.id === S.bead);
+      c.append(b ? h("button", { type: "button", "data-go": "flow", text: f.title }) : here(f.title));
+      if (b) c.append(h("span", { class: "muted", text: "›" }), here(b.id));
+    }
+  };
+
+  // ---- needs you
+  const drawNeeds = () => {
+    const list = ordered(visible().filter((f) => f.needs_you));
+    const box = $("needs");
+    box.hidden = !list.length || S.view !== "board";
+    if (box.hidden) return;
+    const more = list.length > 3 ? list.slice(3) : [];
+    const row = (f) => h("div", { class: "need" }, h("span", { class: `step ${f.step}`, text: STEP_NAME[f.step] }),
+      h("span", { class: "t" }, h("button", { type: "button", class: "link", "data-open": f.key, text: f.title }), h("span", { class: "muted small", text: ` · ${f.repo} · ${NEED_TEXT[f.needs_you]}` })),
+      needAction(f));
+    clear(box).append(...[h("h2", { text: `Needs you · ${list.length}` }), ...list.slice(0, 3).map(row),
+      more.length ? h("details", {}, h("summary", { class: "small", text: `${more.length} more` }), ...more.map(row)) : null,
+      HOST ? null : h("p", { class: "muted small", text: "Approvals happen in the Chief of Staff app's Flows tab, or with cos ritual approve in a terminal." })].filter(Boolean));
+  };
+  const needAction = (f) => {
+    if (!HOST) return null;
+    if (f.needs_you === "gate") return h("button", { type: "button", class: "act", onclick: () => post({ type: "cos-flows-gate", repo: f.repo, epic: f.id }), text: "Review and approve" });
+    if (f.needs_you === "drift") return h("button", { type: "button", class: "act", onclick: () => openFile(f, "design"), text: "Read what changed" });
+    return h("button", { type: "button", class: "act", onclick: () => openFile(f, "review"), text: "Read the findings" });
+  };
+  const openFile = (f, key) => post({ type: "cos-flows-open", repo: f.repo, epic: f.id, key });
+  // A bead's work for an agent: Hire in the desktop app, the same handoff to
+  // copy anywhere. A bead that waits on another, or is done, offers neither.
+  const beadWork = (f, b, st) => {
+    if (st === "done") return null;
+    if (b.open_blockers.length) {
+      const those = b.open_blockers.length > 1 ? "those are" : "that is";
+      return h("p", { class: "hire-row" }, HOST ? h("button", { type: "button", class: "act", disabled: true, text: "Hire" }) : null,
+        h("span", { class: "muted small", text: `Waits on ${b.open_blockers.join(", ")}: hire once ${those} done.` }));
+    }
+    return h("div", { class: "hire-row" },
+      HOST ? h("button", { type: "button", class: "act", onclick: () => post({ type: "cos-flows-hire", repo: f.repo, epic: f.id, bead: b.id }), text: "Hire" }) : null,
+      h("button", { type: "button", class: "link", "data-copy": b.handoff, text: "Copy prompt" }),
+      b.owner ? h("span", { class: "muted small", text: `Claimed by ${ownerName(b.owner)}` }) : null,
+      h("details", { class: "handoff" }, h("summary", { text: "Read the handoff" }), h("pre", { text: b.handoff })));
+  };
+
+  // ---- board
+  const flowCard = (f) => {
+    const total = f.beads.length, done = f.counts.done, ready = f.beads.filter((b) => b.ready).length;
+    const bits = [ready && `${ready} ready`, f.counts.blocked && `${f.counts.blocked} blocked`, f.counts.in_progress && `${f.counts.in_progress} active`].filter(Boolean);
+    const owners = [...f.owners].slice(0, 3);
+    const card = h("div", { class: `fcard${f.needs_you ? " needs-you" : ""}`, "data-key": f.key },
+      h("button", { type: "button", class: "open", "data-open": f.key },
+        h("div", { class: "repo", text: f.repo }),
+        h("div", { class: "title", text: f.title }),
+        h("div", { class: "id", text: f.id }),
+        total ? h("div", { class: "bar", role: "img", "aria-label": `${done} of ${total} beads done` }, h("i", { style: `width:${Math.round(100 * done / total)}%` })) : null,
+        h("div", { class: "meta" }, total ? h("span", { text: `${done} / ${total}` }) : h("span", { text: "no beads yet" }), bits.length ? h("span", { text: bits.join(" · ") }) : null,
+          ...owners.map((o) => h("span", { class: "chip", text: `◔ ${ownerName(o)}` })),
+          f.legacy ? h("span", { class: "chip", text: "legacy" }) : null,
+          f.needs_you ? h("span", { class: "chip warn", text: "Needs you" }) : null)),
+      h("button", { type: "button", class: "pin", "data-pin": f.key, "aria-pressed": String(pinned(f)), "aria-label": `${pinned(f) ? "Unpin" : "Pin"} ${f.title}`, text: pinned(f) ? "★" : "☆" }));
+    return card;
+  };
+  const columns = (list) => {
+    const has = (st) => list.some((f) => f.step === st);
+    return STEPS.filter((st) => st !== "drift" || has("drift"));
+  };
+  const colEl = (st, list) => {
+    const items = ordered(list.filter((f) => f.step === st));
+    if (st === "done" && !S.showDone && S.preset !== "done") {
+      return h("div", { class: "col folded", "data-step": st }, h("h4", { text: STEP_NAME[st] }),
+        h("button", { type: "button", class: "unfold", "data-act": "show-done", text: `${items.length} done ▸` }));
+    }
+    return h("div", { class: "col", "data-step": st }, h("h4", {}, h("span", { text: STEP_NAME[st] }), h("span", { class: "n", text: String(items.length) })), ...items.map(flowCard));
+  };
+  const drawBoard = () => {
+    const list = shownFlows();
+    ds.flows = String(list.length);
+    const box = clear($("board"));
+    box.append(h("div", { class: "boardbar" },
+      h("label", {}, "Group by ", h("select", { "data-pref": "group" }, ...[["none", "nothing"], ["repo", "repo"], ["owner", "owner"]].map(([v, t]) => h("option", { value: v, selected: prefs.group === v, text: t })))),
+      h("label", {}, "Sort by ", h("select", { "data-pref": "sort" }, ...[["touched", "recently touched"], ["needs", "needs you"], ["ready", "most ready"], ["title", "title"], ["id", "epic id"]].map(([v, t]) => h("option", { value: v, selected: prefs.sort === v, text: t })))),
+      h("span", { text: `${list.length} of ${flows.length} flows · ${DATA.repos} repos` })));
+    if (!DATA.tasks_approved) { box.append(h("p", { class: "empty", text: "Approve a tasks source in the workspace profile to see flows." })); return; }
+    if (!flows.length) { box.append(h("p", { class: "empty", text: "No flows yet. The ritual skill starts one with a Chronis epic." })); return; }
+    if (!list.length) { box.append(h("p", { class: "empty" }, "No flows match. ", h("button", { type: "button", class: "link", "data-act": "clear", text: "Clear filters" }))); return; }
+    const cols = columns(list);
+    if (prefs.group === "none") { box.append(h("div", { class: "cols" }, ...cols.map((c) => colEl(c, list)))); return; }
+    const groups = new Map();
+    for (const f of list) {
+      const keys = prefs.group === "repo" ? [f.repo] : f.owners.size ? [...f.owners] : ["nobody"];
+      for (const k of keys) (groups.get(k) || groups.set(k, []).get(k)).push(f);
+    }
+    for (const [k, fl] of [...groups].sort((a, b) => a[0].localeCompare(b[0]))) {
+      box.append(h("details", { class: "lane", open: true }, h("summary", { text: `${prefs.group === "owner" ? ownerName(k) : k} · ${fl.length}` }),
+        h("div", { class: "cols" }, ...columns(fl).filter((c) => fl.some((f) => f.step === c)).map((c) => colEl(c, fl)))));
+    }
+  };
+
+  // ---- the flow graph: DOM cards over SVG edges, laid out by layer
+  const CW = 240, CH = 104, COLW = 300, ROWH = 128, START = 88;
+  let T = { k: 1, x: 40, y: 40 }, layout = null, lit = null;
+  const layoutFlow = (f) => {
+    const pos = new Map(), cols = new Map();
+    for (const b of f.beads) { const l = b.layer; (cols.get(l) || cols.set(l, []).get(l)).push(b); }
+    for (const [l, list] of cols) list.forEach((b, i) => pos.set(b.id, { x: (l + 1) * COLW, y: i * ROWH, w: CW, h: CH }));
+    const ext = [...new Set(f.beads.flatMap((b) => b.blocked_by.filter((x) => !f.ids.has(x))))];
+    ext.forEach((id, i) => pos.set(id, { x: 0, y: (i + 1) * ROWH + START, w: CW * 0.8, h: CH * 0.6, ghost: true }));
+    const start = { x: (CW - START) / 2, y: 0, w: START, h: START };
+    const deps = new Map(f.beads.map((b) => [b.id, []]));
+    for (const b of f.beads) for (const x of b.blocked_by) if (deps.has(x)) deps.get(x).push(b.id);
+    return { f, pos, ext, start, deps, cols };
+  };
+  const critical = (f) => {
+    const open = f.beads.filter((b) => b.status !== "done"), ids = new Set(open.map((b) => b.id)), by = new Map(open.map((b) => [b.id, b]));
+    const memo = new Map(), seen = new Set();
+    const len = (id) => { if (memo.has(id)) return memo.get(id); if (seen.has(id)) return [id]; seen.add(id);
+      let best = []; for (const x of by.get(id).blocked_by) if (ids.has(x)) { const c = len(x); if (c.length > best.length) best = c; }
+      const r = [...best, id]; memo.set(id, r); return r; };
+    let best = []; for (const b of open) { const c = len(b.id); if (c.length > best.length) best = c; }
+    return new Set(best);
+  };
+  const edgePath = (a, b) => {
+    const sx = a.x + a.w, sy = a.y + a.h / 2, ex = b.x, ey = b.y + b.h / 2, dx = Math.max(40, (ex - sx) / 2);
+    return `M${sx} ${sy} C${sx + dx} ${sy} ${ex - dx} ${ey} ${ex} ${ey}`;
+  };
+  const drawFlow = () => {
+    const f = byKey.get(S.flow); if (!f) return;
+    layout = layoutFlow(f);
+    const { pos, start, ext } = layout;
+    const crit = S.crit ? critical(f) : new Set();
+    const rail = clear($("steprail")), at = RAIL.indexOf(f.step === "done" ? "reflect" : f.step);
+    for (const [i, st] of RAIL.entries()) {
+      const key = RAIL_FILE[st], has = key && f.markers[key];
+      const li = h("li", { class: i < at ? "past" : "" }, has && HOST ? h("button", { type: "button", "data-file": key, text: STEP_NAME[st] }) : STEP_NAME[st]);
+      if (i === at) li.setAttribute("aria-current", "step");
+      rail.append(li);
+    }
+    if (f.step === "drift") rail.append(h("li", { "aria-current": "step", text: "Drift" }));
+    const cards = clear($("cards")), edges = clear($("edges"));
+    const bounds = { x1: start.x + start.w, y1: start.y + start.h };
+    for (const p of pos.values()) { bounds.x1 = Math.max(bounds.x1, p.x + p.w); bounds.y1 = Math.max(bounds.y1, p.y + p.h); }
+    edges.setAttribute("width", String(bounds.x1 + 40)); edges.setAttribute("height", String(bounds.y1 + 40));
+    const sn = h("div", { class: "startnode", role: "button", tabindex: "0", "data-epic": "1", "aria-label": `Epic ${f.id}: ${f.title}`, style: `left:${start.x}px;top:${start.y}px;width:${start.w}px;height:${start.h}px` },
+      h("span", { text: "start" }), h("span", { text: f.id }));
+    cards.append(sn);
+    for (const b of f.beads) {
+      const p = pos.get(b.id); if (!p) continue;
+      const roots = b.blocked_by.filter((x) => pos.has(x));
+      if (!roots.length) s("path", { d: edgePath(start, p), "data-from": "start", "data-to": b.id }, edges);
+      for (const x of roots) {
+        const from = f.beads.find((y) => y.id === x), open = !from || from.status !== "done";
+        s("path", { d: edgePath(pos.get(x), p), class: `${open ? "open" : ""}${crit.has(x) && crit.has(b.id) ? " crit" : ""}`, "data-from": x, "data-to": b.id }, edges);
+      }
+    }
+    for (const id of ext) {
+      const p = pos.get(id);
+      cards.append(h("div", { class: "bcard ghost", "data-ghost": id, style: `left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px` },
+        h("div", { class: "h" }, h("span", { text: id })), h("div", { class: "small muted", text: "in another flow" })));
+    }
+    for (const b of f.beads) {
+      const p = pos.get(b.id), st = beadState(b), nc = b.criteria.length, ok = b.criteria.filter((c) => c.done).length;
+      const blockers = b.blocked_by.filter((x) => { const y = f.beads.find((z) => z.id === x); return !y || y.status !== "done"; }).length;
+      cards.append(h("button", { type: "button", class: `bcard ${st}${S.bead === b.id ? " sel" : ""}${crit.has(b.id) ? " crit" : ""}`, "data-bead": b.id, "data-layer": String(b.layer),
+        "aria-label": `${b.id} ${b.title}, ${STATE_NAME[st]}`, style: `left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px` },
+        h("div", { class: "h" }, h("span", { text: STATE_MARK[st] }), h("span", { text: b.id }), b.priority && b.priority !== "p2" ? h("span", { class: "chip", text: b.priority }) : null, h("span", { class: "state", text: STATE_NAME[st] })),
+        h("div", { class: "t", text: b.title }),
+        h("div", { class: "f" }, b.owner ? h("span", { class: "chip", text: `◔ ${ownerName(b.owner)}` }) : null,
+          nc ? h("span", { text: `${ok} / ${nc}` }) : null, nc ? h("span", { class: "bar", role: "img", "aria-label": `${ok} of ${nc} criteria checked` }, h("i", { style: `width:${Math.round(100 * ok / nc)}%` })) : null,
+          st === "blocked" && blockers ? h("span", { text: `blocked by ${blockers}` }) : null)));
+    }
+    ds.beads = String(f.beads.length);
+    layout.bounds = bounds;
+    applyT(); drawMini();
+  };
+  const applyT = () => { $("world").style.transform = `translate(${T.x}px, ${T.y}px) scale(${T.k})`; drawMini(); };
+  const fit = () => {
+    if (!layout) return;
+    const b = $("canvas").getBoundingClientRect(), w = layout.bounds.x1 + 40, hh = layout.bounds.y1 + 40;
+    const k = clamp(Math.min(b.width / w, b.height / hh), 0.2, 1.25);
+    T = { k, x: (b.width - w * k) / 2 + 20 * k, y: Math.max(20, (b.height - hh * k) / 2 + 20 * k) };
+    applyT();
+  };
+  const zoomAt = (factor, cx, cy) => {
+    const b = $("canvas").getBoundingClientRect(), px = cx ?? b.width / 2, py = cy ?? b.height / 2, k = clamp(T.k * factor, 0.15, 2.5);
+    T = { k, x: px - (px - T.x) * (k / T.k), y: py - (py - T.y) * (k / T.k) };
+    applyT();
+  };
+  const drawMini = () => {
+    const m = $("mini"); if (!layout || S.view !== "flow") return;
+    clear(m);
+    const W = layout.bounds.x1 + 40, H = layout.bounds.y1 + 40;
+    m.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    for (const p of layout.pos.values()) s("rect", { class: "b", x: p.x, y: p.y, width: p.w, height: p.h, rx: 8 }, m);
+    const b = $("canvas").getBoundingClientRect();
+    s("rect", { class: "vp", x: -T.x / T.k, y: -T.y / T.k, width: b.width / T.k, height: b.height / T.k }, m);
+  };
+  const chain = (id, dir) => {
+    const out = new Set(), f = layout.f, stack = [id];
+    while (stack.length) {
+      const x = stack.pop(); if (out.has(x)) continue; out.add(x);
+      if (dir === "up") { const b = f.beads.find((y) => y.id === x); for (const y of b ? b.blocked_by : []) stack.push(y); }
+      else for (const y of layout.deps.get(x) || []) stack.push(y);
+    }
+    return out;
+  };
+  const highlight = (id) => {
+    const w = $("world");
+    for (const e of w.querySelectorAll(".lit")) e.classList.remove("lit");
+    lit = id;
+    if (!id) { w.classList.remove("dim"); return; }
+    const set = new Set([...chain(id, "up"), ...chain(id, "down")]);
+    w.classList.add("dim");
+    for (const x of set) w.querySelector(`[data-bead="${CSS.escape(x)}"]`)?.classList.add("lit");
+    for (const p of w.querySelectorAll("path")) {
+      const a = p.dataset.from, b = p.dataset.to;
+      if (set.has(b) && (set.has(a) || a === "start")) p.classList.add("lit");
+    }
+    const f = layout.f;
+    if (chain(id, "up").size && [...set].some((x) => { const b = f.beads.find((y) => y.id === x); return b && !b.blocked_by.some((y) => layout.pos.has(y)); })) w.querySelector(".startnode")?.classList.add("lit");
+  };
+  const moveFocus = (id, key) => {
+    const f = layout?.f; if (!f) return null;
+    const b = f.beads.find((x) => x.id === id); if (!b) return null;
+    if (key === "ArrowLeft") return b.blocked_by.find((x) => f.ids.has(x)) || null;
+    if (key === "ArrowRight") return (layout.deps.get(id) || [])[0] || null;
+    const col = layout.cols.get(b.layer) || [], i = col.findIndex((x) => x.id === id);
+    const j = key === "ArrowUp" ? i - 1 : i + 1;
+    return col[j]?.id || null;
+  };
+  const focusBead = (id) => { const e = $("cards").querySelector(`[data-bead="${CSS.escape(id)}"]`); if (e) { e.focus(); highlight(id); } };
+
+  // ---- drawer
+  let drawerReturn = null;
+  const closeDrawer = () => {
+    $("drawer").hidden = true; S.bead = null; commit(false); drawTop();
+    for (const e of document.querySelectorAll(".bcard.sel")) e.classList.remove("sel");
+    drawerReturn?.focus?.(); drawerReturn = null;
+  };
+  const fileRow = (f, key, label) => {
+    const v = f.markers[key]; if (!v) return null;
+    return h("li", {}, h("span", { text: label }), h("code", { text: v }),
+      HOST ? h("button", { type: "button", class: "link", "data-file": key, text: "Open" }) : null);
+  };
+  const drawDrawer = () => {
+    const f = S.flow && byKey.get(S.flow); const d = $("drawer");
+    if (!f || !S.bead) { d.hidden = true; return; }
+    clear(d);
+    const x = h("button", { type: "button", class: "iconbtn x", "data-act": "close-drawer", "aria-label": "Close details", text: "✕" });
+    if (S.bead === "epic") {
+      put(d, x, h("div", { class: "small muted", text: `${f.repo} · epic` }), h("h2", { text: f.title }),
+        h("dl", {}, h("dt", { text: "Id" }), h("dd", { text: f.id }), h("dt", { text: "Step" }), h("dd", {}, h("span", { class: `step ${f.step}`, text: STEP_NAME[f.step] })),
+          h("dt", { text: "Approved" }), h("dd", { text: f.approved ? "yes" : "no" }),
+          h("dt", { text: "Beads" }), h("dd", { text: `${f.counts.done} done, ${f.counts.in_progress} in progress, ${f.counts.open} open, ${f.counts.blocked} blocked` })),
+        h("h3", { text: "Files" }),
+        h("ul", { class: "links" }, fileRow(f, "brief", "Brief"), fileRow(f, "design", "Design"), fileRow(f, "plan", "Plan"), fileRow(f, "review", "Review"), fileRow(f, "report", "Report"), fileRow(f, "pr", "Pull request")),
+        f.needs_you === "gate" && HOST ? h("p", {}, h("button", { type: "button", class: "act", onclick: () => post({ type: "cos-flows-gate", repo: f.repo, epic: f.id }), text: "Go to approval" })) : null,
+        h("details", {}, h("summary", { text: "Every ritual line" }), h("dl", {}, ...Object.entries(f.markers).flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })]))));
+    } else {
+      const b = f.beads.find((y) => y.id === S.bead);
+      if (!b) { d.hidden = true; return; }
+      const st = beadState(b), link = (id) => f.ids.has(id) ? h("button", { type: "button", class: "link", "data-bead-link": id, text: `${id} ${f.beads.find((y) => y.id === id)?.title || ""}` }) : h("span", { text: `${id} (another flow)` });
+      const blocks = f.beads.filter((y) => y.blocked_by.includes(b.id)).map((y) => y.id);
+      const events = [b.created_at && ["Created", b.created_at], b.owner && ["Claimed by", null, ownerName(b.owner)], b.done_at && ["Done", b.done_at]].filter(Boolean);
+      put(d, x, h("div", { class: "small muted", text: `${f.repo} · ${f.title}` }), h("h2", { text: b.title }),
+        h("dl", {}, h("dt", { text: "Id" }), h("dd", {}, h("code", { text: b.id }), " ", h("button", { type: "button", class: "link", "data-copy": b.id, text: "Copy" })),
+          h("dt", { text: "State" }), h("dd", { text: STATE_NAME[st] }),
+          b.priority ? [h("dt", { text: "Priority" }), h("dd", { text: b.priority })] : null,
+          h("dt", { text: "Owner" }), h("dd", { text: b.owner ? ownerName(b.owner) : "nobody" })),
+        h("h3", { text: "Acceptance criteria" }),
+        b.criteria.length ? h("ul", { class: "crit" }, ...b.criteria.map((c) => h("li", { class: c.done ? "done" : "" }, h("span", { "aria-hidden": "true", text: c.done ? "☑" : "☐" }), h("span", { text: `${c.done ? "Checked: " : ""}${c.text}` }))))
+          : h("p", { class: "muted small", text: "No acceptance criteria on this bead." }),
+        b.criteria_more ? h("p", { class: "muted small", text: `and ${b.criteria_more} more in the task store` }) : null,
+        beadWork(f, b, st),
+        h("details", { open: b.blocked_by.length > 0 }, h("summary", { text: `Blocked by (${b.blocked_by.length})` }), h("ul", { class: "links" }, ...b.blocked_by.map((id) => h("li", {}, link(id))))),
+        h("details", {}, h("summary", { text: `Blocks (${blocks.length})` }), h("ul", { class: "links" }, ...blocks.map((id) => h("li", {}, link(id))))),
+        b.done_reason ? h("details", {}, h("summary", { text: "Done reason" }), h("p", { text: b.done_reason })) : null,
+        h("details", {}, h("summary", { text: "Events" }), h("ul", { class: "links" }, ...events.map(([what, at, who]) => h("li", {}, h("span", { text: what }), at ? timeEl(at) : h("span", { text: who })))),
+          h("p", { class: "muted small", text: "The full timeline is in the task store." }), h("button", { type: "button", class: "link", "data-copy": `cn show ${b.id} --toon`, text: "Copy the cn show command" })));
+    }
+    d.hidden = false;
+    d.scrollTop = 0;
+  };
+  const openDrawer = (id, from) => { S.bead = id; drawerReturn = from || document.activeElement; commit(false); drawTop(); drawDrawer();
+    for (const e of document.querySelectorAll(".bcard.sel")) e.classList.remove("sel");
+    $("cards").querySelector(`[data-bead="${CSS.escape(id)}"]`)?.classList.add("sel");
+    $("drawer").querySelector(".x")?.focus(); };
+
+  // ---- the map: every open bead, one band per flow, stacked by repo
+  const MW = 200, MH = 48, MCOL = 250, MROW = 64, BAND = 40, REPO = 64, GAPX = MCOL - MW, GAPY = MROW - MH, LOD_K = 0.45;
+  let M = { nodes: [], edges: [], idx: new Map(), byId: new Map(), total: 0 }, MT = { k: 0.6, x: 20, y: 20 };
+  // Edges leave a card's right edge and enter the next card's left edge. Between adjacent
+  // layers a curve stays inside the gap column; a longer edge, or one that runs back up a
+  // cycle, turns into the gap column, runs along the gap under its row, and turns into its
+  // target, so no edge crosses a card. A blocker in another flow is a dashed stub.
+  const curve = (sx, sy, ex, ey) => {
+    const dx = Math.max(GAPX / 2, (ex - sx) / 2), out = [];
+    for (let i = 0; i <= 16; i++) {
+      const t = i / 16, u = 1 - t;
+      out.push([sx * u ** 3 + (sx + dx) * 3 * u * u * t + (ex - dx) * 3 * u * t * t + ex * t ** 3, sy * (u ** 3 + 3 * u * u * t) + ey * (3 * u * t * t + t ** 3)]);
+    }
+    return out;
+  };
+  const route = (a, b, adjacent, lane) => {
+    const sx = a.x + a.w, sy = a.y + a.h / 2, ex = b.x, ey = b.y + b.h / 2;
+    if (adjacent) return curve(sx, sy, ex, ey);
+    const gx1 = sx + GAPX / 2 + (lane % 4) * 3, gx2 = ex - GAPX / 2 - (lane % 4) * 3, gy = a.y + a.h + GAPY / 2 + (lane % 3 - 1) * 4;
+    return [[sx, sy], [gx1, sy], [gx1, gy], [gx2, gy], [gx2, ey], [ex, ey]];
+  };
+  const mapLayout = () => {
+    const list = visible().filter((f) => f.step !== "done" && f.beads.some((b) => b.status !== "done")).sort((a, b) => a.repo.localeCompare(b.repo) || a.id.localeCompare(b.id));
+    const nodes = [], edges = [], labels = [];
+    let y = 0, repo = null;
+    for (const f of list) {
+      if (f.repo !== repo) { repo = f.repo; y += repo === list[0].repo ? 0 : REPO / 2; labels.push({ kind: "repo", text: repo, x: 0, y: y + 24 }); y += REPO; }
+      labels.push({ kind: "band", text: `${f.title} · ${f.id}`, x: 0, y: y + 16, key: f.key });
+      y += BAND / 2 + 8;
+      const startId = `${f.key}#start`, start = { id: startId, key: f.key, x: 0, y, w: MW * 0.6, h: MH, st: "start", label: f.id, sub: f.title };
+      nodes.push(start);
+      // Rows: each layer ordered by the mean row of its blockers, so edges between layers cross less.
+      const layers = new Map(), row = new Map(), at = new Map();
+      for (const b of f.beads) (layers.get(b.layer) || layers.set(b.layer, []).get(b.layer)).push(b);
+      let rows = 1;
+      for (const l of [...layers.keys()].sort((p, q) => p - q)) {
+        const mean = (b) => { const r = b.blocked_by.filter((x) => row.has(x)).map((x) => row.get(x)); return r.length ? r.reduce((s, v) => s + v, 0) / r.length : Infinity; };
+        const col = layers.get(l).map((b, i) => [b, mean(b), i]).sort((p, q) => (p[1] - q[1]) || (p[2] - q[2])).map((x) => x[0]);
+        col.forEach((b, i) => { row.set(b.id, i); });
+        rows = Math.max(rows, col.length);
+        for (const b of col) {
+          const n = { id: `${f.key}#${b.id}`, bead: b.id, key: f.key, x: (b.layer + 1) * MCOL, y: y + row.get(b.id) * MROW, w: MW, h: MH, st: beadState(b), label: b.id, sub: b.title };
+          nodes.push(n); at.set(b.id, n);
+        }
+      }
+      const lanes = new Map(), lane = (n) => { const k = `${n.x},${n.y}`, i = lanes.get(k) || 0; lanes.set(k, i + 1); return i; };
+      for (const b of f.beads) {
+        const to = at.get(b.id), ins = b.blocked_by.filter((x) => at.has(x));
+        if (!ins.length) edges.push({ from: startId, to: to.id, open: false, pts: route(start, to, b.layer === 0, 0) });
+        for (const x of ins) {
+          const from = at.get(x), back = b.layer <= f.beads.find((z) => z.id === x).layer, adjacent = !back && to.x - from.x === MCOL;
+          edges.push({ from: from.id, to: to.id, open: f.beads.find((z) => z.id === x)?.status !== "done", back, pts: route(from, to, adjacent, adjacent ? 0 : lane(from)) });
+        }
+        if (b.blocked_by.some((x) => !f.ids.has(x))) {
+          const ey = to.y + to.h / 2;
+          edges.push({ from: null, to: to.id, open: true, ext: true, pts: [[to.x - GAPX * 0.6, ey], [to.x, ey]] });
+        }
+      }
+      y += rows * MROW + BAND;
+    }
+    return { nodes, edges, labels };
+  };
+  const syncMap = () => {
+    const all = mapLayout(), hard = engine.hard;
+    const nodes = all.nodes.slice(0, hard), keep = new Set(nodes.map((n) => n.id));
+    M = { nodes, edges: all.edges.filter((e) => (e.from == null || keep.has(e.from)) && keep.has(e.to)), labels: all.labels.filter((l) => !l.key || nodes.some((n) => n.key === l.key)), total: all.nodes.length };
+    M.idx = new Map(nodes.map((n, i) => [n.id, i])); M.byId = new Map(nodes.map((n) => [n.id, n]));
+    const beadsIn = (list) => list.filter((n) => n.bead).length, left = beadsIn(all.nodes) - beadsIn(nodes);
+    ds.shown = String(nodes.length); ds.beads = String(beadsIn(all.nodes));
+    $("mapnote").textContent = left > 0 ? `${left} beads left out at the ${hard}-node limit of this engine. Filter to see the rest.` : `${beadsIn(nodes)} beads in ${nodes.length - beadsIn(nodes)} flows`;
+    engine.sync();
+    stamp();
+  };
+  const mapSel = { id: null, hover: null };
+  const focusIds = () => { const out = new Set(); if (mapSel.id) out.add(mapSel.id); if (mapSel.hover) out.add(mapSel.hover); return out; };
+  const applyMT = () => engine.draw();
+  // Fit: the whole map when its cards stay readable at that zoom, else the full width of
+  // the widest band at a readable zoom, from the top, so the cards keep their words.
+  const mapFit = () => {
+    const b = $("mapbox").getBoundingClientRect(); if (!M.nodes.length) return;
+    let x1 = 0, y1 = 0; for (const n of M.nodes) { x1 = Math.max(x1, n.x + n.w); y1 = Math.max(y1, n.y + n.h); }
+    const kw = (b.width - 40) / x1, all = Math.min(kw, (b.height - 40) / y1);
+    const k = all >= LOD_K ? Math.min(all, 1.25) : clamp(kw, LOD_K, 1);
+    MT = { k, x: 20, y: 20 }; applyMT();
+  };
+
+  // SVG engine: one group per bead; text only above a readable zoom.
+  const mapsvg = $("mapsvg"), mapworld = $("mapworld");
+  // The map captures the pointer while it pans, so an event's target is the box: look under the point.
+  const clip = (n) => { const max = Math.floor((n.w - 16) / 6.5); return n.sub.length > max ? `${n.sub.slice(0, max - 1)}…` : n.sub; };
+  const MSTATE = { done: "Done", active: "In progress", ready: "Ready", blocked: "Blocked", start: "Epic" };
+  const words = (n, g) => {
+    s("text", { x: n.x + 8, y: n.y + 18 }, g).textContent = n.label;
+    s("text", { class: `st ${n.st}`, x: n.x + n.w - 8, y: n.y + 18, "text-anchor": "end" }, g).textContent = n.st === "start" ? "" : MSTATE[n.st];
+    s("text", { class: "sub", x: n.x + 8, y: n.y + 36 }, g).textContent = clip(n);
+  };
+  const edgeD = (e) => `M${e.pts.map((p) => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" L")}`;
+  const edgeClass = (e) => `medge${e.open ? " open" : ""}${e.back || e.ext ? " hint" : ""}`;
+  const atPoint = (e) => e.clientX == null ? null : document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".mnode")?.dataset.id ?? null;
+  const svgEngine = () => {
+    let els = new Map();
+    const node = (n, parent) => {
+      const g = s("g", { class: `mnode ${n.st}`, "data-id": n.id }, parent);
+      s("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 8 }, g);
+      words(n, g);
+      return g;
+    };
+    const paint = () => {
+      const f = focusIds();
+      mapsvg.classList.toggle("dim", !!mapSel.hover);
+      for (const [id, g] of els) { g.classList.toggle("sel", id === mapSel.id); g.classList.toggle("lit", f.has(id)); }
+    };
+    return {
+      kind: "svg", hard: 1000,
+      sync() {
+        clear(mapworld); els = new Map();
+        for (const l of M.labels) s("text", { class: l.kind, x: l.x, y: l.y }, mapworld).textContent = l.text;
+        for (const e of M.edges) s("path", { class: edgeClass(e), d: edgeD(e), "data-from": e.from ?? "", "data-to": e.to }, mapworld);
+        for (const n of M.nodes) els.set(n.id, node(n, mapworld));
+        this.draw(); paint();
+      },
+      draw() { mapworld.setAttribute("transform", `translate(${MT.x} ${MT.y}) scale(${MT.k})`); mapsvg.classList.toggle("lod", MT.k < LOD_K); },
+      pick: (e) => atPoint(e),
+      focus: paint,
+      restyle() {},
+      dispose() { clear(mapworld); els = new Map(); },
+    };
+  };
+
+  // GPU engine on vgpu: instanced card quads and edge curves, colours from the tokens, an SVG
+  // overlay with labels for the beads in focus, picking by a grid over the fixed positions.
+  const S_DONE = 0, S_ACTIVE = 1, S_READY = 2, S_BLOCKED = 3, S_START = 4, S_OPEN = 5;
+  const ST_INDEX = { done: S_DONE, active: S_ACTIVE, ready: S_READY, blocked: S_BLOCKED, start: S_START };
+  const F_SEL = 1, F_ON = 2, F_SKIP = 4, E_OPEN = 1, E_ON = 2, E_HINT = 4;
+  const WGSL_CARDS = /*wgsl*/`
+struct View {
+  scale: vec2f,
+  offset: vec2f,
+  px: f32,
+  hl: u32,
+  fills: array<vec4f, 6>,
+  strokes: array<vec4f, 6>,
+  ring: vec4f,
+  edge: vec4f,
+  edgeOpen: vec4f,
+};
+@group(0) @binding(0) var<uniform> view: View;
+@group(0) @binding(1) var<storage, read> rects: array<vec4f>;
+@group(0) @binding(2) var<storage, read> info: array<vec2u>;
+struct VOut {
+  @builtin(position) clip: vec4f,
+  @location(0) local: vec2f,
+  @location(1) @interpolate(flat) id: u32,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+  var corners = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0));
+  let r = rects[ii];
+  var size = r.zw + vec2f(6.0, 6.0);
+  if ((info[ii].y & 4u) != 0u) { size = vec2f(0.0, 0.0); }
+  let p = r.xy - vec2f(3.0, 3.0) + corners[vi] * size;
+  var o: VOut;
+  o.clip = vec4f(p * view.scale + view.offset, 0.0, 1.0);
+  o.local = p - r.xy;
+  o.id = ii;
+  return o;
+}
+
+// Rounded card: fill by run state, a 1.5-unit stroke, a ring when selected; dimmed while another bead is hovered.
+@fragment
+fn fs_main(v: VOut) -> @location(0) vec4f {
+  let r = rects[v.id];
+  let st = min(info[v.id].x, 5u);
+  let fl = info[v.id].y;
+  let half = r.zw * 0.5;
+  let q = abs(v.local - half) - half + vec2f(8.0, 8.0);
+  let d = length(max(q, vec2f(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - 8.0;
+  var col = vec4f(0.0);
+  var sw = max(1.5, view.px);
+  var sc = view.strokes[st];
+  if ((fl & 1u) != 0u) { sw = max(4.0, view.px * 2.0); sc = view.ring; }
+  if (d <= 0.0) { col = view.fills[st]; }
+  if (d <= 0.0 && d > -sw) { col = sc; }
+  if (d > 0.0 && d < 2.5 && (fl & 1u) != 0u) { col = sc; }
+  if (view.hl != 0u && (fl & 2u) == 0u) { col.a = col.a * 0.2; }
+  if (col.a <= 0.0) { discard; }
+  return col;
+}
+`;
+  const WGSL_LINKS = /*wgsl*/`
+struct View {
+  scale: vec2f,
+  offset: vec2f,
+  px: f32,
+  hl: u32,
+  fills: array<vec4f, 6>,
+  strokes: array<vec4f, 6>,
+  ring: vec4f,
+  edge: vec4f,
+  edgeOpen: vec4f,
+};
+@group(0) @binding(0) var<uniform> view: View;
+@group(0) @binding(1) var<storage, read> segs: array<vec4f>;
+@group(0) @binding(2) var<storage, read> eflags: array<u32>;
+struct VOut {
+  @builtin(position) clip: vec4f,
+  @location(0) along: f32,
+  @location(1) @interpolate(flat) st: u32,
+};
+
+// One straight piece of an edge's route per instance: segs[2i] its ends, segs[2i + 1] its
+// distance along the edge and the edge's index; each end runs on by half a width to close joints.
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+  let a = segs[ii * 2u];
+  let m = segs[ii * 2u + 1u];
+  let d = a.zw - a.xy;
+  let len = length(d);
+  var dir = vec2f(1.0, 0.0);
+  if (len > 0.0) { dir = d / len; }
+  let w = max(1.5, view.px);
+  let side = vec2f(-dir.y, dir.x) * w * 0.5;
+  let p0 = a.xy - dir * w * 0.5;
+  let p1 = a.zw + dir * w * 0.5;
+  var quad = array<vec2f, 6>(p0 - side, p1 - side, p0 + side, p0 + side, p1 - side, p1 + side);
+  var t = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
+  var o: VOut;
+  o.clip = vec4f(quad[vi] * view.scale + view.offset, 0.0, 1.0);
+  o.along = m.x + t[vi] * len;
+  o.st = eflags[u32(m.y)];
+  return o;
+}
+
+@fragment
+fn fs_main(v: VOut) -> @location(0) vec4f {
+  var c = view.edge;
+  if ((v.st & 1u) != 0u) { c = view.edgeOpen; }
+  if ((v.st & 4u) != 0u && fract(v.along / 9.0) > 0.55) { discard; }
+  if (view.hl != 0u && (v.st & 2u) == 0u) { c.a = c.a * 0.2; }
+  return c;
+}
+`;
+  const probe = h("i", { hidden: true }); document.body.append(probe);
+  const tokenRgb = (k) => { probe.style.color = `var(--${k})`; const c = getComputedStyle(probe).color.match(/[\d.]+/g) || ["136", "136", "136"]; return [+c[0] / 255, +c[1] / 255, +c[2] / 255, 1]; };
+  const palette = () => ({
+    fills: [tokenRgb("muted"), tokenRgb("card"), tokenRgb("card"), tokenRgb("card"), tokenRgb("card"), tokenRgb("card")],
+    strokes: [tokenRgb("border"), tokenRgb("primary"), tokenRgb("success"), tokenRgb("brand-amber"), tokenRgb("primary"), tokenRgb("border")],
+    ring: tokenRgb("ring"), edge: tokenRgb("chart-axis"), edgeOpen: tokenRgb("warning"),
+  });
+  const OVERLAY = 400, LABELS = 1500, LOSS_WAIT_MS = 1000;
+  const gpuEngine = (ctx) => {
+    const { device, gpu, surf, canvas, pipes, adapter } = ctx;
+    const { cardsD, linksD } = pipes, draws = [cardsD, linksD];
+    let failed = false, disposed = false, lost = false, attached = true, buf = null, self = null, grid = new Map(), clearC = [0, 0, 0, 1], overlay = new Map();
+    const CELL = 256;
+    const onUncaptured = (ev) => { const e = ev.error; fail(lost ? "GPU device lost" : `GPU error: ${e instanceof GPUOutOfMemoryError ? "out-of-memory" : e instanceof GPUInternalError ? "internal" : "validation"}`); };
+    device.addEventListener("uncapturederror", onUncaptured);
+    const offError = gpu.onError((e) => fail(lost ? "GPU device lost" : `GPU error: ${e.code || "unknown"}`));
+    device.lost.then(() => { lost = true; if (attached) fail("GPU device lost"); });
+    const detach = () => { if (!attached) return; attached = false; device.removeEventListener("uncapturederror", onUncaptured); offError(); };
+    const fail = (reason) => {
+      if (failed || disposed) return; failed = true;
+      Promise.race([device.lost, new Promise((r) => setTimeout(r, LOSS_WAIT_MS))]).then(() => setTimeout(() => handover(self, lost ? "GPU device lost" : reason), 0));
+    };
+    const guard = (fn) => (...a) => { if (failed || disposed) return undefined; try { return fn(...a); } catch (e) { fail(lost ? "GPU device lost" : `GPU error: ${e?.code || e?.name || "exception"}`); return undefined; } };
+    const destroyBufs = () => { if (!buf) return; for (const b of [buf.rects, buf.info, buf.segs, buf.eflags]) b.destroy?.(); buf = null; };
+    const setView = () => {
+      const b = $("mapbox").getBoundingClientRect(), W = b.width || 1, H = b.height || 1;
+      const v = { scale: [2 * MT.k / W, -2 * MT.k / H], offset: [2 * MT.x / W - 1, 1 - 2 * MT.y / H], px: 1 / MT.k, hl: mapSel.hover ? 1 : 0 };
+      for (const d of draws) d.set(v);
+    };
+    const setColours = () => { const p = palette(); for (const d of draws) d.set(p); clearC = tokenRgb("background"); };
+    const states = () => {
+      const f = focusIds(), info = new Uint32Array(Math.max(4, M.nodes.length * 2));
+      M.nodes.forEach((n, i) => { let fl = 0; if (n.id === mapSel.id) fl |= F_SEL; if (f.has(n.id)) fl |= F_ON; if (overlay.has(n.id)) fl |= F_SKIP; info[i * 2] = ST_INDEX[n.st] ?? S_OPEN; info[i * 2 + 1] = fl; });
+      buf.info.write(info);
+      const ef = new Uint32Array(Math.max(4, M.edges.length));
+      M.edges.forEach((e, i) => { ef[i] = (e.open ? E_OPEN : 0) | (f.has(e.from) || f.has(e.to) ? E_ON : 0) | (e.back || e.ext ? E_HINT : 0); });
+      buf.eflags.write(ef);
+      ds.drawnNodes = String(M.nodes.length - overlay.size); ds.overlay = String(overlay.size); ds.labels = String(said.size + overlay.size);
+    };
+    let nseg = 0;
+    const upload = () => {
+      destroyBufs();
+      nseg = M.edges.reduce((t, e) => t + e.pts.length - 1, 0);
+      const n = M.nodes.length, m = M.edges.length, st = (bytes) => vgpu.storage(gpu, Math.max(16, bytes), "read-write");
+      buf = { rects: st(n * 16), info: st(n * 8), segs: st(nseg * 32), eflags: st(m * 4) };
+      const r = new Float32Array(Math.max(4, n * 4)); M.nodes.forEach((x, i) => r.set([x.x, x.y, x.w, x.h], i * 4)); buf.rects.write(r);
+      const sg = new Float32Array(Math.max(4, nseg * 8));
+      let j = 0;
+      M.edges.forEach((e, i) => { let along = 0; for (let k = 1; k < e.pts.length; k++) { const [x0, y0] = e.pts[k - 1], [x1, y1] = e.pts[k]; sg.set([x0, y0, x1, y1, along, i, 0, 0], j * 8); j++; along += Math.hypot(x1 - x0, y1 - y0); } });
+      buf.segs.write(sg);
+      cardsD.set({ rects: buf.rects, info: buf.info }); linksD.set({ segs: buf.segs, eflags: buf.eflags });
+      grid = new Map();
+      M.nodes.forEach((x) => { for (let gx = Math.floor(x.x / CELL); gx <= Math.floor((x.x + x.w) / CELL); gx++) for (let gy = Math.floor(x.y / CELL); gy <= Math.floor((x.y + x.h) / CELL); gy++) { const k = `${gx},${gy}`; (grid.get(k) || grid.set(k, []).get(k)).push(x.id); } });
+      clear(mapworld); gWords = null;
+    };
+    // The canvas draws the cards and edges; their words are SVG text over it, for the cards
+    // in view at a readable zoom (kept between frames, so a pan adds and drops only the edges
+    // of the view), and a full SVG card for the beads in focus.
+    let gWords = null, gTop = null, said = new Map();
+    const inView = () => {
+      if (MT.k < LOD_K) return [];
+      const b = $("mapbox").getBoundingClientRect(), x0 = -MT.x / MT.k, y0 = -MT.y / MT.k, x1 = x0 + b.width / MT.k, y1 = y0 + b.height / MT.k, out = [];
+      for (const n of M.nodes) { if (n.x + n.w >= x0 && n.x <= x1 && n.y + n.h >= y0 && n.y <= y1) out.push(n.id); if (out.length >= LABELS) break; }
+      return out;
+    };
+    const drawOverlay = () => {
+      if (!gWords?.isConnected) { clear(mapworld); gWords = s("g", {}, mapworld); gTop = s("g", {}, mapworld); said = new Map(); }
+      mapsvg.classList.remove("lod");
+      const want = [...focusIds()].slice(0, OVERLAY);
+      clear(gTop); overlay = new Map();
+      for (const id of want) { const n = M.byId.get(id); if (!n) continue; const g = s("g", { class: `mnode ${n.st}${id === mapSel.id ? " sel" : ""} lit`, "data-id": id }, gTop);
+        s("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 8 }, g); words(n, g); overlay.set(id, g); }
+      const vis = new Set(inView().filter((id) => !overlay.has(id)));
+      for (const [id, g] of said) if (!vis.has(id)) { g.remove(); said.delete(id); }
+      for (const id of vis) if (!said.has(id)) { const n = M.byId.get(id); const g = s("g", { class: `mnode ${n.st}`, "data-id": id }, gWords); words(n, g); said.set(id, g); }
+      if (MT.k >= LOD_K) for (const l of M.labels) s("text", { class: l.kind, x: l.x, y: l.y }, gTop).textContent = l.text;
+      mapworld.setAttribute("transform", `translate(${MT.x} ${MT.y}) scale(${MT.k})`);
+      ds.labels = String(said.size + overlay.size);
+    };
+    const submit = () => {
+      setView();
+      const f = vgpu.frame(gpu);
+      f.pass({ target: surf, clear: clearC }, (p) => {
+        if (nseg) p.draw(linksD, { instances: nseg, vertices: 6 });
+        if (M.nodes.length) p.draw(cardsD, { instances: M.nodes.length, vertices: 6 });
+      });
+      f.submit();
+    };
+    let raf = 0;
+    const later = () => { if (!raf) raf = requestAnimationFrame(guard(() => { raf = 0; submit(); })); };
+    const dispose = () => {
+      if (disposed) return; disposed = true; cancelAnimationFrame(raf); detach();
+      clear(mapworld);
+      try { destroyBufs(); draws.forEach((p) => p.dispose()); surf.dispose(); gpu.dispose(); } catch (e) { console.debug("flows map: GPU engine teardown", e); }
+      device.destroy(); canvas.remove();
+    };
+    self = {
+      kind: "gpu", hard: 5000, device, adapter,
+      build() { setColours(); },
+      sync: guard(() => { upload(); drawOverlay(); states(); submit(); }),
+      draw: guard(() => { drawOverlay(); later(); }),
+      pick(e) {
+        const hit = atPoint(e); if (hit) return hit;
+        if (e.clientX == null) return null;
+        const b = $("mapbox").getBoundingClientRect(), gx = (e.clientX - b.left - MT.x) / MT.k, gy = (e.clientY - b.top - MT.y) / MT.k;
+        for (const id of grid.get(`${Math.floor(gx / CELL)},${Math.floor(gy / CELL)}`) || []) { const n = M.byId.get(id); if (gx >= n.x && gx <= n.x + n.w && gy >= n.y && gy <= n.y + n.h) return id; }
+        return null;
+      },
+      focus: guard(() => { drawOverlay(); states(); submit(); }),
+      restyle: guard(() => { setColours(); submit(); }),
+      dispose,
+    };
+    return self;
+  };
+
+  // Choosing: the map opens on SVG; the GPU takes over only when the whole chain finishes in time.
+  const TEST = params.get("engine-test");
+  const testOpt = (k) => { const m = new RegExp(`(?:^|,)${k}:(\\d+)`).exec(TEST || ""); return m ? +m[1] : null; };
+  const DEADLINE_MS = TEST != null && testOpt("deadline") != null ? testOpt("deadline") : 2000;
+  const DELAY_INIT = TEST != null ? testOpt("delay-init") || 0 : 0;
+  let engine = svgEngine(), attempt = 0, lateDropped = 0, gpuBroken = null, engineNote = "";
+  const stamp = () => { ds.engine = engine.kind; ds.hard = String(engine.hard); if (engine.kind === "svg") { ds.overlay = "0"; ds.drawnNodes = "0"; } };
+  const drawEngineLine = () => {
+    $("engine-line").textContent = engine.kind === "gpu" ? `Engine: GPU${engine.adapter ? ` (${engine.adapter})` : ""}`
+      : `Engine: SVG${engineNote ? ` · ${engineNote}` : prefs.engine === "svg" ? " (your choice)" : ""}`;
+  };
+  const toSvg = (reason) => { engine.dispose(); engine = svgEngine(); engineNote = reason; syncMap(); drawEngineLine(); };
+  const handover = (eng, reason) => { if (engine !== eng) return; console.debug(`flows map: ${reason}; the SVG engine takes over`); gpuBroken = reason; toSvg(reason); };
+  const pickEngine = async () => {
+    const token = ++attempt;
+    ds.engineState = "choosing";
+    let decided = false;
+    const decide = (note) => { if (decided) return; decided = true; engineNote = note; ds.engineState = "decided"; drawEngineLine(); stamp(); };
+    const stale = () => decided || token !== attempt;
+    if (prefs.engine === "svg") { decide(""); return; }
+    if (gpuBroken) { decide(gpuBroken); return; }
+    if (!navigator.gpu || typeof vgpu === "undefined") { decide("no WebGPU"); return; }
+    const timer = setTimeout(() => { if (!decided && token === attempt) decide("GPU setup too slow"); }, DEADLINE_MS);
+    const made = [];
+    const got = (obj, release, dev) => { made.push({ obj, release, dev, late: stale() }); return obj; };
+    const release = () => {
+      for (const x of made.reverse()) {
+        if (x.late) lateDropped++;
+        try { x.release?.(x.obj); } catch (e) { console.debug("flows map: releasing a late GPU object", e); }
+        if (x.late && x.dev) ds.lateDevice = "1";
+      }
+      ds.lateDropped = String(lateDropped);
+    };
+    let step = "adapter";
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) { clearTimeout(timer); if (!stale()) decide("no GPU adapter"); return; }
+      got(adapter, null);
+      if (DELAY_INIT) await new Promise((r) => setTimeout(r, DELAY_INIT));
+      step = "device";
+      const device = got(await adapter.requestDevice(), (d) => d.destroy(), true);
+      step = "vgpu";
+      const gpu = got(await vgpu.initFromDevice(device), (g) => g.dispose());
+      step = "surface";
+      const canvas = got(h("canvas", { class: "gpu", "aria-hidden": "true" }), (c) => c.remove());
+      $("mapbox").insertBefore(canvas, mapsvg);
+      const surf = got(vgpu.surface(gpu, canvas, { dpr: [1, 2] }), (x) => x.dispose());
+      step = "pipelines";
+      const dr = (src, label) => got(vgpu.draw(gpu, { shader: src, blend: "alpha", label }), (p) => p.dispose());
+      const pipes = { cardsD: dr(vgpu.prepareShader(WGSL_CARDS), "cards"), linksD: dr(vgpu.prepareShader(WGSL_LINKS), "links") };
+      await Promise.all([pipes.cardsD, pipes.linksD].map((d) => d.compile(surf)));
+      clearTimeout(timer);
+      if (stale()) { release(); return; }
+      step = "build";
+      const eng = gpuEngine({ device, gpu, surf, canvas, pipes, adapter: adapter.info?.architecture || "" });
+      try { eng.build(); } catch (e) { eng.dispose(); throw e; }
+      engine.dispose();
+      engine = eng;
+      ds.adapter = eng.adapter;
+      decide("");
+      syncMap();
+    } catch (e) {
+      clearTimeout(timer);
+      if (!stale()) { console.debug(`flows map: GPU setup failed at ${step}`, e); decide(`GPU setup failed: ${step}`); }
+      if (step !== "build") release();
+    }
+  };
+
+  // ---- palette
+  const pal = { chips: [], items: [], at: 0, ret: null };
+  const subseq = (q, t) => { t = t.toLowerCase(); let i = 0; for (const c of q) { i = t.indexOf(c, i); if (i < 0) return false; i++; } return true; };
+  const facetVals = (k) => { const m = new Map(); for (const f of flows) for (const v of facetValue[k](f)) m.set(v, (m.get(v) || 0) + 1); return [...m]; };
+  const COMMANDS = () => [
+    ["Board", () => go("board")], ["Map", () => go("map")], S.flow ? ["Flow view of this flow", () => go("flow")] : null,
+    ["Toggle the sidebar", () => { setSide(prefs.side === "closed" ? "open" : "closed"); savePrefs(); }],
+    ["Group by repo", () => setPref("group", "repo")], ["Group by owner", () => setPref("group", "owner")], ["No grouping", () => setPref("group", "none")],
+    ["Sort by recently touched", () => setPref("sort", "touched")], ["Sort by needs you", () => setPref("sort", "needs")], ["Sort by most ready", () => setPref("sort", "ready")], ["Sort by title", () => setPref("sort", "title")],
+    ["Show done flows", () => { S.showDone = true; render(); }], ["Fit the graph", () => (S.view === "map" ? mapFit() : fit())], ["Critical path", () => { S.crit = !S.crit; render(); }],
+    ["Clear filters", () => clearFilters()], ["Keyboard shortcuts", () => $("keys").showModal()],
+    ["Refresh: scan the task stores again", () => rescan()],
+    HOST && S.flow && byKey.get(S.flow)?.markers.design ? ["Open the design of this flow", () => openFile(byKey.get(S.flow), "design")] : null,
+    HOST && S.flow && byKey.get(S.flow)?.needs_you === "gate" ? ["Go to approval", () => { const f = byKey.get(S.flow); post({ type: "cos-flows-gate", repo: f.repo, epic: f.id }); }] : null,
+  ].filter(Boolean);
+  const palRender = () => {
+    const raw = $("pal-q").value, m = /^(repo|step|state|owner):(.*)$/i.exec(raw.trim());
+    const list = clear($("pal-list")); pal.items = [];
+    const add = (grp, label, sub, run) => pal.items.push({ grp, label, sub, run });
+    if (m) {
+      const k = m[1].toLowerCase(), q = m[2].trim().toLowerCase();
+      for (const [v, n] of facetVals(k).sort((a, b) => b[1] - a[1])) if (!q || subseq(q, v)) add(`${k[0].toUpperCase()}${k.slice(1)}`, k === "owner" ? ownerName(v) : v, `${n} flow${n === 1 ? "" : "s"}`, () => { pal.chips.push([k, v]); $("pal-q").value = ""; palChips(); palRender(); return "keep"; });
+    } else {
+      const q = raw.trim().toLowerCase();
+      const rank = (t) => (t.toLowerCase().startsWith(q) ? 0 : 1);
+      const fl = flows.filter((f) => !q || subseq(q, `${f.title} ${f.id} ${f.repo}`)).sort((a, b) => rank(a.title) - rank(b.title)).slice(0, 8);
+      for (const f of fl) add("Flows", f.title, `${f.repo} · ${f.id}`, () => openFlow(f.key));
+      if (q) {
+        const bs = []; for (const f of flows) for (const b of f.beads) if (subseq(q, `${b.title} ${b.id}`)) bs.push([f, b]);
+        bs.sort((a, b) => rank(a[1].id) - rank(b[1].id) || rank(a[1].title) - rank(b[1].title));
+        for (const [f, b] of bs.slice(0, 8)) add("Beads", `${b.id} ${b.title}`, f.title, () => { openFlow(f.key); openDrawer(b.id); });
+      }
+      for (const [label, run] of COMMANDS().filter(([l]) => !q || subseq(q, l)).slice(0, 8)) add("Commands", label, "", run);
+    }
+    pal.at = clamp(pal.at, 0, Math.max(0, pal.items.length - 1));
+    let grp = null;
+    pal.items.forEach((it, i) => {
+      if (it.grp !== grp) { grp = it.grp; list.append(h("li", { class: "grp", role: "presentation", text: grp })); }
+      list.append(h("li", { class: "opt", role: "option", id: `pal-${i}`, "aria-selected": String(i === pal.at), onclick: () => palRun(i) }, h("span", { text: it.label }), h("span", { class: "s", text: it.sub })));
+    });
+    if (!pal.items.length) list.append(h("li", { class: "grp", text: "Nothing matches" }));
+    $("pal-q").setAttribute("aria-activedescendant", pal.items.length ? `pal-${pal.at}` : "");
+  };
+  const palChips = () => {
+    const box = $("pal-in");
+    for (const c of box.querySelectorAll(".chip")) c.remove();
+    for (const [k, v] of pal.chips) box.insertBefore(h("span", { class: "chip", text: `${k}: ${k === "owner" ? ownerName(v) : v}` }), $("pal-q"));
+  };
+  const palOpen = () => { pal.chips = []; pal.at = 0; pal.ret = document.activeElement; $("pal-q").value = ""; palChips(); palRender(); $("palette").showModal(); $("pal-q").focus(); };
+  const palClose = () => {
+    if (!$("palette").open) return;
+    $("palette").close();
+    if (pal.chips.length) { for (const [k, v] of pal.chips) S.facets[k].add(v); pal.chips = []; if (S.view === "flow") S.view = "board"; render(); commit(false); }
+    pal.ret?.focus?.();
+  };
+  const palRun = (i) => { const it = pal.items[i]; if (!it) return; if (it.run() === "keep") return; palClose(); };
+  $("pal-q").addEventListener("input", () => { pal.at = 0; palRender(); });
+  $("pal-q").addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { pal.at = Math.min(pal.items.length - 1, pal.at + 1); palRender(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { pal.at = Math.max(0, pal.at - 1); palRender(); e.preventDefault(); }
+    else if (e.key === "Enter") { palRun(pal.at); e.preventDefault(); }
+    else if (e.key === "Backspace" && !$("pal-q").value && pal.chips.length) { pal.chips.pop(); palChips(); palRender(); }
+  });
+  $("palette").addEventListener("cancel", (e) => { e.preventDefault(); palClose(); });
+  $("palette").addEventListener("click", (e) => { if (e.target === $("palette")) palClose(); });
+
+  const KEYS = [["⌘K", "Search and commands"], ["r", "Refresh: scan the task stores again"], ["/", "Search box"], ["⌘B or [", "Sidebar"], ["g b · g f · g m", "Board · Flow · Map"], ["j / k", "Next / previous card on the board"],
+    ["Enter", "Open"], ["Esc", "Close, then back"], ["Arrows", "Move along the graph's edges"], ["f", "Fit"], ["+ / −", "Zoom"], ["p", "Pin the focused flow"], ["?", "This sheet"]];
+  $("keytable").append(...KEYS.map(([k, t]) => h("tr", {}, h("td", {}, h("kbd", { text: k })), h("td", { text: t }))));
+
+  // ---- navigation
+  const setPref = (k, v) => { prefs[k] = v; savePrefs(); render(); };
+  const clearFilters = () => { S.q = ""; $("q").value = ""; S.preset = "all"; for (const k of FACETS) S.facets[k].clear(); render(); commit(false); };
+  const go = (view) => { if (view === "flow" && !S.flow) { const f = flowFor(); if (!f) return; return openFlow(f.key); } S.view = view; if (view !== "flow") { S.bead = null; } render(); commit(true); };
+  const openFlow = (key) => { if (!byKey.has(key)) return; S.flow = key; S.bead = null; S.view = "flow"; render(); commit(true); requestAnimationFrame(fit); };
+  // In the app the window rescans and reloads this frame; under `cos dash`
+  // the page asks its server for a fresh scan, keeping the view in the hash.
+  const rescan = () => {
+    const b = document.querySelector('[data-act="rescan"]');
+    if (b) { b.disabled = true; b.lastChild.textContent = " Refreshing…"; }
+    if (HOST) return post({ type: "cos-flows-rescan", hash: hashOf() });
+    const q = new URLSearchParams(location.search); q.set("fresh", "1");
+    location.replace(`${location.pathname}?${q}#${hashOf()}`);
+  };
+
+  let mapReady = false;
+  const render = () => {
+    for (const v of ["board", "flow", "map"]) $(v).hidden = S.view !== v;
+    ds.view = S.view;
+    drawTop(); drawSide(); drawNeeds();
+    if (S.view === "board") drawBoard();
+    if (S.view === "flow") { drawFlow(); if (S.bead) drawDrawer(); }
+    if (S.view === "map") { syncMap(); if (!mapReady) { mapReady = true; requestAnimationFrame(mapFit); } }
+    $("drawer").hidden = !S.bead || S.view === "board";
+    if (!$("drawer").hidden && S.view !== "flow") drawDrawer();
+    for (const b of document.querySelectorAll("[data-act=crit]")) b.setAttribute("aria-pressed", String(S.crit));
+    ds.flows = String(shownFlows().length);
+  };
+
+  // ---- events
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("button,[data-epic],[role=button]"); if (!t) return;
+    const d = t.dataset;
+    if (d.open) return openFlow(d.open);
+    if (d.pin) { const i = prefs.pins.indexOf(d.pin); if (i >= 0) prefs.pins.splice(i, 1); else prefs.pins.push(d.pin); savePrefs(); render(); return; }
+    if (d.preset) { S.preset = d.preset; if (S.view === "flow") S.view = "board"; render(); commit(false); return; }
+    if (d.view) return go(d.view);
+    if (d.go === "board") { S.q = ""; $("q").value = ""; S.preset = "all"; for (const k of FACETS) S.facets[k].clear(); return go("board"); }
+    if (d.go === "board-repo") { const f = byKey.get(S.flow); S.facets.repo = new Set([f.repo]); return go("board"); }
+    if (d.go === "flow") { S.bead = null; $("drawer").hidden = true; return commit(false); }
+    if (d.bead) { highlight(d.bead); return openDrawer(d.bead, t); }
+    if (d.beadLink) { focusBead(d.beadLink); return openDrawer(d.beadLink); }
+    if (d.epic) return openDrawer("epic", t);
+    if (d.file) return openFile(byKey.get(S.flow), d.file);
+    if (d.copy != null) {
+      const done = () => { t.textContent = "Copied"; };
+      const refused = (err) => { t.textContent = "Copy is blocked here: select the text instead"; console.debug("flows: copy refused", err); };
+      if (navigator.clipboard) navigator.clipboard.writeText(d.copy).then(done, refused); else refused("no clipboard");
+      return;
+    }
+    const act = d.act;
+    if (act === "sidebar") { setSide(prefs.side === "closed" ? "open" : "closed"); savePrefs(); }
+    else if (act === "palette") palOpen();
+    else if (act === "rescan") rescan();
+    else if (act === "show-done") { S.showDone = true; render(); commit(false); }
+    else if (act === "clear") clearFilters();
+    else if (act === "close-drawer") closeDrawer();
+    else if (act === "crit") { S.crit = !S.crit; render(); }
+    else if (act === "fit") fit();
+    else if (act === "zoom-in") zoomAt(1.25);
+    else if (act === "zoom-out") zoomAt(0.8);
+  });
+  document.addEventListener("change", (e) => {
+    const t = e.target;
+    if (t.dataset.facet && t.type === "checkbox") { const set = S.facets[t.dataset.facet]; if (t.checked) set.add(t.value); else set.delete(t.value); if (S.view === "flow") S.view = "board"; render(); commit(false); }
+    else if (t.dataset.pref) setPref(t.dataset.pref, t.value);
+    else if (t.name === "engine" && t.checked) {
+      prefs.engine = t.value; savePrefs();
+      if (prefs.engine === "svg") { attempt++; if (engine.kind === "gpu") toSvg(""); engineNote = ""; ds.engineState = "decided"; drawEngineLine(); stamp(); }
+      else if (engine.kind === "svg") pickEngine();
+    }
+  });
+  $("q").addEventListener("input", () => { S.q = $("q").value.slice(0, 200); if (S.view === "flow") S.view = "board"; render(); commit(false); });
+  $("cards").addEventListener("pointerover", (e) => { const c = e.target.closest("[data-bead]"); if (c) highlight(c.dataset.bead); });
+  $("cards").addEventListener("pointerleave", () => highlight(null));
+  $("cards").addEventListener("focusin", (e) => { const c = e.target.closest("[data-bead]"); if (c) highlight(c.dataset.bead); });
+
+  // pan and zoom: the flow canvas and the map share the gesture code
+  const pannable = (box, get, set, onClick) => {
+    let drag = null;
+    box.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || e.target.closest("button,.ctrls,[data-epic],a")) return;
+      drag = { x: e.clientX, y: e.clientY, t: { ...get() }, moved: false };
+      box.setPointerCapture(e.pointerId); box.classList.add("panning");
+    });
+    box.addEventListener("pointermove", (e) => {
+      if (!drag) { onClick?.(e, "hover"); return; }
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+      set({ ...drag.t, x: drag.t.x + dx, y: drag.t.y + dy });
+    });
+    box.addEventListener("pointerup", (e) => { if (drag && !drag.moved) onClick?.(e, "click"); drag = null; box.classList.remove("panning"); });
+    box.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const t = get(), b = box.getBoundingClientRect();
+      if (e.ctrlKey || e.metaKey) { const k = clamp(t.k * Math.exp(-e.deltaY * 0.01), 0.03, 2.5), px = e.clientX - b.left, py = e.clientY - b.top; set({ k, x: px - (px - t.x) * (k / t.k), y: py - (py - t.y) * (k / t.k) }); }
+      else set({ ...t, x: t.x - e.deltaX, y: t.y - e.deltaY });
+    }, { passive: false });
+  };
+  pannable($("canvas"), () => T, (t) => { T = t; applyT(); });
+  pannable($("mapbox"), () => MT, (t) => { MT = t; applyMT(); }, (e, kind) => {
+    const id = engine.pick(e);
+    if (kind === "hover") { if (id !== mapSel.hover) { mapSel.hover = id; engine.focus(); } return; }
+    mapSel.id = id; engine.focus();
+    const n = id && M.byId.get(id); if (!n) return;
+    S.flow = n.key; if (n.bead) openDrawer(n.bead); else openDrawer("epic");
+  });
+  $("mapbox").addEventListener("dblclick", (e) => { const id = engine.pick(e); const n = id && M.byId.get(id); if (n) openFlow(n.key); });
+  $("mini").addEventListener("click", (e) => {
+    if (!layout) return; const r = $("mini").getBoundingClientRect(), W = layout.bounds.x1 + 40, H = layout.bounds.y1 + 40;
+    const sc = Math.min(r.width / W, r.height / H), gx = (e.clientX - r.left - (r.width - W * sc) / 2) / sc, gy = (e.clientY - r.top - (r.height - H * sc) / 2) / sc, b = $("canvas").getBoundingClientRect();
+    T = { ...T, x: b.width / 2 - gx * T.k, y: b.height / 2 - gy * T.k }; applyT();
+  });
+  addEventListener("resize", () => { if (S.view === "flow") drawMini(); if (S.view === "map") engine.draw(); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => engine.restyle());
+
+  let gPrefix = 0;
+  document.addEventListener("keydown", (e) => {
+    const typing = e.target.closest?.("input,textarea,select");
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); if ($("palette").open) palClose(); else palOpen(); return; }
+    if ($("palette").open) return;
+    if (e.key === "Escape") {
+      if ($("keys").open) return;
+      if (typing && e.target.id === "q" && S.q) { return; }
+      if (!$("drawer").hidden) { e.preventDefault(); closeDrawer(); return; }
+      if (S.view !== "board") { e.preventDefault(); go("board"); }
+      return;
+    }
+    if (typing) return;
+    if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); setSide(prefs.side === "closed" ? "open" : "closed"); savePrefs(); return; }
+    if (mod) return;
+    if (gPrefix && Date.now() - gPrefix < 1200) { gPrefix = 0; if (e.key === "b") return go("board"); if (e.key === "f") return go("flow"); if (e.key === "m") return go("map"); }
+    if (e.key === "g") { gPrefix = Date.now(); return; }
+    if (e.key === "/") { e.preventDefault(); if (prefs.side === "closed") setSide("open"); $("q").focus(); return; }
+    if (e.key === "[") { setSide(prefs.side === "closed" ? "open" : "closed"); savePrefs(); return; }
+    if (e.key === "?") { $("keys").showModal(); return; }
+    if (e.key === "r") { rescan(); return; }
+    if (S.view === "board" && (e.key === "j" || e.key === "k")) {
+      const cards = [...$("board").querySelectorAll(".fcard>button.open")], i = cards.indexOf(document.activeElement);
+      const next = cards[e.key === "j" ? Math.min(cards.length - 1, i + 1) : Math.max(0, i - 1)]; next?.focus(); next?.scrollIntoView({ block: "nearest", inline: "nearest" }); return;
+    }
+    if (e.key === "p") { const k = document.activeElement?.closest?.(".fcard")?.dataset.key || (S.view === "flow" ? S.flow : null); if (k) { const i = prefs.pins.indexOf(k); if (i >= 0) prefs.pins.splice(i, 1); else prefs.pins.push(k); savePrefs(); render(); } return; }
+    if (S.view === "flow") {
+      if (e.key === "f") return fit();
+      if (e.key === "+" || e.key === "=") return zoomAt(1.25);
+      if (e.key === "-") return zoomAt(0.8);
+      if (e.key === "0") { T = { k: 1, x: 40, y: 40 }; return applyT(); }
+      if (e.key.startsWith("Arrow")) {
+        const cur = document.activeElement?.dataset?.bead;
+        const f = layout?.f;
+        const target = cur ? moveFocus(cur, e.key) : f?.beads.find((b) => b.ready)?.id || f?.beads[0]?.id;
+        if (target) { e.preventDefault(); focusBead(target); }
+      }
+    }
+    if (S.view === "map" && e.key === "f") mapFit();
+  });
+  addEventListener("hashchange", () => { if (location.hash.slice(1) === hashOf()) return; readHash(); render(); post({ type: "cos-flows-state", hash: hashOf() }); });
+
+  // ---- start
+  readHash();
+  $("q").value = S.q;
+  setSide(prefs.side);
+  document.querySelectorAll('input[name="engine"]').forEach((r) => { r.checked = r.value === prefs.engine; });
+  Object.assign(ds, { engineState: "choosing", lateDropped: "0", lateDevice: "0", adapter: "" });
+  stamp(); drawEngineLine(); drawScanned(); setInterval(drawScanned, 30000);
+  render();
+  if (S.view === "flow") requestAnimationFrame(fit);
+  // `#pal=<text>` opens the palette with that text typed, e.g. a link to `repo:`.
+  const linkedPal = new URLSearchParams(location.hash.slice(1)).get("pal");
+  if (linkedPal != null) { palOpen(); $("pal-q").value = linkedPal.slice(0, 100); palRender(); }
+  pickEngine();
+
+  // ?engine-test: a hook for the headless-Chrome tests, reaching only this page's state and GPU device.
+  if (TEST != null) {
+    const until = (pred, ms = 20000) => new Promise((res, rej) => {
+      const end = performance.now() + ms;
+      const t = () => { if (pred()) return res(); if (performance.now() > end) return rej(new Error(`waited ${ms} ms: engine=${ds.engine} state=${ds.engineState}`)); setTimeout(t, 20); };
+      t();
+    });
+    globalThis.cosFlowsTest = {
+      go: (v) => { go(v); return new Promise((r) => requestAnimationFrame(() => r(ds.view))); },
+      openFlow: (k) => { openFlow(k); return new Promise((r) => requestAnimationFrame(() => r(S.flow))); },
+      state: () => ({ view: S.view, flow: S.flow, bead: S.bead, q: S.q, preset: S.preset, facets: Object.fromEntries(FACETS.map((k) => [k, [...S.facets[k]]])), group: prefs.group, sort: prefs.sort, pins: [...prefs.pins] }),
+      screenOfMap: (id) => { const n = M.byId.get(id), b = $("mapbox").getBoundingClientRect(); return n ? [b.left + MT.x + (n.x + n.w / 2) * MT.k, b.top + MT.y + (n.y + n.h / 2) * MT.k] : null; },
+      mapIds: () => M.nodes.map((n) => n.id),
+      token: (k) => tokenRgb(k).slice(0, 3).map((x) => Math.round(x * 255)),
+      mapZoom: (k) => { MT = { k, x: 20, y: 20 }; applyMT(); return new Promise((r) => requestAnimationFrame(() => r(MT.k))); },
+      loseDevice: () => { engine.device?.destroy(); return until(() => ds.engine === "svg"); },
+      uncapturedError: () => { const d = engine.device; d?.createBuffer({ size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.STORAGE }); d?.queue.submit([]); d?.queue.onSubmittedWorkDone().catch(() => {}); return until(() => ds.engine === "svg"); },
+    };
+  }
+})();
+</script>
 </body>
 </html>

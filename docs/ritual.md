@@ -96,8 +96,14 @@ can write the same line and run `cn approve` itself, which `check` cannot tell a
 pseudo-terminal wrapper gets past the prompt. `check` verifies the design's digest, not who
 approved it.
 
-`approve` is a CLI command only, never an MCP tool. It is the one place `cos` writes to a task
-store, and only on the user's command; the starter kit's read-only rule holds everywhere else.
+`approve` is never an MCP tool. It has two callers: the CLI above, and the desktop app's Flows
+tab, which draws a card per flow waiting at the gate (its design's digest, its reviews and their
+finding counts) with an Approve button and an inline confirm. The button's command
+(`ritual_approve`) is reachable only from the app's own window, never from a shell, an MCP client
+or the sandboxed report, flows and docs frames, and it names the business the window is on, so a
+call sent before a business switch writes nothing. The approver is the workspace profile's
+`owner`, else the repo's `git config user.name`. It is the one place `cos` writes to a task store,
+and only on the user's act; the starter kit's read-only rule holds everywhere else.
 
 ## Reading flows
 
@@ -112,9 +118,16 @@ store, and only on the user's command; the starter kit's read-only rule holds ev
   are reported as gaps, and so is an approved flow the drift check had no time for. The `cn`
   binary is `--cn` / `COS_CN`.
 - **Serving:** `cos dash` and the desktop app serve one scan at a time and reuse a page younger
-  than 10 s.
-- **What is kept:** id, title, type, status, parent, `blocked_by`, approval and the `ritual-*`
-  markers. Descriptions are parsed for markers and dropped. Nothing is exposed over MCP.
+  than 10 s; Refresh on the page (`?fresh=1`) scans again inside that window. The desktop app
+  keeps the last page per business and shows it at once while a scan runs behind it, with the
+  scan's progress, and scans once at start.
+- **What is kept:** id, title, type, status, parent, `blocked_by`, approval, the `ritual-*`
+  markers, each bead's claimant, priority, dates and up to 20 acceptance criteria. The rest of a
+  description is dropped. Nothing is exposed over MCP.
+- **Hire from a bead:** each bead carries its handoff (the repo, the flow and step, the bead, its
+  acceptance criteria as the finish line, what it waits on and unblocks). The drawer's Copy
+  prompt copies it; inside the app, Hire names the bead and the window reads it again from its
+  store, refusing one that is done or waits on an open bead.
 
 ### Inferring the step
 

@@ -8,6 +8,7 @@
   let rows = [];
   let pinned = null;
   let pushed = false;
+  let read = false;
 
   const span = (className, text) => Object.assign(document.createElement("span"), { className, textContent: text });
 
@@ -47,15 +48,21 @@
 
   function render() {
     list.replaceChildren(...rows.map(row));
+    if (!rows.length && (pushed || read)) say(stateView("empty", { title: "No business is registered yet.", line: true }));
+    else if (status.firstElementChild?.dataset.kind === "empty") say(null);
   }
 
+  const say = (view) => {
+    status.replaceChildren(...(view ? [view] : []));
+    status.hidden = !view;
+  };
+
   async function choose(name) {
-    status.hidden = true;
+    say(null);
     try {
       await window.switchTo(name);
     } catch (e) {
-      status.textContent = e instanceof Error ? e.message : String(e);
-      status.hidden = false;
+      say(stateView("unreachable", { title: e instanceof Error ? e.message : String(e), line: true }));
     }
   }
 
@@ -73,14 +80,27 @@
         render();
       })
       .catch((e) => console.debug("[cos] sidebar paths", e));
+    await readRows();
+  }
+
+  async function readRows() {
+    if (!pushed && !rows.length) say(stateView("reading", { title: "Reading the businesses…", line: true }));
     try {
       const first = await invoke("businesses");
+      read = true;
+      say(null);
       if (pushed) return;
       rows = first;
       render();
     } catch (e) {
-      status.textContent = `Could not read the businesses: ${e}`;
-      status.hidden = false;
+      say(
+        stateView("unreachable", {
+          title: "Could not read the businesses",
+          detail: String(e),
+          line: true,
+          action: { icon: "rotate-ccw", label: "Retry", onClick: readRows },
+        }),
+      );
     }
   }
 

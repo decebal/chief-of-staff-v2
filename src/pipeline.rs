@@ -659,3 +659,59 @@ impl Config {
         }
     }
 }
+
+/// How long a brief started from the window may take: the brief caps its
+/// own `claude` run at `proc::CEILING`, and gathering the facts comes first.
+pub const BRIEF_CHILD: Duration = Duration::from_secs(420);
+
+/// What a brief started as a child process left.
+#[derive(Debug, Clone, Serialize)]
+pub struct BriefOutcome {
+    pub ok: bool,
+    /// `cos brief` put it off: the Mac was in a dark wake.
+    pub deferred: bool,
+    /// The last lines it printed to stderr, for a failure.
+    pub said: String,
+}
+
+/// Runs `cos brief` on `home`, `workspace` and `projects` as a child the
+/// caller owns: its own process group, `BRIEF_CHILD` as its one deadline,
+/// killed and reaped on expiry. The directories go in as flags and the env is
+/// pinned to them, so an inherited `COS_BUSINESS` cannot send the run to
+/// another business. The child runs the same sleep-safe brief the CLI and
+/// launchd run, and never opens the report (`--no-open`).
+pub fn brief_child(
+    cos: &Path,
+    home: &Path,
+    workspace: &Path,
+    projects: &Path,
+) -> Result<BriefOutcome> {
+    let mut cmd = std::process::Command::new(cos);
+    cmd.arg("--home")
+        .arg(home)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--projects")
+        .arg(projects)
+        .args(["--no-open", "brief"])
+        .env_remove("COS_BUSINESS")
+        .env("COS_HOME", home)
+        .env("COS_WORKSPACE", workspace)
+        .env("COS_PROJECTS", projects)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = crate::proc::spawn_grouped(&mut cmd)?;
+    let err = crate::proc::lines(child.stderr.take().context("stderr not piped")?);
+    let until = crate::proc::Deadline::capped(BRIEF_CHILD, BRIEF_CHILD);
+    let status = crate::proc::wait_until(&mut child, &until)
+        .with_context(|| format!("cos brief did not finish in {}s", BRIEF_CHILD.as_secs()))?;
+    crate::proc::kill_group(crate::proc::group_of(&child));
+    std::thread::sleep(Duration::from_millis(50));
+    let lines: Vec<String> = err.try_iter().collect();
+    let said = lines[lines.len().saturating_sub(12)..].join("\n");
+    Ok(BriefOutcome {
+        ok: status.success(),
+        deferred: status.code() == Some(75),
+        said,
+    })
+}

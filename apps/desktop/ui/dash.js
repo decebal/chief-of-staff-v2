@@ -21,7 +21,10 @@
 
   function idle(name) {
     state.replaceChildren(
-      node("p", "dash-idle", name ? `${name} is not open. Click its tab to open it.` : "Pick a dashboard tab to open it."),
+      stateView("empty", {
+        title: name ? `${name} is not open` : "No dashboard picked",
+        detail: name ? "Click its tab to open it." : "Pick a dashboard tab to open it.",
+      }),
     );
     state.hidden = false;
   }
@@ -37,6 +40,7 @@
     tabsEl.replaceChildren(
       ...tabs.map((t) => {
         const b = node("button", "app-tab", t.name);
+        b.prepend(icon("activity"));
         b.type = "button";
         b.dataset.view = "dash";
         b.dataset.dash = t.name;
@@ -54,11 +58,18 @@
     try {
       const rows = await invoke("dashboards", { business: ui.business });
       tabs = rows.map(({ name, url, managed }) => ({ name, url, managed }));
-      notice.textContent = "";
+      notice.replaceChildren();
       notice.hidden = true;
     } catch (e) {
       tabs = [];
-      notice.textContent = String(e);
+      notice.replaceChildren(
+        stateView("unreachable", {
+          title: "Dashboards not read",
+          detail: String(e),
+          line: true,
+          action: { icon: "rotate-ccw", label: "Retry", onClick: loadDashTabs },
+        }),
+      );
       notice.hidden = false;
     }
     renderTabs();

@@ -102,6 +102,9 @@ impl Chrome {
             "--no-default-browser-check",
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
+            // Never the login keychain: a fresh profile asks macOS for it.
+            "--use-mock-keychain",
+            "--password-store=basic",
         ])
         .arg(format!("--user-data-dir={}", profile.display()))
         .args(flags)

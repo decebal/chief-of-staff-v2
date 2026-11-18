@@ -36,10 +36,39 @@ const SHIM: &str = r#"window.__TAURI__ = {
     },
   },
   event: {
-    listen: async (name, cb) => { if (name === "agents-changed") setInterval(cb, 2000); return () => {}; },
+    // The app's events, polled from /__events in the order it emitted them.
+    listen: async (name, cb) => {
+      const on = (window.__cosOn ??= {});
+      (on[name] ??= []).push(cb);
+      if (!window.__cosPoll) {
+        let after = 0;
+        window.__cosPoll = setInterval(async () => {
+          const list = await (await fetch(`/__events?after=${after}`)).json();
+          for (const e of list) {
+            after = e.seq;
+            for (const h of on[e.name] ?? []) h({ payload: e.payload });
+          }
+        }, 250);
+      }
+      return () => {};
+    },
   },
 };
 "#;
+
+/// Every event the window listens for, as the preview hands them to the page.
+const EVENTS: &[&str] = &[
+    "flows-progress",
+    "flows-changed",
+    "brief-changed",
+    "report-changed",
+    "agents-changed",
+    "businesses-changed",
+    "dashboards-changed",
+    "dashboard-exited",
+];
+
+type Feed = std::sync::Arc<std::sync::Mutex<Vec<(u64, String, Value)>>>;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -80,18 +109,35 @@ fn main() {
     let w = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .expect("mock window");
+    let feed: Feed = Default::default();
+    for name in EVENTS {
+        use tauri::Listener;
+        let feed = feed.clone();
+        app.listen_any(*name, move |e| {
+            let mut f = feed.lock().unwrap();
+            let seq = f.len() as u64 + 1;
+            let payload = serde_json::from_str(e.payload()).unwrap_or(Value::Null);
+            f.push((seq, (*name).to_owned(), payload));
+        });
+    }
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
     eprintln!("preview on http://127.0.0.1:{port}/ for {}", home.display());
+    // A thread per request, as the app's scheme handler answers: a scan
+    // holding one request must not hold the page's event poll.
     for stream in listener.incoming().flatten() {
-        if let Err(e) = serve(&app, &w, stream) {
-            eprintln!("request failed: {e}");
-        }
+        let (handle, w, feed) = (app.handle().clone(), w.clone(), feed.clone());
+        std::thread::spawn(move || {
+            if let Err(e) = serve(&handle, &w, &feed, stream) {
+                eprintln!("request failed: {e}");
+            }
+        });
     }
 }
 
 fn serve(
-    app: &tauri::App<MockRuntime>,
+    app: &tauri::AppHandle<MockRuntime>,
     w: &tauri::WebviewWindow<MockRuntime>,
+    feed: &Feed,
     mut stream: TcpStream,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -119,108 +165,128 @@ fn serve(
 
     // Headers the scheme sets beyond the type (an SVG's sandbox), passed through.
     let mut extra = String::new();
-    let (status, kind, bytes): (u16, String, Vec<u8>) =
-        if let Some(cmd) = path.strip_prefix("/invoke/") {
-            let mut args: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            // A stand-in harness for every hire, so a preview never starts a paid run.
-            if let (Some(program), Some(a)) = (
-                std::env::var_os("COS_PREVIEW_HARNESS"),
-                args.get_mut("args").and_then(Value::as_object_mut),
-            ) && cmd == "agents_spawn"
-            {
-                a.insert(
-                    "program".into(),
-                    Value::String(program.to_string_lossy().into_owned()),
-                );
-            }
-            let res = get_ipc_response(
-                w,
-                InvokeRequest {
-                    cmd: cmd.into(),
-                    callback: tauri::ipc::CallbackFn(0),
-                    error: tauri::ipc::CallbackFn(1),
-                    url: "tauri://localhost".parse().unwrap(),
-                    body: tauri::ipc::InvokeBody::Json(args),
-                    headers: Default::default(),
-                    invoke_key: INVOKE_KEY.to_string(),
-                },
+    let (status, kind, bytes): (u16, String, Vec<u8>) = if let Some(cmd) =
+        path.strip_prefix("/invoke/")
+    {
+        let mut args: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        // A stand-in harness for every hire, so a preview never starts a paid run.
+        if let (Some(program), Some(a)) = (
+            std::env::var_os("COS_PREVIEW_HARNESS"),
+            args.get_mut("args").and_then(Value::as_object_mut),
+        ) && cmd == "agents_spawn"
+        {
+            a.insert(
+                "program".into(),
+                Value::String(program.to_string_lossy().into_owned()),
             );
-            match res {
-                Ok(b) => (
-                    200,
-                    "application/json".into(),
-                    serde_json::to_vec(&b.deserialize::<Value>().unwrap_or(Value::Null)).unwrap(),
-                ),
-                Err(e) => (
-                    500,
-                    "application/json".into(),
-                    serde_json::to_vec(&e).unwrap(),
-                ),
-            }
-        } else if let Some(rest) = path.strip_prefix("/cosreport") {
-            let rest = if rest.is_empty() { "/" } else { rest };
-            let r = if rest.starts_with("/docs") {
-                let uri = if query.is_empty() {
-                    rest.to_owned()
-                } else {
-                    format!("{rest}?{query}")
-                };
-                let req = tauri::http::Request::builder()
-                    .method(method.as_str())
-                    .uri(uri)
-                    .body(body)
-                    .expect("request");
-                cos_desktop::docs_response(app.handle(), &req)
+        }
+        let res = get_ipc_response(
+            w,
+            InvokeRequest {
+                cmd: cmd.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        );
+        match res {
+            Ok(b) => (
+                200,
+                "application/json".into(),
+                serde_json::to_vec(&b.deserialize::<Value>().unwrap_or(Value::Null)).unwrap(),
+            ),
+            Err(e) => (
+                500,
+                "application/json".into(),
+                serde_json::to_vec(&e).unwrap(),
+            ),
+        }
+    } else if let Some(rest) = path.strip_prefix("/cosreport") {
+        let rest = if rest.is_empty() { "/" } else { rest };
+        let r = if rest.starts_with("/docs") {
+            let uri = if query.is_empty() {
+                rest.to_owned()
             } else {
-                cos_desktop::report_response(app.handle(), rest)
+                format!("{rest}?{query}")
             };
-            let kind = r
-                .headers()
-                .get("Content-Type")
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or("text/plain")
-                .to_owned();
-            for name in ["Content-Security-Policy", "X-Content-Type-Options"] {
-                if let Some(v) = r.headers().get(name).and_then(|h| h.to_str().ok()) {
-                    extra.push_str(&format!("{name}: {v}\r\n"));
-                }
-            }
-            (r.status().as_u16(), kind, r.body().clone())
-        } else if path == "/__preview.js" {
-            (200, "text/javascript".into(), SHIM.as_bytes().to_vec())
+            let req = tauri::http::Request::builder()
+                .method(method.as_str())
+                .uri(uri)
+                .body(body)
+                .expect("request");
+            cos_desktop::docs_response(app, &req)
+        } else if rest == "/flows" {
+            cos_desktop::flows_response(app, Some(query))
         } else {
-            let rel = if path == "/" {
-                "index.html"
-            } else {
-                path.trim_start_matches('/')
-            };
-            let file = Path::new(UI).join(rel);
-            let inside = Path::new(rel)
-                .components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)));
-            match std::fs::read(&file) {
-                Ok(mut b) if inside => {
-                    if rel == "index.html" {
-                        b = String::from_utf8_lossy(&b)
-                            // Before the first script: command.js, sidebar.js and dash.js
-                            // read window.__TAURI__ as they load, ahead of app.js.
-                            .replacen(
-                                r#"<script src="command.js">"#,
-                                r#"<script src="/__preview.js"></script><script src="command.js">"#,
-                                1,
-                            )
-                            .into_bytes();
-                    }
-                    if rel == "app.js" {
-                        b = String::from_utf8_lossy(&b)
-                            .replace("cosreport://localhost/", "/cosreport/")
-                            .into_bytes();
-                    }
-                    (200, kind_of(rel).into(), b)
-                }
-                _ => (404, "text/plain".into(), b"not found".to_vec()),
-            }
+            cos_desktop::report_response(app, rest)
         };
+        let kind = r
+            .headers()
+            .get("Content-Type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("text/plain")
+            .to_owned();
+        for name in ["Content-Security-Policy", "X-Content-Type-Options"] {
+            if let Some(v) = r.headers().get(name).and_then(|h| h.to_str().ok()) {
+                extra.push_str(&format!("{name}: {v}\r\n"));
+            }
+        }
+        (r.status().as_u16(), kind, r.body().clone())
+    } else if path == "/__events" {
+        let after: u64 = query
+            .strip_prefix("after=")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        let list: Vec<Value> = feed
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(seq, _, _)| *seq > after)
+                .map(|(seq, name, payload)| serde_json::json!({ "seq": seq, "name": name, "payload": payload }))
+                .collect();
+        (
+            200,
+            "application/json".into(),
+            serde_json::to_vec(&list).unwrap(),
+        )
+    } else if path == "/__preview.js" {
+        (200, "text/javascript".into(), SHIM.as_bytes().to_vec())
+    } else {
+        let rel = if path == "/" {
+            "index.html"
+        } else {
+            path.trim_start_matches('/')
+        };
+        let file = Path::new(UI).join(rel);
+        let inside = Path::new(rel)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        match std::fs::read(&file) {
+            Ok(mut b) if inside => {
+                if rel == "index.html" {
+                    b = String::from_utf8_lossy(&b)
+                        // Before the first script: command.js, sidebar.js and dash.js
+                        // read window.__TAURI__ as they load, ahead of app.js.
+                        .replacen(
+                            r#"<script src="command.js">"#,
+                            r#"<script src="/__preview.js"></script><script src="command.js">"#,
+                            1,
+                        )
+                        .into_bytes();
+                }
+                if rel == "app.js" {
+                    b = String::from_utf8_lossy(&b)
+                        .replace("cosreport://localhost/", "/cosreport/")
+                        .into_bytes();
+                }
+                (200, kind_of(rel).into(), b)
+            }
+            _ => (404, "text/plain".into(), b"not found".to_vec()),
+        }
+    };
     write!(
         stream,
         "HTTP/1.1 {status} X\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n",

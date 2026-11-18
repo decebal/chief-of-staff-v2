@@ -730,7 +730,7 @@ fn ritual_cmd(cmd: &RitualCmd) -> Result<()> {
                 epic,
                 design,
                 by,
-                review: review.clone(),
+                review: review.clone().map(cos::ritual::ReviewAt::File),
                 without_review: *without_review,
                 yes: *yes,
             };
@@ -747,7 +747,7 @@ fn confirm_on_terminal(line: &str) -> Result<bool> {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
         anyhow::bail!(
-            "cos ritual approve needs a terminal. An agent the user has told to approve this design passes --yes instead"
+            "cos ritual approve needs a terminal. Approve from the Flows tab in Chief of Staff, or an agent the user has told to approve this design passes --yes instead"
         );
     }
     eprint!("Append to the epic and approve it?\n  {line}\nType yes: ");

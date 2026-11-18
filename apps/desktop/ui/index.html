@@ -11,7 +11,7 @@
 <body>
   <aside id="sidebar" aria-label="Businesses">
     <ul id="sidebar-rows" class="biz-rows"></ul>
-    <p id="sidebar-status" class="error small" role="status" hidden></p>
+    <div id="sidebar-status" hidden></div>
   </aside>
   <div class="shell-main">
   <header class="app-header">
@@ -20,23 +20,32 @@
       <span class="wordmark">Chief of Staff</span>
     </div>
     <nav class="app-nav" aria-label="Views">
-      <button class="app-tab" aria-current="page" data-view="today">Today</button>
-      <button class="app-tab" data-view="agents">Agents <span id="agent-count" class="count" hidden></span></button>
-      <button class="app-tab" data-view="flows">Flows</button>
-      <button class="app-tab" data-view="docs">Docs</button>
+      <button class="app-tab" aria-current="page" data-view="today"><i data-icon="sun"></i>Today</button>
+      <button class="app-tab" data-view="agents"><i data-icon="users"></i>Agents <span id="agent-count" class="count" hidden></span></button>
+      <button class="app-tab" data-view="flows"><i data-icon="workflow"></i>Flows</button>
+      <button class="app-tab" data-view="docs"><i data-icon="book-open"></i>Docs</button>
     </nav>
     <div class="dash-group">
-      <p id="dash-notice" class="error small" role="status" hidden></p>
+      <div id="dash-notice" hidden></div>
       <nav id="dash-tabs" class="app-nav" aria-label="Dashboards"></nav>
     </div>
     <div class="where">
       <button id="biz-open" class="btn" data-variant="outline" data-size="sm" type="button" aria-haspopup="dialog" title="Switch business (⌘K)">
-        <span class="muted">business</span> <span id="biz-name"></span>
+        <i data-icon="layers"></i><span class="muted">business</span> <span id="biz-name"></span>
       </button>
-      <span id="biz-pin" class="badge" data-variant="outline" hidden></span>
-      <span class="muted">workspace</span>
-      <span id="ws-path" class="path"></span>
-      <span id="slots" class="badge num" data-variant="outline"></span>
+      <details id="settings" class="settings-menu">
+        <summary aria-label="Settings"><i data-icon="settings"></i></summary>
+        <div class="settings-panel" role="group" aria-labelledby="settings-title">
+          <h2 id="settings-title" class="section-title">Business</h2>
+          <p id="ws-name" class="ws-name"></p>
+          <p id="biz-pin" class="muted small" hidden></p>
+          <details class="ws-where">
+            <summary>Full path</summary>
+            <dl id="ws-paths" class="kv"></dl>
+          </details>
+          <button id="ws-switch" class="btn" data-variant="ghost" data-size="sm" type="button"><i data-icon="layers"></i>Switch business…</button>
+        </div>
+      </details>
     </div>
   </header>
 
@@ -56,6 +65,8 @@
 
           <fieldset class="work">
             <legend>Work</legend>
+            <label id="h-bead-choice" class="choice" hidden><input class="input" type="radio" name="h-work" value="bead"> Flow bead</label>
+            <p id="h-bead" class="small muted" hidden></p>
             <label class="choice"><input class="input" type="radio" name="h-work" value="deliverable" checked> Deliverable</label>
             <select id="h-deliverable" class="select" aria-label="Deliverable"></select>
             <label class="choice"><input class="input" type="radio" name="h-work" value="brief"> Brief action</label>
@@ -63,7 +74,7 @@
             <label class="choice"><input class="input" type="radio" name="h-work" value="goals"> Week goal</label>
             <select id="h-goals" class="select" aria-label="Week goal"></select>
             <label class="choice"><input class="input" type="radio" name="h-work" value="own"> Own prompt</label>
-            <textarea id="h-prompt" class="textarea mono" rows="5" placeholder="What the agent should do"></textarea>
+            <textarea id="h-prompt" class="textarea mono" rows="5" placeholder="What the agent should do" aria-label="Own prompt"></textarea>
           </fieldset>
 
           <div class="row">
@@ -138,12 +149,12 @@
             <h3>Permission</h3>
             <p>Sandboxed worktree, no network for shell commands. Drafts only: nothing is sent, merged, tagged or deployed. This hire grants nothing outside the worktree.</p>
           </div>
-          <p id="h-msg" class="muted" role="status"></p>
+          <div id="h-msg" class="muted" role="status"></div>
         </form>
       </section>
       <footer>
-        <button id="h-cancel" class="btn" data-variant="outline" type="button">Cancel</button>
-        <button id="h-go" class="btn" data-variant="primary" type="submit" form="hire-form">Hire</button>
+        <button id="h-cancel" class="btn" data-variant="outline" type="button"><i data-icon="x"></i>Cancel</button>
+        <button id="h-go" class="btn" data-variant="primary" type="submit" form="hire-form"><i data-icon="user-plus"></i><span>Hire</span></button>
       </footer>
     </div>
   </dialog>
@@ -157,27 +168,36 @@
       <input id="switch-filter" class="input" type="search" autocomplete="off" spellcheck="false"
         placeholder="Business name or folder" aria-label="Filter businesses" aria-controls="switch-list">
       <ul id="switch-list" class="switch-list" role="listbox" aria-label="Businesses"></ul>
-      <p id="switch-msg" class="error" hidden></p>
+      <div id="switch-state"></div>
     </div>
   </dialog>
 
   <main>
     <section id="view-today" class="view active">
-      <iframe id="report" title="Today's report" sandbox="allow-scripts allow-popups"></iframe>
+      <div class="framed" id="report-box">
+        <iframe id="report" aria-label="Today's report" sandbox="allow-scripts allow-popups"></iframe>
+      </div>
     </section>
 
     <section id="view-flows" class="view">
-      <iframe id="flows-frame" title="Flows" sandbox="allow-popups"></iframe>
+      <div id="flow-gates" class="gates" role="region" aria-label="Designs waiting for your approval" hidden></div>
+      <p id="flow-open-error" class="error small" role="status" hidden></p>
+      <div class="framed" id="flows-box">
+        <!-- Scripted, with an opaque origin: it reads only the scan inlined into it, and asks the window, by message, for anything else. -->
+        <iframe id="flows-frame" aria-label="Flows" sandbox="allow-scripts allow-popups"></iframe>
+      </div>
     </section>
 
     <section id="view-docs" class="view">
-      <!-- Same-origin within cosreport:, its own origin apart from the app, so it can read and save through /docs. -->
-      <iframe id="docs-frame" title="Documentation room" sandbox="allow-scripts allow-popups allow-same-origin"></iframe>
+      <div class="framed" id="docs-box">
+        <!-- Same-origin within cosreport:, its own origin apart from the app, so it can read and save through /docs. -->
+        <iframe id="docs-frame" aria-label="Documentation room" sandbox="allow-scripts allow-popups allow-same-origin"></iframe>
+      </div>
     </section>
 
     <section id="view-dash" class="view">
-      <div id="dash-state" class="dash-state" role="status"></div>
-      <iframe id="dash-frame" title="Dashboard" sandbox="allow-scripts allow-same-origin allow-forms" hidden></iframe>
+      <div id="dash-state" class="dash-state"></div>
+      <iframe id="dash-frame" aria-label="Dashboard" sandbox="allow-scripts allow-same-origin allow-forms" hidden></iframe>
     </section>
 
     <section id="view-agents" class="view">
@@ -185,20 +205,21 @@
         <div class="agents-bar">
           <div class="tabs">
             <nav role="tablist" aria-label="Agents" id="agent-panes">
-              <button role="tab" aria-selected="true" data-pane="staff">Staff</button>
-              <button role="tab" aria-selected="false" data-pane="runs">Runs <span id="runs-count" class="num"></span></button>
-              <button role="tab" aria-selected="false" data-pane="scorecard">Scorecard</button>
+              <button role="tab" aria-selected="true" data-pane="staff"><i data-icon="users"></i>Staff</button>
+              <button role="tab" aria-selected="false" data-pane="runs"><i data-icon="list"></i>Runs <span id="runs-count" class="num"></span></button>
+              <button role="tab" aria-selected="false" data-pane="scorecard"><i data-icon="trophy"></i>Scorecard</button>
             </nav>
           </div>
           <div class="agents-bar-end">
-            <button id="hire-open" class="btn" data-variant="primary" type="button">Hire</button>
+            <span id="slots" class="badge num" data-variant="outline" hidden></span>
+            <button id="hire-open" class="btn" data-variant="primary" type="button"><i data-icon="user-plus"></i>Hire</button>
           </div>
         </div>
         <div id="policy-note" class="alert" data-variant="destructive" hidden>
           <h2>Hiring policy not used</h2>
           <section id="policy-note-text"></section>
         </div>
-        <p id="agents-error" class="error" hidden></p>
+        <div id="agents-error" hidden></div>
 
         <div id="pane-staff" class="pane">
           <article id="head-card" class="card head"></article>
@@ -216,22 +237,17 @@
               <tbody></tbody>
             </table>
           </div>
-          <div id="no-agents" class="empty" hidden>
-            <header>
-              <h3>No agents yet</h3>
-              <p>Hire one from the staff. Each runs in its own worktree under a supervisor that outlives this window.</p>
-            </header>
-          </div>
+          <div id="no-agents" hidden></div>
         </div>
 
         <div id="pane-run" class="pane" hidden>
           <div class="pane-head">
-            <button id="d-back" class="btn" data-variant="ghost" data-size="sm" type="button">← Back</button>
+            <button id="d-back" class="btn" data-variant="ghost" data-size="sm" type="button"><i data-icon="arrow-left"></i>Back</button>
             <h2 id="d-title"></h2>
             <div class="actions">
-              <button id="d-stop" class="btn" data-variant="outline" data-size="sm" type="button">Stop</button>
-              <button id="d-rejudge" class="btn" data-variant="outline" data-size="sm" type="button">Re-judge</button>
-              <button id="d-clean" class="btn" data-variant="destructive" data-size="sm" type="button">Clean</button>
+              <button id="d-stop" class="btn" data-variant="outline" data-size="sm" type="button"><i data-icon="square"></i>Stop</button>
+              <button id="d-rejudge" class="btn" data-variant="outline" data-size="sm" type="button"><i data-icon="scale"></i>Re-judge</button>
+              <button id="d-clean" class="btn" data-variant="destructive" data-size="sm" type="button"><i data-icon="trash-2"></i>Clean</button>
             </div>
           </div>
           <div id="d-badges" class="badges"></div>
@@ -280,7 +296,7 @@
                   <textarea id="r-evidence" class="textarea mono" rows="2"></textarea>
                 </div>
                 <p id="r-msg" class="muted" role="status"></p>
-                <div><button id="r-save" class="btn" data-variant="primary" data-size="sm" type="submit">Record result</button></div>
+                <div><button id="r-save" class="btn" data-variant="primary" data-size="sm" type="submit"><i data-icon="save"></i><span>Record result</span></button></div>
               </form>
             </section>
           </article>
@@ -298,17 +314,15 @@
               <tbody></tbody>
             </table>
           </div>
-          <div id="no-scores" class="empty" hidden>
-            <header>
-              <h3>No verdicts yet</h3>
-              <p>A row lands here each time an agent ends and is judged.</p>
-            </header>
-          </div>
+          <div id="no-scores" hidden></div>
         </div>
       </div>
     </section>
   </main>
   </div>
+  <script src="vendor/lucide/icons-0.556.0.js"></script>
+  <script src="art/art.js"></script>
+  <script src="states.js"></script>
   <script src="command.js"></script>
   <script src="sidebar.js"></script>
   <script src="dash.js"></script>

@@ -29,6 +29,11 @@ Both figures are repeat runs that matched exactly. The fixes:
   4.5:1 (color-contrast);
 - the hire dialog's work selects are named (select-name).
 
+2026-11-18, with the Flows page, the state views and the settings gear: 24 states, light and
+dark, 0 violation nodes and 2,223 colour-contrast nodes axe could not decide, in two runs that
+matched exactly. The four Flows states (board, a flow with a bead's drawer open, the Map, the
+palette) add 166 of the undecided nodes, 140 of them the Map's SVG labels.
+
 The undecided nodes are mostly text inside SVG (the docs graph's labels,
 which carry a `--background` halo), glyphs axe skips by design, and content
 behind an open modal. axe decides part of WCAG: keyboard order, reflow at
@@ -46,9 +51,10 @@ number.
    scheme under a rendered page leaves some `light-dark()` colours stale.
 
 States: Today, Agents (staff, runs, scorecard, a run, the hire dialog), the
-business switcher, Flows, Docs and every dashboard the window lists; Today
-and runs over an empty home; the report's tabs; the Flows page; the docs
-room's bets, a topic, the reader and focus mode. The frames are opaque-origin
+business switcher, the settings gear, Flows, Docs and every dashboard the
+window lists; Today and runs over an empty home; the report's tabs; the Flows
+page's board, a flow with a bead's drawer open, the Map and the palette; the
+docs room's bets, a topic, the reader and focus mode. The frames are opaque-origin
 sandboxes axe cannot enter, so their pages are audited top-level.
 
 Chrome runs with `--use-mock-keychain --password-store=basic` and a scratch

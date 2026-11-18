@@ -94,13 +94,14 @@ fn main() -> Result<()> {
     );
     Ok(())
 }
-/// Fictional ritual flows for the Flows page: a `.chronis/tasks.json` in two
+
+/// Fictional ritual flows for the Flows page: a `.chronis/tasks.json` in four
 /// demo repos and a stand-in `cn` that prints it, so no real tracker runs.
 fn flows(home: &Path) -> Result<()> {
     let cn = home.join("bin/cn");
     write(
         &cn,
-        "#!/bin/sh\n[ \"$1\" = list ] && cat .chronis/tasks.json\n",
+        "#!/bin/sh\n[ -n \"$COS_DEMO_SLOW\" ] && sleep \"$COS_DEMO_SLOW\"\n[ \"$1\" = list ] && cat .chronis/tasks.json\n",
     )?;
     std::fs::set_permissions(&cn, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
 
@@ -248,13 +249,320 @@ fn flows(home: &Path) -> Result<()> {
             ""
         ),
     ]);
-    for (repo, tasks) in [("api-gateway", gateway), ("web-app", web)] {
+    let (mut gateway, mut web) = (gateway, web);
+    let set = |list: &mut serde_json::Value, id: &str, fields: serde_json::Value| {
+        for t in list.as_array_mut().into_iter().flatten() {
+            if t["id"] == id {
+                for (k, v) in fields.as_object().into_iter().flatten() {
+                    t[k] = v.clone();
+                }
+            }
+        }
+    };
+    let crit = |items: &[(bool, &str)]| {
+        let lines: String = items
+            .iter()
+            .map(|(done, text)| format!("- [{}] {text}\n", if *done { "x" } else { " " }))
+            .collect();
+        format!(
+            "As the team, we want this story done end to end.\n\n## Acceptance criteria\n{lines}"
+        )
+    };
+    set(
+        &mut gateway,
+        "t-a1f1",
+        json!({ "claimed_by": "alex", "created_at": "2026-11-02T09:00:00Z", "done_at": "2026-11-04T16:00:00Z",
+                "done_reason": "migration applied on staging; 14 tests green",
+                "description": crit(&[(true, "Test: the migration is reversible (file: tests/migrate.rs)"), (true, "All tests green: task test")]) }),
+    );
+    set(
+        &mut gateway,
+        "t-a1f2",
+        json!({ "claimed_by": "claude:3c4d5e6f", "priority": "p1", "created_at": "2026-11-02T09:00:00Z",
+                "description": crit(&[(true, "Test: a write lands in the new store (file: tests/write.rs)"), (false, "Dual-write behind a flag"), (false, "All tests green: task test")]) }),
+    );
+    set(
+        &mut gateway,
+        "t-a1f3",
+        json!({ "created_at": "2026-11-02T09:00:00Z",
+                "description": crit(&[(false, "Test: reads come from the new store (file: tests/read.rs)"), (false, "Backfill finishes inside one deadline")]) }),
+    );
+    set(
+        &mut gateway,
+        "t-a1f4",
+        json!({ "created_at": "2026-11-02T09:00:00Z", "priority": "p3" }),
+    );
+    set(
+        &mut gateway,
+        "t-c301",
+        json!({ "claimed_by": "sam", "done_at": "2026-10-20T11:00:00Z", "done_reason": "returns 200 with the build id" }),
+    );
+    set(
+        &mut gateway,
+        "t-c302",
+        json!({ "claimed_by": "sam", "done_at": "2026-10-21T15:00:00Z" }),
+    );
+    set(
+        &mut web,
+        "t-e501",
+        json!({ "claimed_by": "priya", "done_at": "2026-11-06T10:00:00Z" }),
+    );
+    set(
+        &mut web,
+        "t-e502",
+        json!({ "claimed_by": "priya", "done_at": "2026-11-08T12:00:00Z" }),
+    );
+    let web_more = [
+        approved(t(
+            "t-f600",
+            "Checkout redesign",
+            "epic",
+            "open",
+            None,
+            &[],
+            "ritual-design: docs/plans/checkout-design.md\nritual-approved: docs/plans/checkout-design.md sha256:demo by Alex Rivera",
+        )),
+        t(
+            "t-f601",
+            "US-001: new cart summary",
+            "task",
+            "done",
+            Some("t-f600"),
+            &[],
+            "",
+        ),
+        t(
+            "t-f602",
+            "US-002: one-page payment",
+            "task",
+            "open",
+            Some("t-f600"),
+            &["t-f601"],
+            "",
+        ),
+    ];
+    web.as_array_mut().unwrap().extend(web_more);
+    let mut data = json!([
+        approved(t(
+            "t-g700",
+            "Nightly export to the warehouse",
+            "epic",
+            "open",
+            None,
+            &[],
+            "ritual-brief: docs/plans/export-brief.md\nritual-design: docs/plans/export-design.md\nritual-approved: docs/plans/export-design.md sha256:demo by Alex Rivera\nritual-plan: docs/plans/export-plan.md",
+        )),
+        t(
+            "t-g701",
+            "US-001: export schema",
+            "task",
+            "done",
+            Some("t-g700"),
+            &[],
+            ""
+        ),
+        t(
+            "t-g702",
+            "US-002: incremental extract",
+            "task",
+            "in-progress",
+            Some("t-g700"),
+            &["t-g701"],
+            ""
+        ),
+        t(
+            "t-g703",
+            "US-003: load job",
+            "task",
+            "open",
+            Some("t-g700"),
+            &["t-g701"],
+            ""
+        ),
+        t(
+            "t-g704",
+            "US-004: replay from the request log",
+            "task",
+            "open",
+            Some("t-g700"),
+            &["t-g702", "t-a1f5"],
+            ""
+        ),
+        t(
+            "t-g705",
+            "US-005: freshness alert",
+            "task",
+            "open",
+            Some("t-g700"),
+            &["t-g703", "t-g704"],
+            ""
+        ),
+        t("t-h800", "Schema cleanup", "epic", "open", None, &[], ""),
+        t(
+            "t-h801",
+            "Drop the legacy columns",
+            "task",
+            "open",
+            Some("t-h800"),
+            &["t-h802"],
+            ""
+        ),
+        t(
+            "t-h802",
+            "Rewrite the readers",
+            "task",
+            "open",
+            Some("t-h800"),
+            &["t-h801"],
+            ""
+        ),
+    ]);
+    set(
+        &mut data,
+        "t-g701",
+        json!({ "claimed_by": "noor", "created_at": "2026-11-05T09:00:00Z", "done_at": "2026-11-07T17:00:00Z", "done_reason": "schema reviewed with the warehouse team" }),
+    );
+    set(
+        &mut data,
+        "t-g702",
+        json!({ "claimed_by": "claude:5e6f7a8b", "created_at": "2026-11-05T09:00:00Z",
+                "description": crit(&[(true, "Test: only changed rows are extracted (file: tests/extract.rs)"), (false, "A run resumes after a failure"), (false, "All tests green: task test")]) }),
+    );
+    set(
+        &mut data,
+        "t-g703",
+        json!({ "created_at": "2026-11-05T09:00:00Z", "description": crit(&[(false, "Test: a load is idempotent (file: tests/load.rs)")]) }),
+    );
+    let ops = json!([
+        t(
+            "t-i900",
+            "On-call runbook refresh",
+            "epic",
+            "open",
+            None,
+            &[],
+            ""
+        ),
+        t(
+            "t-i901",
+            "Pager rotation page",
+            "task",
+            "done",
+            Some("t-i900"),
+            &[],
+            ""
+        ),
+        t(
+            "t-i902",
+            "Database failover steps",
+            "task",
+            "in-progress",
+            Some("t-i900"),
+            &["t-i901"],
+            ""
+        ),
+        t(
+            "t-i903",
+            "Cache warm-up steps",
+            "task",
+            "open",
+            Some("t-i900"),
+            &["t-i901"],
+            ""
+        ),
+        t(
+            "t-j950",
+            "Retire the old status page",
+            "epic",
+            "done",
+            None,
+            &[],
+            ""
+        ),
+        t(
+            "t-j951",
+            "Redirect to the new page",
+            "task",
+            "done",
+            Some("t-j950"),
+            &[],
+            ""
+        ),
+    ]);
+    let mut ops = ops;
+    set(
+        &mut ops,
+        "t-i902",
+        json!({ "claimed_by": "sam", "created_at": "2026-11-09T09:00:00Z" }),
+    );
+    for (repo, tasks) in [
+        ("api-gateway", gateway),
+        ("web-app", web),
+        ("data-pipeline", data),
+        ("ops-runbooks", ops),
+    ] {
         write(
             &home.join("projects").join(repo).join(".chronis/tasks.json"),
             &tasks.to_string(),
         )?;
     }
-    Ok(())
+    // Approved at a digest the file no longer has: the Flows page shows it as drift.
+    write(
+        &home.join("projects/web-app/docs/plans/checkout-design.md"),
+        "# Checkout redesign: design\n\nOne page for cart and payment.\n",
+    )?;
+    rate_limits_design(&home.join("projects/api-gateway"))
+}
+
+/// The design `t-b200` waits on, committed on its branch with two review
+/// rounds, so the Flows tab shows an approval card.
+fn rate_limits_design(repo: &Path) -> Result<()> {
+    let plans = repo.join("docs/plans");
+    git(repo, &["checkout", "-q", "-b", "feat/NW-430-rate-limits"])?;
+    write(
+        &plans.join("rate-limits-brief.md"),
+        "# Rate limits per tenant: brief\n\nOne tenant's burst slows every other tenant's requests. Limit each tenant, and tell them when they hit it.\n",
+    )?;
+    let design = "docs/plans/rate-limits-design.md";
+    write(
+        &repo.join(design),
+        "# Rate limits per tenant: design\n\nA token bucket per tenant in the gateway, sized from the tenant's plan, with a 429 and a Retry-After header when it empties.\n",
+    )?;
+    let sha = cos::flows::sha256_file(&repo.join(design))?;
+    let review = |sha: &str, body: &str| {
+        format!("---\ndesign: {design}\ndesign-sha256: {sha}\nverdict: findings\n---\n\n{body}")
+    };
+    write(
+        &plans.join("rate-limits-design-review-1.md"),
+        &review(
+            "superseded",
+            "1. blocking Storage: the bucket lives in one gateway process, so three replicas give a tenant three times its limit. Fix: keep the count in Redis.\n2. should Plans: the plan-to-limit table has no owner. Fix: name one.\n",
+        ),
+    )?;
+    write(
+        &plans.join("rate-limits-design-review.md"),
+        &review(
+            &sha,
+            "1. should Headers: Retry-After is in seconds, but the design does not say what a client sees during a burst. Fix: add one example.\n2. should Rollout: no flag to turn limits off per tenant. Fix: add one.\n3. nit Wording: \"bucket\" and \"quota\" mean the same thing here.\n",
+        ),
+    )?;
+    git(repo, &["add", "docs/plans"])?;
+    git(
+        repo,
+        &[
+            "-c",
+            "user.name=Demo",
+            "-c",
+            "user.email=demo@northwind.example",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "Rate limits design and reviews",
+        ],
+    )?;
+    git(repo, &["checkout", "-q", "main"])
 }
 
 fn write(path: &Path, text: &str) -> Result<()> {
