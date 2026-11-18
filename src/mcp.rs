@@ -81,6 +81,10 @@ pub struct SpinOffArgs {
     /// The hire is refused when the role cannot do the work from its sandbox.
     #[serde(default)]
     role: Option<String>,
+    /// Run the hire in a herdr terminal — a live space you watch in herdr —
+    /// instead of under a cos supervisor. The harness still comes from `harness`.
+    #[serde(default)]
+    herdr: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -242,7 +246,7 @@ impl Cos {
         let projects = self.cfg.projects.clone();
         let budget = self.cfg.budget.unwrap_or(5.0);
         let explicit_budget = self.cfg.budget.is_some();
-        let run = move || -> Result<agents::Spec> {
+        let run = move || -> Result<(agents::Spec, Option<String>)> {
             let task = agents::tasks(&home, args.from)?
                 .into_iter()
                 .find(|t| t.n == args.item)
@@ -283,10 +287,21 @@ impl Cos {
                 business: None,
                 layer: crate::business::Layer::Flags,
             };
-            agents::spawn(&triple, req, &cos)
+            if args.herdr {
+                let (spec, addr) = agents::spawn_in_herdr(&triple, req)?;
+                Ok((spec, Some(addr)))
+            } else {
+                Ok((agents::spawn(&triple, req, &cos)?, None))
+            }
         };
         match tokio::task::spawn_blocking(run).await {
-            Ok(Ok(spec)) => CallToolResult::success(vec![ContentBlock::text(format!(
+            Ok(Ok((spec, Some(addr)))) => CallToolResult::success(vec![ContentBlock::text(format!(
+                "started {} in {} as a herdr space ({addr}) — watch it with `hc attach cos-{}`",
+                spec.id,
+                spec.workdir.display(),
+                spec.id
+            ))]),
+            Ok(Ok((spec, None))) => CallToolResult::success(vec![ContentBlock::text(format!(
                 "started {} in {} — follow with the agents tool or `cos agents tail -f {}`",
                 spec.id,
                 spec.workdir.display(),
