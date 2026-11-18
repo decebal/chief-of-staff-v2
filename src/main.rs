@@ -280,10 +280,6 @@ enum AgentCmd {
         /// contract and mandate fill what the other flags leave empty.
         #[arg(long)]
         role: Option<String>,
-        /// Run the hire in a herdr terminal — a live space you watch in herdr —
-        /// instead of under a cos supervisor. Pick the harness with --harness.
-        #[arg(long)]
-        herdr: bool,
     },
     /// Judge an ended agent again: its diff, its checks, its scope.
     Judge { id: String },
@@ -329,7 +325,7 @@ enum AgentCmd {
         force: bool,
     },
     #[command(hide = true)]
-    Supervise { id: String },
+    Observe { id: String },
     /// The build-tool shim: wait for the machine-wide build lock, then exec.
     #[command(hide = true)]
     BuildSlot {
@@ -371,11 +367,11 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
         Cmd::Business { cmd } => business_cmd(cli, cmd),
         // These take their paths as arguments and never resolve a triple.
         Cmd::Agents {
-            cmd: AgentCmd::Supervise { id },
-        } => agents::supervise(
+            cmd: AgentCmd::Observe { id },
+        } => agents::observe(
             cli.home
                 .as_deref()
-                .context("agents supervise needs --home")?,
+                .context("agents observe needs --home")?,
             id,
         ),
         Cmd::Agents {
@@ -775,7 +771,6 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
             scope,
             done_when,
             role,
-            herdr,
         } => {
             use agents::hire::Ask;
             let picked: Vec<Ask> = match (from, prompt) {
@@ -810,7 +805,6 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
                     anyhow::bail!("give --from brief|goals, --deliverable <id> or --prompt")
                 }
             };
-            let cos = std::env::current_exe().context("locate the cos binary")?;
             if let Some(note) = agents::policy::load(home).note {
                 eprintln!("{note}; hiring on the built-in defaults");
             }
@@ -848,14 +842,9 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
                         budget: cli.budget.is_some(),
                     },
                 })?;
-                if *herdr {
-                    let (spec, addr) = agents::spawn_in_herdr(t, req)?;
-                    println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
-                    eprintln!("herdr: {addr}  ·  watch: hc attach cos-{}", spec.id);
-                } else {
-                    let spec = agents::spawn(t, req, &cos)?;
-                    println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
-                }
+                let (spec, addr) = agents::spawn_in_herdr(t, req)?;
+                println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
+                eprintln!("herdr: {addr}  ·  watch: hc attach cos-{}", spec.id);
             }
             if !cli.dry_run {
                 eprintln!("watch: cos agents watch   ·   live page: cos dash → /agents");
@@ -982,7 +971,7 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
             anyhow::ensure!(refused == 0, "{refused} agent(s) kept");
             Ok(())
         }
-        AgentCmd::Supervise { .. } | AgentCmd::BuildSlot { .. } => {
+        AgentCmd::Observe { .. } | AgentCmd::BuildSlot { .. } => {
             unreachable!("run dispatches these before a triple resolves")
         }
     }

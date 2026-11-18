@@ -1,11 +1,11 @@
 //! `cos agents`: spin off coding agents (Claude Code, Codex) on the prompts a
 //! brief hands out, then watch them.
 //!
-//! Each agent gets its own detached worktree and a `cos agents supervise`
-//! process that owns the harness for its whole life: one deadline, kill the
-//! process group, reap, record. Everything an agent leaves is under
-//! `out/agents/<id>/`: `spec.json`, `state.json`, `events.jsonl` (the
-//! harness's raw stream) and the worktree.
+//! Each agent gets its own detached worktree and runs in a herdr space, which
+//! owns the harness for its whole life. cos starts a `cos agents observe`
+//! process that watches that space (never drives it) and judges the worktree
+//! when it ends — one owner per run. Everything an agent leaves is under
+//! `out/agents/<id>/`: `spec.json`, `state.json` and the worktree.
 
 use std::fmt;
 use std::os::unix::process::CommandExt;
@@ -29,14 +29,14 @@ pub mod judge;
 pub mod ledger;
 pub mod osc;
 pub mod policy;
+pub mod observe;
 pub mod seed;
 pub mod slots;
-mod supervise;
 pub mod view;
 pub mod watch;
 
 pub use judge::{Contract, Expects, Outcome, Verdict};
-pub use supervise::supervise;
+pub use observe::observe;
 
 /// No agent runs longer than this, whatever it asks for.
 pub const CEILING: Duration = Duration::from_secs(2 * 60 * 60);
@@ -392,24 +392,39 @@ pub fn infer_repo(prompt: &str, projects: &Path) -> Option<PathBuf> {
         .find(|repo| repo.join(".git").exists())
 }
 
-/// Creates the agent's directory and worktree, records its spec, and starts
-/// its supervisor detached. Returns once the supervisor is started; the agent
-/// itself runs in the background. The agent's env pins `triple`, so a `cos`
-/// it runs resolves the business that spawned it.
-pub fn spawn(triple: &Triple, req: Request, cos: &Path) -> Result<Spec> {
+/// Cuts the worktree and records the spec, seeds the worktree, then runs the
+/// hire's harness in a herdr space. herdr owns that process for its whole life;
+/// a detached `cos agents observe` watches the space and judges the worktree
+/// when it ends. cos never owns the run — one owner per run. The observer's env
+/// pins `triple`, so a `cos` it runs resolves the business that spawned it.
+pub fn spawn_in_herdr(triple: &Triple, req: Request) -> Result<(Spec, String)> {
     let Prepared {
         spec,
         home,
         workspace,
         projects,
     } = prepare(triple, req)?;
-    let d = dir(&home, &spec.id);
+    let run = RunDir {
+        path: dir(&home, &spec.id),
+    };
 
-    let log = std::fs::File::create(d.join("supervisor.log"))?;
-    let mut cmd = Command::new(cos);
+    if let (true, Some(repo)) = (spec.worktree, spec.repo.as_deref()) {
+        let (_, mut state) = load(&run)?;
+        state.status = Status::Seeding;
+        write_state(&run, &state)?;
+        state.seeded = seed::run(repo, &spec.workdir, &run.path().join("seed.log"))
+            .context("seed the worktree")?;
+        write_state(&run, &state)?;
+    }
+
+    let addr = crate::herdr::open(&spec, &home, &workspace, &projects)?;
+
+    let cos = std::env::current_exe().context("locate the cos binary")?;
+    let log = std::fs::File::create(run.path().join("observe.log"))?;
+    let mut cmd = Command::new(&cos);
     cmd.arg("--home")
         .arg(&home)
-        .args(["agents", "supervise", &spec.id])
+        .args(["agents", "observe", &spec.id])
         .env_remove("COS_BUSINESS")
         .env("COS_HOME", &home)
         .env("COS_WORKSPACE", &workspace)
@@ -418,28 +433,26 @@ pub fn spawn(triple: &Triple, req: Request, cos: &Path) -> Result<Spec> {
         .stdout(log.try_clone()?)
         .stderr(log);
     // SAFETY: setsid is async-signal-safe and touches no memory. Its own
-    // session keeps a closed terminal or a Ctrl-C there from reaching the agent.
+    // session keeps a closed terminal here from reaching the observer.
     unsafe {
         cmd.pre_exec(|| {
             libc::setsid();
             Ok(())
         });
     }
-    let mut child = cmd.spawn().context("start the agent supervisor")?;
-    // Reaped here so a long-lived parent (`cos mcp`) collects no zombies.
+    let mut child = cmd.spawn().context("start the hire's observer")?;
+    // Reaped here so a long-lived parent (`cos mcp`) collects no zombie.
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    Ok(spec)
+
+    Ok((spec, addr))
 }
 
-/// The same hire, run in a herdr terminal instead of under a cos supervisor.
-/// herdr owns the process; cos keeps the spec and worktree so it can judge the
-/// result later, and starts no supervisor of its own — one owner per run.
-pub fn spawn_in_herdr(triple: &Triple, req: Request) -> Result<(Spec, String)> {
-    let Prepared { spec, .. } = prepare(triple, req)?;
-    let addr = crate::herdr::open(&spec)?;
-    Ok((spec, addr))
+/// The spec and worktree a hire would run in — policy and role applied,
+/// recorded on disk — without launching anything. For a dry run and for tests.
+pub fn prepare_spec(triple: &Triple, req: Request) -> Result<Spec> {
+    Ok(prepare(triple, req)?.spec)
 }
 
 struct Prepared {
@@ -720,16 +733,20 @@ pub fn record(home: &Path, id: &str, mut r: Recorded) -> Result<State> {
     Ok(state)
 }
 
-/// Asks the supervisor to stop the agent, and waits up to `wait` for it to
-/// record that. A supervisor that does not answer is killed, and its harness
-/// with it.
+/// Ends the hire's herdr space — herdr owns the process, so the stop goes
+/// through it — and waits up to `wait` for the observer to record the outcome.
+/// An observer that does not answer is killed and the stop recorded here.
 pub fn stop(home: &Path, id: &str, wait: Duration) -> Result<State> {
     let run = run_dir(home, id)?;
     let (_, state) = load(&run)?;
     if state.status.terminal() {
         return Ok(state);
     }
+    // Tells the observer to record this as a stop rather than a plain failure.
     std::fs::write(run.path.join("stop"), "")?;
+    let _ = Command::new("hc")
+        .args(["kill", &crate::herdr::name(id)])
+        .status();
     let until = Instant::now() + wait;
     while Instant::now() < until {
         let (_, s) = load(&run)?;
@@ -740,17 +757,14 @@ pub fn stop(home: &Path, id: &str, wait: Duration) -> Result<State> {
     }
     let (_, mut s) = load(&run)?;
     if let Some(pid) = s.supervisor.filter(|&p| is_cos(p)) {
-        // SAFETY: signalling the supervisor this agent recorded; no memory is touched.
+        // SAFETY: signalling the observer this agent recorded; no memory is touched.
         unsafe {
             libc::kill(pid, libc::SIGKILL);
         }
     }
-    if let Some(pgid) = harness_group(&s) {
-        proc::kill_group(pgid);
-    }
     s.status = Status::Killed;
     s.ended = Some(jiff::Timestamp::now().to_string());
-    s.error = Some("supervisor did not answer the stop request; killed".into());
+    s.error = Some("stopped on request".into());
     write_state(&run, &s)?;
     Ok(s)
 }

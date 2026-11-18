@@ -1,27 +1,16 @@
-//! The governor and seeding, against the real supervisor binary: run slots
-//! queue agents past the limit, a worktree is seeded before its harness
-//! starts, and builds take one machine-wide lock.
+//! Seeding, the seed plan, the machine-wide build lock and the build-tool
+//! shims — the parts of the old governor that survive herdr owning every run.
+//! Concurrency slots and deadline enforcement are herdr's now, not cos's.
 
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use cos::agents::{self, Harness, Request, State, Status, slots};
+use cos::agents::{self, slots};
 
 const COS: &str = env!("CARGO_BIN_EXE_cos");
-const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
-
-fn at(home: &Path) -> cos::business::Triple {
-    cos::business::Triple {
-        home: home.to_owned(),
-        workspace: home.to_owned(),
-        projects: home.join("projects"),
-        business: None,
-        layer: cos::business::Layer::Flags,
-    }
-}
 
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cos-gov-{name}-{}", std::process::id()));
@@ -65,89 +54,29 @@ fn repo(root: &Path, files: &[(&str, &str)]) -> PathBuf {
     r
 }
 
-fn request(repo: Option<PathBuf>, prompt: &str, slots: usize) -> Request {
-    Request {
-        harness: Harness::Claude,
-        program: Some(FAKE_CLAUDE.into()),
-        model: None,
-        worktree: repo.is_some(),
+/// Cuts the detached worktree a hire runs in, from the repo's HEAD.
+fn worktree(repo: &Path, at: &Path) {
+    git(
         repo,
-        title: "t".into(),
-        source: "test".into(),
-        prompt: prompt.into(),
-        deadline: Duration::from_secs(30),
-        budget_usd: 1.0,
-        slots: Some(slots),
-        contract: Default::default(),
-        explicit: Default::default(),
-        role: None,
-    }
-}
-
-fn wait_for(home: &Path, id: &str, done: impl Fn(&State) -> bool) -> State {
-    let until = Instant::now() + Duration::from_secs(20);
-    loop {
-        let (_, st) = agents::read(home, id).unwrap();
-        if done(&st) {
-            return st;
-        }
-        assert!(
-            Instant::now() < until,
-            "agent {id} stuck at {:?}",
-            st.status
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-#[test]
-fn one_slot_queues_the_second_agent_until_the_first_ends() {
-    let home = scratch("queue").join("home");
-    let first = agents::spawn(&at(&home), request(None, "SLEEP", 1), Path::new(COS)).unwrap();
-    wait_for(&home, &first.id, |s| s.status == Status::Running);
-
-    let second = agents::spawn(&at(&home), request(None, "edit", 1), Path::new(COS)).unwrap();
-    wait_for(&home, &second.id, |s| s.status == Status::Queued);
-    std::thread::sleep(Duration::from_millis(700));
-    assert_eq!(
-        agents::read(&home, &second.id).unwrap().1.status,
-        Status::Queued
+        &["worktree", "add", "--detach", &at.to_string_lossy(), "HEAD"],
     );
-
-    agents::stop(&home, &first.id, Duration::from_secs(10)).unwrap();
-    let st = wait_for(&home, &second.id, |s| s.status.terminal());
-    assert_eq!(st.status, Status::Done, "{st:?}");
 }
 
 #[test]
-fn a_queued_agent_stops_without_ever_starting() {
-    let home = scratch("queued-stop").join("home");
-    let first = agents::spawn(&at(&home), request(None, "SLEEP", 1), Path::new(COS)).unwrap();
-    wait_for(&home, &first.id, |s| s.status == Status::Running);
-    let second = agents::spawn(&at(&home), request(None, "edit", 1), Path::new(COS)).unwrap();
-    wait_for(&home, &second.id, |s| s.status == Status::Queued);
-
-    let st = agents::stop(&home, &second.id, Duration::from_secs(10)).unwrap();
-    assert_eq!(st.status, Status::Killed);
-    assert!(st.started.is_none(), "{st:?}");
-    agents::stop(&home, &first.id, Duration::from_secs(10)).unwrap();
-}
-
-#[test]
-fn a_cargo_worktree_starts_with_the_checkout_target_cloned() {
+fn a_cargo_worktree_is_seeded_with_the_checkout_target_cloned() {
     let root = scratch("seed");
     let repo = repo(&root, &[("Cargo.toml", "[package]\nname = \"x\"\n")]);
-    let home = root.join("home");
-    let spec = agents::spawn(&at(&home), request(Some(repo), "edit", 4), Path::new(COS)).unwrap();
-    let st = wait_for(&home, &spec.id, |s| s.status.terminal());
-    assert_eq!(st.status, Status::Done, "{st:?}");
-    assert_eq!(st.seeded, vec!["cloned target".to_owned()]);
-    let marker = std::fs::read_to_string(spec.workdir.join("target/marker")).unwrap();
+    let tree = root.join("tree");
+    worktree(&repo, &tree);
+
+    let done = agents::seed::run(&repo, &tree, &root.join("seed.log")).unwrap();
+    assert_eq!(done, vec!["cloned target".to_owned()]);
+    let marker = std::fs::read_to_string(tree.join("target/marker")).unwrap();
     assert_eq!(marker, "warm\n");
 }
 
 #[test]
-fn a_failing_seed_script_fails_the_agent_before_its_harness_runs() {
+fn a_failing_seed_script_fails_the_seed_before_the_harness_runs() {
     let root = scratch("seed-fail");
     let repo = repo(
         &root,
@@ -161,13 +90,14 @@ fn a_failing_seed_script_fails_the_agent_before_its_harness_runs() {
         .unwrap();
     git(&repo, &["add", ".cos/seed"]);
     git(&repo, &["commit", "-q", "-m", "exec"]);
-    let home = root.join("home");
-    let spec = agents::spawn(&at(&home), request(Some(repo), "edit", 4), Path::new(COS)).unwrap();
-    let st = wait_for(&home, &spec.id, |s| s.status.terminal());
-    assert_eq!(st.status, Status::Failed);
-    let err = st.error.unwrap_or_default();
+    let tree = root.join("tree");
+    worktree(&repo, &tree);
+
+    let err = agents::seed::run(&repo, &tree, &root.join("seed.log"))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("seed") && err.contains("no network"), "{err}");
-    assert!(!spec.workdir.join("made-by-agent.txt").exists());
+    assert!(!tree.join("made-by-agent.txt").exists());
 }
 
 #[test]
@@ -246,8 +176,5 @@ fn shims_wrap_cargo_and_never_find_themselves() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "real-cargo build -q\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "real-cargo build -q\n");
 }
