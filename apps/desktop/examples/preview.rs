@@ -9,8 +9,10 @@
 //! answers `invoke` on `POST /invoke/<cmd>`, and serves the report and the
 //! docs room under `/cosreport/` the way the app's own scheme does. Bound to
 //! 127.0.0.1; it reads and spawns in the home it is given, so point it at the
-//! demo home, never a real one. `COS_PREVIEW_HARNESS=<path>` hires with
-//! that stand-in (`tests/fixtures/fake-claude.sh`) instead of a paid run.
+//! demo home, never a real one. Its Herdr is the stand-in
+//! (`tests/fixtures/fake-hc.sh` over `<home>/.herdr-demo`) unless `COS_HC`
+//! names another, so a preview never reaches your herdr-core.
+//! `COS_PREVIEW_HARNESS=<path>` names the program each hire's terminal runs.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -75,6 +77,17 @@ fn main() {
     let home = PathBuf::from(args.next().unwrap_or_else(|| "/tmp/cos-demo".into()));
     let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(8793);
     let home = home.canonicalize().expect("the home exists");
+    if std::env::var_os("COS_HC").is_none() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+        let state = home.join(".herdr-demo");
+        std::fs::create_dir_all(&state).expect("the stand-in Herdr's state");
+        // SAFETY: set before any thread of this process starts.
+        unsafe {
+            std::env::set_var("COS_HC", fixtures.join("fake-hc.sh"));
+            std::env::set_var("COS_HERDR_APP", fixtures.join("fake-herdr-app.sh"));
+            std::env::set_var("FAKE_HC_STATE", &state);
+        }
+    }
     let cos = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/cos");
     let projects = home.join("projects");
     std::fs::create_dir_all(&projects).expect("the projects directory");

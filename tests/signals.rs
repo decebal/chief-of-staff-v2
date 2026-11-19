@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use cos::agents::{State, Status};
+use cos::agents::{Seen, State, Status};
 use cos::signals::{self, Brief};
 
 const COS: &str = env!("CARGO_BIN_EXE_cos");
@@ -78,7 +78,17 @@ fn dead_pid() -> i32 {
     pid
 }
 
-fn write_run(home: &Path, id: &str, created: &str, supervisor: Option<i32>) {
+/// How a run that has not ended is held.
+enum Held {
+    /// Herdr has it.
+    InHerdr,
+    /// This process prepares it.
+    Launcher(i32),
+    /// Nothing does.
+    Nothing,
+}
+
+fn write_run(home: &Path, id: &str, created: &str, held: Held) {
     let dir = home.join("out/agents").join(id);
     std::fs::create_dir_all(&dir).unwrap();
     let spec = serde_json::json!({
@@ -91,15 +101,26 @@ fn write_run(home: &Path, id: &str, created: &str, supervisor: Option<i32>) {
         "source": "test",
         "prompt": "p",
         "deadline_secs": 60,
-        "budget_usd": 1.0,
         "created": created,
+        "terminal": format!("cos-{id}"),
     });
     std::fs::write(dir.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
-    let state = State {
-        status: Status::Running,
-        supervisor,
-        ..State::default()
-    };
+    let mut state = State::default();
+    match held {
+        Held::InHerdr => {
+            state.status = Status::Running;
+            state.herdr = Some(Seen {
+                address: "t1".into(),
+                live: true,
+                ..Seen::default()
+            });
+        }
+        Held::Launcher(pid) => {
+            state.launcher = Some(pid);
+            state.launcher_started = cos::agents::started_at(pid);
+        }
+        Held::Nothing => {}
+    }
     std::fs::write(dir.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
 }
 
@@ -127,19 +148,25 @@ fn run_records(home: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn live_is_counted_through_exe_with_no_ps_spawned() {
+fn live_is_counted_with_no_ps_spawned() {
     if let Some(home) = std::env::var_os(CHILD_HOME) {
         let pid: i32 = std::env::var(CHILD_PID).unwrap().parse().unwrap();
         let s = signals::read(Path::new(&home));
-        assert_eq!((s.live, s.lost, s.starting), (1, 0, 0));
-        assert_eq!(s.supervisors, vec![pid]);
+        assert_eq!((s.live, s.lost, s.starting), (2, 0, 1));
+        assert_eq!(s.launchers, vec![pid]);
         return;
     }
 
     let root = scratch("no-ps");
     let home = root.join("home");
-    let supervisor = CosProc::start(&root);
-    write_run(&home, "live", &long_ago(), Some(supervisor.pid()));
+    let launcher = CosProc::start(&root);
+    write_run(&home, "live", &long_ago(), Held::InHerdr);
+    write_run(
+        &home,
+        "preparing",
+        &long_ago(),
+        Held::Launcher(launcher.pid()),
+    );
 
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -159,14 +186,14 @@ fn live_is_counted_through_exe_with_no_ps_spawned() {
 
     let out = Command::new(std::env::current_exe().unwrap())
         .args([
-            "live_is_counted_through_exe_with_no_ps_spawned",
+            "live_is_counted_with_no_ps_spawned",
             "--exact",
             "--test-threads=1",
             "--nocapture",
         ])
         .env("PATH", &path)
         .env(CHILD_HOME, &home)
-        .env(CHILD_PID, supervisor.pid().to_string())
+        .env(CHILD_PID, launcher.pid().to_string())
         .output()
         .unwrap();
     let text = format!(
@@ -180,23 +207,29 @@ fn live_is_counted_through_exe_with_no_ps_spawned() {
 }
 
 #[test]
-fn lost_and_starting_are_counted_and_supervisors_hold_live_pids_only() {
+fn lost_and_starting_are_counted_and_launchers_hold_live_pids_only() {
     let root = scratch("counts");
     let home = root.join("home");
-    let supervisor = CosProc::start(&root);
+    let launcher = CosProc::start(&root);
     let dead = dead_pid();
-    write_run(&home, "live", &long_ago(), Some(supervisor.pid()));
-    write_run(&home, "lost", &long_ago(), Some(dead));
-    write_run(&home, "starting", &now(), None);
-    write_run(&home, "stale", &long_ago(), None);
+    write_run(&home, "live", &long_ago(), Held::InHerdr);
+    write_run(
+        &home,
+        "preparing",
+        &long_ago(),
+        Held::Launcher(launcher.pid()),
+    );
+    write_run(&home, "lost", &long_ago(), Held::Launcher(dead));
+    write_run(&home, "starting", &now(), Held::Nothing);
+    write_run(&home, "stale", &long_ago(), Held::Nothing);
 
     let before = run_records(&home);
     let s = signals::read(&home);
-    assert_eq!(s.live, 2, "the live run and the starting run");
-    assert_eq!(s.starting, 1);
-    assert_eq!(s.lost, 2, "the dead supervisor and the stale start");
-    assert_eq!(s.supervisors, vec![supervisor.pid()]);
-    assert!(!s.supervisors.contains(&dead));
+    assert_eq!(s.live, 3, "the run in Herdr and the two being prepared");
+    assert_eq!(s.starting, 2);
+    assert_eq!(s.lost, 2, "the dead launcher and the stale start");
+    assert_eq!(s.launchers, vec![launcher.pid()]);
+    assert!(!s.launchers.contains(&dead));
     assert_eq!(run_records(&home), before, "signals::read wrote a record");
 }
 

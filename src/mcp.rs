@@ -211,7 +211,7 @@ impl Cos {
         }
     }
 
-    /// Spun-off coding agents: status, tool calls, cost, latest activity,
+    /// Hired coding agents: status, what their Herdr terminal says, verdict,
     /// workdir. Free; local only.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn agents(&self) -> CallToolResult {
@@ -231,65 +231,29 @@ impl Cos {
         }
     }
 
-    /// Start a coding agent (Claude Code or Codex) on one item's agent prompt,
-    /// in a detached worktree of the repo it names, as a live herdr space you
-    /// watch with `hc attach cos-<id>`. Returns at once; the agent runs in the
-    /// background and cos judges the worktree when the space ends. Costs money
-    /// (capped per agent). Local only.
+    /// Hire a coding agent (Claude Code or Codex) on one item's agent prompt,
+    /// in a detached worktree of the repo it names, run interactive in a
+    /// Herdr terminal (`cos-<id>`). Returns once the run is recorded; the
+    /// worktree is seeded and the terminal started in the background. The
+    /// agent is sandboxed and asks you in Herdr before anything
+    /// outward-facing. Refused when herdr-core is not running. Costs money.
+    /// Local only.
     #[tool(annotations(read_only_hint = false, open_world_hint = true))]
     async fn spin_off(&self, Parameters(args): Parameters<SpinOffArgs>) -> CallToolResult {
-        let home = self.cfg.home.clone();
-        let workspace = self.cfg.workspace.clone();
-        let projects = self.cfg.projects.clone();
-        let budget = self.cfg.budget.unwrap_or(5.0);
-        let explicit_budget = self.cfg.budget.is_some();
-        let run = move || -> Result<(agents::Spec, String)> {
-            let task = agents::tasks(&home, args.from)?
-                .into_iter()
-                .find(|t| t.n == args.item)
-                .ok_or_else(|| anyhow::anyhow!("item {} has no agent prompt", args.item))?;
-            let plan = agents::hire::plan(
-                &agents::hire::Where {
-                    home: &home,
-                    workspace: &workspace,
-                    projects: &projects,
-                },
-                args.role.as_deref(),
-                agents::hire::Ask::Task(task),
-                None,
-                &agents::Contract {
-                    checks: args.checks,
-                    scope: args.scope,
-                    ..Default::default()
-                },
-            )?;
-            let req = plan.request(agents::hire::Run {
-                harness: args.harness.unwrap_or(agents::Harness::Claude),
-                program: None,
-                model: None,
-                worktree: true,
-                deadline: std::time::Duration::from_secs(1800),
-                budget_usd: budget,
-                slots: None,
-                explicit: agents::policy::Explicit {
-                    deadline: false,
-                    budget: explicit_budget,
-                },
-            })?;
-            let triple = crate::business::Triple {
-                home,
-                workspace,
-                projects,
-                business: None,
-                layer: crate::business::Layer::Flags,
-            };
-            agents::spawn_in_herdr(&triple, req)
+        let cfg = self.cfg.clone();
+        let run = move || -> Result<agents::Spec> {
+            let cos = std::env::current_exe()?;
+            let spec = spin_off_hire(&cfg, args, &cos)?;
+            follow_while_serving(cfg.home.clone());
+            Ok(spec)
         };
         match tokio::task::spawn_blocking(run).await {
-            Ok(Ok((spec, addr))) => CallToolResult::success(vec![ContentBlock::text(format!(
-                "started {} in {} as a herdr space ({addr}) — watch it with `hc attach cos-{}`",
+            Ok(Ok(spec)) => CallToolResult::success(vec![ContentBlock::text(format!(
+                "hired {} into Herdr as the terminal {} (in {}): talk to it there (`hc attach {}`), or with `cos agents say {} \"…\"`; it is judged once when it says done or ends",
                 spec.id,
+                spec.terminal.as_deref().unwrap_or(""),
                 spec.workdir.display(),
+                spec.terminal.as_deref().unwrap_or(""),
                 spec.id
             ))]),
             Ok(Err(e)) => failed(e),
@@ -315,6 +279,72 @@ impl Cos {
             Err(e) => failed(e),
         }
     }
+}
+
+/// `spin_off`'s hire: planned like every other, refused without Herdr,
+/// started in Herdr in the background, pinned to this server's business.
+pub fn spin_off_hire(
+    cfg: &Config,
+    args: SpinOffArgs,
+    cos: &std::path::Path,
+) -> Result<agents::Spec> {
+    let task = agents::tasks(&cfg.home, args.from)?
+        .into_iter()
+        .find(|t| t.n == args.item)
+        .ok_or_else(|| anyhow::anyhow!("item {} has no agent prompt", args.item))?;
+    let plan = agents::hire::plan(
+        &agents::hire::Where {
+            home: &cfg.home,
+            workspace: &cfg.workspace,
+            projects: &cfg.projects,
+        },
+        args.role.as_deref(),
+        agents::hire::Ask::Task(task),
+        None,
+        &agents::Contract {
+            checks: args.checks,
+            scope: args.scope,
+            ..Default::default()
+        },
+    )?;
+    let req = plan.request(agents::hire::Run {
+        harness: args.harness.unwrap_or(agents::Harness::Claude),
+        program: None,
+        model: None,
+        worktree: true,
+        deadline: std::time::Duration::from_secs(1800),
+        slots: None,
+        explicit: agents::policy::Explicit { deadline: false },
+    })?;
+    let triple = crate::business::Triple {
+        home: cfg.home.clone(),
+        workspace: cfg.workspace.clone(),
+        projects: cfg.projects.clone(),
+        business: None,
+        layer: crate::business::Layer::Flags,
+    };
+    agents::spawn_background(&triple, req, cos)
+}
+
+/// While this server lives, one thread follows the hires it started: their
+/// deadlines and their one verdict. It ends when none is live.
+fn follow_while_serving(home: std::path::PathBuf) {
+    static FOLLOWING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if FOLLOWING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            if let Err(e) = agents::tick(&home) {
+                eprintln!("cos: following hires: {e:#}");
+            }
+            if agents::live_runs(&home) == 0 {
+                break;
+            }
+        }
+        FOLLOWING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
 }
 
 impl Cos {

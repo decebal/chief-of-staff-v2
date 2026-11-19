@@ -80,6 +80,8 @@ const STATE = {
   asleep: ["moon", "muted"],
   starting: ["sunrise", "info"],
   clear: ["circle-check", "ok"],
+  herdr_down: ["power", "bad"],
+  herdr_waiting: ["message-square", "warn"],
   needs_you: ["bell", "warn"],
 };
 const MOVING = ["reading", "refreshing"];

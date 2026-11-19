@@ -1,8 +1,8 @@
 //! Seeding a fresh worktree before its agent starts. A worktree has nothing
 //! gitignored, and the harness sandbox refuses network, so an unseeded agent
-//! meets a cold build or an install it cannot run. The supervisor seeds outside
+//! meets a cold build or an install it cannot run. cos seeds outside
 //! the sandbox and verifies every step on disk; a step that did not happen
-//! fails the agent before the harness starts.
+//! fails the agent before its Herdr terminal starts.
 //!
 //! A repo that knows its own needs commits an executable `.cos/seed`, run in
 //! the worktree with `COS_SEED_REPO` set to the main checkout. Otherwise:

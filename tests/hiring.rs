@@ -1,6 +1,10 @@
 //! Hiring, tracking and the scorecard end to end: `context/agents.json`
 //! filling a hire, the verdict cos records from the worktree, and the ledger
-//! every verdict lands in.
+//! every verdict lands in. Hires run in a stand-in Herdr (`fake_herdr`) that
+//! runs the stand-in agent to the end of its turn.
+
+#[allow(dead_code)]
+mod fake_herdr;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,10 +12,10 @@ use std::time::Duration;
 
 use cos::agents::judge::Outcome;
 use cos::agents::policy::{self, Explicit};
-use cos::agents::{self, Contract, Harness, Request, Spec, State, Status, ledger};
+use cos::agents::{self, Contract, Harness, Request, Spec, State, ledger};
+use fake_herdr::{Fake, agent, fake};
 
 const COS: &str = env!("CARGO_BIN_EXE_cos");
-const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 
 fn at(home: &Path) -> cos::business::Triple {
     cos::business::Triple {
@@ -48,9 +52,12 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(st.success(), "git {args:?}");
 }
 
-/// A home with an optional policy, and a repo named `demo-repo`.
-fn setup(name: &str, policy: Option<&str>) -> (PathBuf, PathBuf) {
+/// A home with an optional policy, a repo named `demo-repo`, and a stand-in
+/// Herdr that runs each hire's agent to the end of its turn.
+fn setup(name: &str, policy: Option<&str>) -> (PathBuf, PathBuf, Fake) {
     let root = scratch(name);
+    let f = fake(&root);
+    f.exec(true);
     let home = root.join("home");
     if let Some(p) = policy {
         std::fs::create_dir_all(home.join("context")).unwrap();
@@ -62,13 +69,13 @@ fn setup(name: &str, policy: Option<&str>) -> (PathBuf, PathBuf) {
     std::fs::write(r.join("README.md"), "demo\n").unwrap();
     git(&r, &["add", "README.md"]);
     git(&r, &["commit", "-q", "-m", "init"]);
-    (home, r)
+    (home, r, f)
 }
 
 fn request(repo: &Path, prompt: &str) -> Request {
     Request {
         harness: Harness::Claude,
-        program: Some(FAKE_CLAUDE.into()),
+        program: Some(agent()),
         model: None,
         repo: Some(repo.to_path_buf()),
         worktree: true,
@@ -76,54 +83,21 @@ fn request(repo: &Path, prompt: &str) -> Request {
         source: "prompt".into(),
         prompt: prompt.into(),
         deadline: Duration::from_secs(30),
-        budget_usd: 1.0,
-        slots: None,
+        slots: Some(8),
         contract: Contract::default(),
         explicit: Explicit::default(),
         role: None,
     }
 }
 
-/// Prepares the hire (policy and role applied, worktree cut), runs the stand-in
-/// harness in it as a herdr space would, folds its stream into the recorded
-/// state, judges the worktree and appends the ledger row — the result cos keeps
-/// when a space ends, without needing herdr.
+/// Hires into the stand-in Herdr, follows it once: the agent has finished
+/// its turn and said done, so cos judges it and appends the ledger row.
 fn judged(home: &Path, req: Request) -> (Spec, State) {
-    let spec = agents::prepare_spec(&at(home), req).unwrap();
-    let out = agents::harness::command(&spec).output().unwrap();
-    let mut state = State::default();
-    let mut failed = None;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let t = agents::harness::read(spec.harness, line);
-        if let Some(l) = t.last {
-            state.last = l;
-        }
-        state.tool_calls += t.tool_calls;
-        if t.cost_usd.is_some() {
-            state.cost_usd = t.cost_usd;
-        }
-        if let Some(s) = t.summary {
-            state.summary = s;
-        }
-        if t.failed.is_some() {
-            failed = t.failed;
-        }
-    }
-    state.exit = out.status.code();
-    state.status = if out.status.success() && failed.is_none() {
-        Status::Done
-    } else {
-        Status::Failed
-    };
-    state.error = failed;
-    state.verdict = Some(agents::judge::judge(&spec, &state, None));
-
-    let d = agents::root(home).join(&spec.id);
-    std::fs::write(d.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
-    if let Some(row) = agents::ledger::row(&spec, &state) {
-        agents::ledger::append(home, &row).unwrap();
-    }
-    (spec, state)
+    let spec = agents::spawn(&at(home), req, Path::new(COS)).unwrap();
+    agents::tick(home).unwrap();
+    let (spec, st) = agents::read(home, &spec.id).unwrap();
+    assert!(st.verdict.is_some(), "never judged: {st:?}");
+    (spec, st)
 }
 
 const POLICY: &str = r#"{
@@ -132,34 +106,79 @@ const POLICY: &str = r#"{
     "demo-repo": {
       "checks": ["test -f made-by-agent.txt"],
       "scope": ["made-by-agent.txt"],
-      "deadline_secs": 45,
-      "stall_secs": 7,
-      "repeat": 4
+      "deadline_secs": 45
     }
   }
 }"#;
 
 #[test]
 fn the_repo_policy_fills_what_the_spawn_left_empty() {
-    let (home, repo) = setup("policy", Some(POLICY));
+    let (home, repo, _f) = setup("policy", Some(POLICY));
     let (spec, st) = judged(&home, request(&repo, "edit a file"));
     assert_eq!(spec.contract.checks, ["test -f made-by-agent.txt"]);
     assert_eq!(spec.contract.scope, ["made-by-agent.txt"]);
     assert_eq!(spec.deadline_secs, 45);
-    assert_eq!((spec.limits.stall_secs, spec.limits.repeat), (7, 4));
     assert_eq!(st.verdict.unwrap().outcome, Outcome::Accepted);
 }
 
 #[test]
+fn a_policy_from_before_herdr_still_loads_and_its_budget_is_ignored() {
+    let (home, _, _f) = setup(
+        "old-budget",
+        Some(
+            r#"{
+          "defaults": { "deadline_secs": 900, "budget_usd": 5, "stall_secs": 600, "repeat": 5 },
+          "roles": [{ "id": "reviewer", "title": "Reviewer", "mandate": "Review.",
+                      "budget_usd": 2, "stall_secs": 60, "repeat": 3 }],
+          "repos": { "demo-repo": { "budget_usd": 9 } }
+        }"#,
+        ),
+    );
+    let p = policy::load(&home);
+    assert!(
+        p.note.is_none(),
+        "an old budget must not fail the file: {:?}",
+        p.note
+    );
+    assert_eq!(p.defaults.deadline_secs, Some(900));
+    let out = serde_json::to_string(&p.terms_for(None, p.role("reviewer"))).unwrap();
+    assert!(
+        !out.contains("budget") && !out.contains("stall") && !out.contains("repeat"),
+        "no retired term is written back: {out}"
+    );
+    assert!(
+        !policy::SEED.contains("budget_usd"),
+        "the template has no budget"
+    );
+}
+
+#[test]
+fn runs_in_herdr_have_no_cost_and_the_scorecard_says_so() {
+    let (home, repo, _f) = setup("no-cost", Some(POLICY));
+    judged(&home, request(&repo, "edit a file"));
+    judged(&home, request(&repo, "edit a file"));
+    let rows = ledger::read(&home);
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.cost_usd.is_none() && r.herdr));
+    let score = &ledger::scorecard(&rows)[0];
+    assert_eq!(
+        (score.median_cost_usd, score.unmeasured),
+        (None, 2),
+        "Herdr measures no cost, and none is made up"
+    );
+    assert!(
+        agents::view::scorecard(&ledger::scorecard(&rows)).contains("not measured in Herdr"),
+        "the scorecard says why there is no cost"
+    );
+}
+
+#[test]
 fn what_the_caller_set_wins_over_the_policy() {
-    let (home, repo) = setup("explicit", Some(POLICY));
+    let (home, repo, _f) = setup("explicit", Some(POLICY));
     let mut req = request(&repo, "edit a file");
     req.contract.checks = vec!["true".into()];
     req.deadline = Duration::from_secs(20);
-    req.explicit = Explicit {
-        deadline: true,
-        budget: false,
-    };
+    req.explicit = Explicit { deadline: true };
     let (spec, _) = judged(&home, req);
     assert_eq!(
         spec.contract.checks,
@@ -183,12 +202,12 @@ fn a_repo_without_an_entry_takes_the_defaults() {
         (vec!["true".to_owned()], Some(900))
     );
     let own = p.terms(Some(Path::new("/x/demo-repo")));
-    assert_eq!(own.budget_usd, None, "neither level sets a budget");
+    assert_eq!(own.deadline_secs, Some(45));
 }
 
 #[test]
 fn a_broken_policy_is_ignored_and_says_why() {
-    let (home, _) = setup("broken", Some(r#"{ "defaults": { "chekcs": [] } }"#));
+    let (home, _, _f) = setup("broken", Some(r#"{ "defaults": { "chekcs": [] } }"#));
     let p = policy::load(&home);
     assert_eq!(p.defaults, policy::Terms::default());
     assert!(
@@ -199,7 +218,7 @@ fn a_broken_policy_is_ignored_and_says_why() {
 
 #[test]
 fn the_ledger_outlives_clean_and_a_rejudge_replaces_its_row() {
-    let (home, repo) = setup("ledger", None);
+    let (home, repo, _f) = setup("ledger", None);
     let mut good = request(&repo, "edit a file");
     good.contract.checks = vec!["true".into()];
     let mut bad = request(&repo, "edit a file");
@@ -211,8 +230,10 @@ fn the_ledger_outlives_clean_and_a_rejudge_replaces_its_row() {
     let raw = std::fs::read_to_string(ledger::path(&home)).unwrap();
     assert_eq!(raw.lines().count(), 3, "the re-judge appended a row");
 
-    agents::clean(&home, &a.id, true).unwrap();
-    agents::clean(&home, &b.id, true).unwrap();
+    for id in [&a.id, &b.id] {
+        agents::mark_done(&home, id).unwrap();
+        agents::clean(&home, id, true).unwrap();
+    }
     let rows = ledger::read(&home);
     assert_eq!(rows.len(), 2, "one row per agent, worktrees gone");
 
@@ -227,7 +248,6 @@ fn the_ledger_outlives_clean_and_a_rejudge_replaces_its_row() {
         ),
         (2, 1, 1, 1)
     );
-    assert_eq!(score.median_cost_usd, Some(0.12));
 }
 
 #[test]
@@ -284,7 +304,7 @@ fn the_template_seeds_ten_roles_under_the_chief_of_staff() {
 
 #[test]
 fn a_home_whose_policy_predates_roles_gets_the_template_roles() {
-    let (home, _) = setup("old-policy", Some(POLICY));
+    let (home, _, f) = setup("old-policy", Some(POLICY));
     let p = policy::load(&home);
     assert!(p.note.is_none(), "{:?}", p.note);
     assert_eq!(
@@ -293,7 +313,8 @@ fn a_home_whose_policy_predates_roles_gets_the_template_roles() {
         "its own terms kept"
     );
     assert_eq!(p.roles.len(), 10);
-    let (bare, _) = setup("no-policy", None);
+    drop(f);
+    let (bare, _, _f) = setup("no-policy", None);
     assert_eq!(policy::load(&bare).roles.len(), 10);
 }
 
@@ -314,14 +335,13 @@ fn a_role_contract_wins_over_the_repo_and_the_repo_limits_win_over_the_role() {
     assert_eq!(t.checks, ["test -s REVIEW.md"]);
     assert_eq!(t.scope, ["REVIEW.md"]);
     assert_eq!(t.deadline_secs, Some(45), "the repo knows its build cost");
-    assert_eq!(t.budget_usd, Some(2.0), "the repo sets none");
     let elsewhere = p.terms_for(Some(Path::new("/x/other")), p.role("reviewer"));
     assert_eq!(elsewhere.deadline_secs, Some(300));
 }
 
 #[test]
 fn a_reviewer_hired_by_role_is_judged_on_its_review_file() {
-    let (home, repo) = setup("role-reviewer", Some(POLICY));
+    let (home, repo, _f) = setup("role-reviewer", Some(POLICY));
     let mut req = request(&repo, "REVIEW and READONLY");
     req.role = Some("reviewer".into());
     let (spec, st) = judged(&home, req);
@@ -349,7 +369,7 @@ fn a_reviewer_hired_by_role_is_judged_on_its_review_file() {
 
 #[test]
 fn a_tester_drafts_the_plan_and_is_judged_on_it_then_you_record_the_result() {
-    let (home, repo) = setup("role-tester", None);
+    let (home, repo, _f) = setup("role-tester", None);
     let mut req = request(&repo, "TESTPLAN and READONLY");
     req.role = Some("tester".into());
     let (spec, st) = judged(&home, req);
@@ -394,7 +414,7 @@ fn a_tester_drafts_the_plan_and_is_judged_on_it_then_you_record_the_result() {
 
 #[test]
 fn a_result_is_recorded_only_on_a_judged_run() {
-    let (home, repo) = setup("record-live", None);
+    let (home, repo, _f) = setup("record-live", None);
     let spec = agents::prepare_spec(&at(&home), request(&repo, "edit a file")).unwrap();
     let err = agents::record(
         &home,
@@ -412,12 +432,12 @@ fn a_result_is_recorded_only_on_a_judged_run() {
 
 #[test]
 fn hiring_the_head_or_an_unknown_role_starts_nothing() {
-    let (home, repo) = setup("role-refused", None);
+    let (home, repo, _f) = setup("role-refused", None);
     for role in ["chief-of-staff", "janitor"] {
         let mut req = request(&repo, "edit a file");
         req.role = Some(role.into());
         assert!(
-            agents::spawn_in_herdr(&at(&home), req).is_err(),
+            agents::spawn(&at(&home), req, Path::new(COS)).is_err(),
             "{role} was hired"
         );
     }

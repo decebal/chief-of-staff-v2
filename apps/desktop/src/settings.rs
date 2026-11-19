@@ -15,7 +15,7 @@ pub struct Settings {
     pub projects: Option<PathBuf>,
     /// Overrides `slots::run_slots()` for agents started here.
     pub slots: Option<usize>,
-    /// The `cos` binary that supervises agents, ahead of the search.
+    /// The `cos` binary each hire's build shims call back into, ahead of the search.
     pub cos: Option<PathBuf>,
 }
 

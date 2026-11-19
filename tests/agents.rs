@@ -1,21 +1,20 @@
-//! `cos agents` end to end, herdr owning every run: the stand-in harness run in
-//! a real worktree exactly as a hire would, the verdict cos records from it, and
-//! the reconciler that marks a run lost when its observer dies. The live-owner
-//! tests stand a real `cos` process in for the observer (blocked on a build
-//! lock), since that is what `is_cos` checks.
+//! `cos agents` end to end against a stand-in Herdr (`tests/fixtures/
+//! fake-hc.sh`): every hire becomes a Herdr terminal, cos follows it, stops
+//! it at its deadline, and judges it exactly once. Real git worktrees; never
+//! the real herdr-core.
 
-use std::fs::File;
-use std::os::fd::AsRawFd;
+#[allow(dead_code)]
+mod fake_herdr;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
-use cos::agents::{self, Harness, Liveness, Request, Spec, State, Status};
+use cos::agents::{self, Harness, Outcome, Request, Seen, Spec, State, Status};
 use cos::business::{Layer, Triple};
+use fake_herdr::{Fake, agent, fake};
 
 const COS: &str = env!("CARGO_BIN_EXE_cos");
-const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
-const FAKE_CODEX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-codex.sh");
 
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cos-agents-{name}-{}", std::process::id()));
@@ -24,12 +23,12 @@ fn scratch(name: &str) -> PathBuf {
     d.canonicalize().unwrap()
 }
 
-/// The triple a bare home stands for: workspace is the home, projects sit under it.
+/// The triple a bare home stands for: workspace is the home, projects sit beside it.
 fn at(home: &Path) -> Triple {
     Triple {
         home: home.to_owned(),
         workspace: home.to_owned(),
-        projects: home.join("projects"),
+        projects: home.parent().unwrap().join("projects"),
         business: None,
         layer: Layer::Flags,
     }
@@ -73,17 +72,93 @@ fn request(harness: Harness, program: &str, repo: Option<PathBuf>, prompt: &str)
         title: "test task".into(),
         source: "test".into(),
         prompt: prompt.into(),
-        deadline: Duration::from_secs(30),
-        budget_usd: 1.0,
-        slots: None,
-        contract: Default::default(),
-        explicit: Default::default(),
+        deadline: Duration::from_secs(1800),
+        slots: Some(8),
+        contract: cos::agents::Contract {
+            checks: vec!["test -f made-by-agent.txt".into()],
+            ..Default::default()
+        },
+        explicit: cos::agents::policy::Explicit { deadline: true },
         role: None,
     }
 }
 
+/// A home, a repo and a stand-in Herdr; the hire's agent does not run.
+fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf, Fake) {
+    let root = scratch(name);
+    let f = fake(&root);
+    let home = root.join("home");
+    let repo = repo(&root);
+    (root, home, repo, f)
+}
+
+fn hire(home: &Path, repo: &Path, prompt: &str) -> Spec {
+    agents::spawn(
+        &at(home),
+        request(Harness::Claude, "claude", Some(repo.to_path_buf()), prompt),
+        Path::new(COS),
+    )
+    .unwrap()
+}
+
+fn state(home: &Path, id: &str) -> State {
+    agents::read(home, id).unwrap().1
+}
+
 fn state_bytes(home: &Path, id: &str) -> Vec<u8> {
     std::fs::read(home.join("out/agents").join(id).join("state.json")).unwrap()
+}
+
+fn write_state(home: &Path, id: &str, st: &State) {
+    std::fs::write(
+        home.join("out/agents").join(id).join("state.json"),
+        serde_json::to_vec(st).unwrap(),
+    )
+    .unwrap();
+}
+
+fn ledger_lines(home: &Path) -> usize {
+    std::fs::read_to_string(agents::ledger::path(home))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+fn address(st: &State) -> String {
+    st.herdr.as_ref().expect("a Herdr terminal").address.clone()
+}
+
+/// A scratch run recorded as failed and judged, so its state is final; no
+/// Herdr is asked.
+fn finished(home: &Path) -> String {
+    let spec =
+        agents::prepare_spec(&at(home), request(Harness::Claude, "claude", None, "x")).unwrap();
+    let mut st = State {
+        status: Status::Failed,
+        error: Some("exited with code 1".into()),
+        ..State::default()
+    };
+    st.verdict = Some(agents::judge::judge(&spec, &st, None));
+    write_state(home, &spec.id, &st);
+    spec.id
+}
+
+/// A run Herdr has: live in the terminal `address`, recorded without asking it.
+fn in_herdr(home: &Path, address: &str) -> Spec {
+    let spec =
+        agents::prepare_spec(&at(home), request(Harness::Claude, "claude", None, "x")).unwrap();
+    let st = State {
+        status: Status::Running,
+        herdr: Some(Seen {
+            address: address.into(),
+            word: Some("working".into()),
+            live: true,
+            ..Seen::default()
+        }),
+        ..State::default()
+    };
+    write_state(home, &spec.id, &st);
+    spec
 }
 
 fn outcome() -> agents::Recorded {
@@ -95,131 +170,483 @@ fn outcome() -> agents::Recorded {
     }
 }
 
-fn wait_dead(pid: i32) {
-    let until = Instant::now() + Duration::from_secs(5);
-    while cos::proc::alive(pid) {
-        assert!(Instant::now() < until, "pid {pid} still alive");
-        std::thread::sleep(Duration::from_millis(50));
+#[test]
+fn a_hire_becomes_a_herdr_terminal_named_labelled_in_its_worktree_with_the_prompt_first() {
+    let (_, home, repo, f) = setup("launch");
+    let spec = hire(&home, &repo, "Fix the parser in src/lib.rs");
+    let st = state(&home, &spec.id);
+    assert_eq!(st.status, Status::Running, "{st:?}");
+    let t = address(&st);
+    assert_eq!(
+        f.terminals(),
+        std::slice::from_ref(&t),
+        "exactly one terminal"
+    );
+    let name = format!("cos-{}", spec.id);
+    assert_eq!(f.fact(&t, "name"), name);
+    assert_eq!(spec.terminal.as_deref(), Some(name.as_str()));
+    assert!(name.len() <= 32);
+    let labels = f.fact(&t, "labels");
+    assert!(labels.contains(&format!("hire={}", spec.id)), "{labels}");
+    assert_eq!(Path::new(&f.fact(&t, "cwd")), spec.workdir);
+    assert_ne!(spec.workdir, repo, "a worktree, not the main checkout");
+
+    let argv = f.argv(&t);
+    let at = argv
+        .iter()
+        .position(|a| a == "claude")
+        .expect("claude runs");
+    assert_eq!(argv[at + 1], spec.prompt, "the prompt is its first message");
+    assert!(argv.contains(&"--permission-mode".to_owned()));
+    for one_shot in ["-p", "--print", "--output-format", "--max-budget-usd"] {
+        assert!(
+            !argv.contains(&one_shot.to_owned()),
+            "{one_shot} in {argv:?}"
+        );
     }
-}
-
-/// Prepares a hire and runs its stand-in harness to completion in the worktree,
-/// as a herdr space would, folds the stream into the recorded state, judges the
-/// worktree and writes the result — what the observer records when a space ends.
-fn run(home: &Path, req: Request) -> (Spec, State) {
-    let spec = agents::prepare_spec(&at(home), req).unwrap();
-    let out = agents::harness::command(&spec).output().unwrap();
-    let mut state = State::default();
-    let mut failed = None;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let t = agents::harness::read(spec.harness, line);
-        if let Some(l) = t.last {
-            state.last = l;
-        }
-        state.tool_calls += t.tool_calls;
-        if t.cost_usd.is_some() {
-            state.cost_usd = t.cost_usd;
-        }
-        if let Some(n) = t.tokens {
-            state.tokens = Some(state.tokens.unwrap_or(0) + n);
-        }
-        if let Some(s) = t.summary {
-            state.summary = s;
-        }
-        if t.session.is_some() {
-            state.session = t.session;
-        }
-        if t.failed.is_some() {
-            failed = t.failed;
-        }
-    }
-    state.exit = out.status.code();
-    state.status = if out.status.success() && failed.is_none() {
-        Status::Done
-    } else {
-        Status::Failed
-    };
-    state.error = failed;
-    state.verdict = Some(agents::judge::judge(&spec, &state, None));
-    let d = agents::root(home).join(&spec.id);
-    std::fs::write(d.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
-    (spec, state)
-}
-
-/// A scratch run that failed at once, judged, so its state is final.
-fn finished(home: &Path) -> String {
-    run(home, request(Harness::Claude, FAKE_CLAUDE, None, "FAIL")).0.id
-}
-
-/// A run recorded as still live under `owner`, without launching a harness.
-fn running(home: &Path, req: Request, owner: i32) -> Spec {
-    let spec = agents::prepare_spec(&at(home), req).unwrap();
-    let state = State {
-        status: Status::Running,
-        supervisor: Some(owner),
-        ..State::default()
-    };
-    std::fs::write(
-        agents::root(home).join(&spec.id).join("state.json"),
-        serde_json::to_vec(&state).unwrap(),
-    )
-    .unwrap();
-    spec
-}
-
-/// A real, live `cos` process standing in for a run's observer: it blocks on a
-/// build lock the test holds, so `is_cos` sees a killable `cos` binary. Returned
-/// with the held lock; dropping the lock lets it exit, so keep it for the test.
-fn owner(root: &Path, tag: &str) -> (std::process::Child, File) {
-    let lock = root.join(format!("owner-{tag}.lock"));
-    let held = File::create(&lock).unwrap();
-    // SAFETY: flock on a descriptor the test owns.
-    assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) }, 0);
-    let child = Command::new(COS)
-        .args(["agents", "build-slot", "--lock"])
-        .arg(&lock)
-        .args(["--", "/bin/true"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
-    while !cos::proc::alive(child.id() as i32) {
-        assert!(Instant::now() < until, "owner never started");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    (child, held)
+    assert!(
+        argv.contains(&format!("COS_RUN_ID={}", spec.id)),
+        "the agent knows its run: {argv:?}"
+    );
+    let calls = f.calls();
+    assert!(calls.contains("run | --bg"), "{calls}");
+    assert!(
+        calls.contains("--no-parent"),
+        "the terminal outlives whatever started cos: {calls}"
+    );
+    let shown = agents::view::show(&spec, &st);
+    assert!(shown.contains(&format!("hc attach {name}")), "{shown}");
 }
 
 #[test]
-fn a_claude_hire_runs_in_its_worktree_and_records_the_run() {
-    let root = scratch("done");
-    let (home, repo) = (root.join("home"), repo(&root));
-    let (spec, st) = run(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, Some(repo.clone()), "edit a file"),
+fn the_agents_command_pins_the_business_that_hired_it() {
+    let (root, home, repo, f) = setup("pin");
+    let triple = Triple {
+        home: home.clone(),
+        workspace: root.join("ws"),
+        projects: root.join("projects"),
+        business: Some("acme".into()),
+        layer: Layer::Flags,
+    };
+    let spec = agents::spawn(
+        &triple,
+        request(Harness::Claude, "claude", Some(repo), "edit"),
+        Path::new(COS),
+    )
+    .unwrap();
+    let argv = f.argv(&address(&state(&home, &spec.id)));
+    assert_eq!(
+        &argv[..3],
+        &["/usr/bin/env", "-u", "COS_BUSINESS"],
+        "{argv:?}"
     );
-    assert_eq!(st.status, Status::Done, "{st:?}");
-    assert_eq!(st.cost_usd, Some(0.12));
-    assert_eq!(st.tool_calls, 1);
-    assert_eq!(st.session.as_deref(), Some("sess-1"));
-    assert_eq!(st.summary, "Changed one file.");
-    assert_ne!(spec.workdir, repo);
-    assert!(spec.workdir.join("made-by-agent.txt").exists());
+    for pin in [
+        format!("COS_HOME={}", home.display()),
+        format!("COS_WORKSPACE={}", root.join("ws").display()),
+        format!("COS_PROJECTS={}", root.join("projects").display()),
+    ] {
+        assert!(argv.contains(&pin), "{pin} not in {argv:?}");
+    }
+    let claude = argv.iter().position(|a| a == "claude").unwrap();
+    let last_pin = argv
+        .iter()
+        .position(|a| a.starts_with("COS_PROJECTS="))
+        .unwrap();
+    assert!(claude > last_pin, "the pins come before the program");
+}
+
+#[test]
+fn codex_runs_interactive_with_its_prompt_after_the_separator() {
+    let (_, home, repo, f) = setup("codex");
+    let spec = agents::spawn(
+        &at(&home),
+        request(Harness::Codex, "codex", Some(repo), "review the parser"),
+        Path::new(COS),
+    )
+    .unwrap();
+    let argv = f.argv(&address(&state(&home, &spec.id)));
+    let at = argv.iter().position(|a| a == "codex").unwrap();
     assert!(
-        !repo.join("made-by-agent.txt").exists(),
-        "agent wrote into the main checkout"
+        !argv.contains(&"exec".to_owned()),
+        "never codex exec: {argv:?}"
     );
+    assert_eq!(
+        argv[argv.len() - 2..],
+        ["--".to_owned(), spec.prompt.clone()]
+    );
+    assert!(argv[at..].contains(&"workspace-write".to_owned()));
+}
+
+#[test]
+fn no_herdr_refuses_with_the_fix_and_starts_nothing() {
+    let (_, home, repo, f) = setup("down");
+    f.down(true);
+    let err = agents::spawn(
+        &at(&home),
+        request(Harness::Claude, "claude", Some(repo.clone()), "edit"),
+        Path::new(COS),
+    )
+    .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("Herdr isn't running"), "{msg}");
+    assert!(msg.contains("hc server start"), "the fix is named: {msg}");
+    assert!(
+        agents::list(&home).unwrap().runs.is_empty(),
+        "nothing started"
+    );
+    assert!(f.terminals().is_empty());
+
+    let s = cos::herdr::start().unwrap();
+    assert!(s.up, "Start Herdr brings it up: {s:?}");
+    assert!(f.calls().contains("server | start"));
+    hire(&home, &repo, "edit");
+}
+
+#[test]
+fn done_after_the_first_message_judges_once_and_a_restart_does_not_judge_again() {
+    let (_, home, repo, f) = setup("done-once");
+    f.exec(true);
+    let spec = agents::spawn(
+        &at(&home),
+        request(Harness::Claude, &agent(), Some(repo), "edit a file"),
+        Path::new(COS),
+    )
+    .unwrap();
+    let t = address(&state(&home, &spec.id));
+    assert_eq!(
+        state(&home, &spec.id).verdict,
+        None,
+        "not judged before it is followed"
+    );
+
+    agents::tick(&home).unwrap();
+    let st = state(&home, &spec.id);
+    let v = st.verdict.clone().expect("judged on done");
+    assert_eq!(v.outcome, Outcome::Accepted, "{v:?}");
+    assert_eq!(st.judged_on.as_deref(), Some("done at turn 1"));
+    assert_eq!(st.status, Status::Running, "still live in Herdr");
+    assert_eq!(ledger_lines(&home), 1);
+
+    // Another turn and done again, then a fresh follower (an app restart).
+    f.set(&t, "turn", "2");
+    agents::tick(&home).unwrap();
+    agents::tick(&home).unwrap();
+    let again = state(&home, &spec.id);
+    assert_eq!(again.verdict, Some(v), "the verdict stands");
+    assert_eq!(ledger_lines(&home), 1, "judged exactly once");
+
+    agents::mark_done(&home, &spec.id).unwrap();
+    assert_eq!(
+        ledger_lines(&home),
+        1,
+        "marking it done does not judge again"
+    );
+    assert_eq!(state(&home, &spec.id).status, Status::Done);
+}
+
+#[test]
+fn done_before_any_turn_is_not_judged() {
+    let (_, home, repo, f) = setup("done-turn0");
+    let spec = hire(&home, &repo, "edit");
+    let t = address(&state(&home, &spec.id));
+    f.set(&t, "status", "done");
+    agents::tick(&home).unwrap();
+    assert!(state(&home, &spec.id).verdict.is_none());
+}
+
+#[test]
+fn an_unsent_first_message_is_surfaced_and_its_done_is_not_judged() {
+    let (_, home, repo, f) = setup("unsent");
+    std::fs::write(
+        f.state.join("first_message"),
+        r#"{"sent":false,"reason":"the agent was not ready"}"#,
+    )
+    .unwrap();
+    let spec = hire(&home, &repo, "edit");
+    let st = state(&home, &spec.id);
+    let err = st.error.clone().unwrap_or_default();
+    assert!(err.contains("did not send it the work"), "{err}");
+    assert!(err.contains("the agent was not ready"), "{err}");
+    let t = address(&st);
+    assert!(f.sent(&t).is_empty(), "never resent blindly");
+    f.set(&t, "status", "done");
+    f.set(&t, "turn", "1");
+    agents::tick(&home).unwrap();
+    assert!(state(&home, &spec.id).verdict.is_none());
+    assert!(agents::view::show(&spec, &state(&home, &spec.id)).contains("UNSENT"));
+}
+
+#[test]
+fn the_deadline_interrupts_then_kills_and_the_judge_runs_once() {
+    let (_, home, repo, f) = setup("deadline");
+    let mut req = request(Harness::Claude, "claude", Some(repo), "edit");
+    req.deadline = Duration::from_secs(0);
+    let spec = agents::spawn(&at(&home), req, Path::new(COS)).unwrap();
+    let t = address(&state(&home, &spec.id));
+
+    agents::tick(&home).unwrap();
+    let st = state(&home, &spec.id);
+    assert!(
+        f.calls().contains(&format!("interrupt | {t}")),
+        "{}",
+        f.calls()
+    );
+    assert!(!f.calls().contains("kill"), "the stop key first");
+    assert_eq!(st.status, Status::Running);
+    assert!(st.herdr.as_ref().unwrap().interrupted.is_some());
+
+    agents::tick(&home).unwrap();
+    let st = state(&home, &spec.id);
+    assert!(f.calls().contains(&format!("kill | {t}")), "{}", f.calls());
+    assert_eq!(st.status, Status::TimedOut);
+    assert!(
+        st.error.as_deref().unwrap_or("").contains("deadline"),
+        "{st:?}"
+    );
+    assert_eq!(st.verdict.as_ref().unwrap().outcome, Outcome::Rejected);
+    assert_eq!(f.fact(&t, "state"), "finished");
+    assert!(
+        agents::dir(&home, &spec.id).join("screen.txt").is_file(),
+        "its last screen kept"
+    );
+
+    agents::tick(&home).unwrap();
+    assert_eq!(ledger_lines(&home), 1, "judged exactly once");
+    assert_eq!(f.calls().matches("kill |").count(), 1);
+}
+
+#[test]
+fn blocked_in_herdr_is_waiting_on_you_with_its_kind() {
+    let (_, home, repo, f) = setup("blocked");
+    let spec = hire(&home, &repo, "edit");
+    let t = address(&state(&home, &spec.id));
+    f.set(&t, "status", "blocked");
+    f.set(&t, "kind", "permission");
+    agents::tick(&home).unwrap();
+    let st = state(&home, &spec.id);
+    assert_eq!(
+        st.herdr.as_ref().unwrap().blocked().as_deref(),
+        Some("permission")
+    );
+    assert_eq!(
+        agents::needs(&spec, &st).as_deref(),
+        Some("waiting on you in Herdr (permission)")
+    );
+    assert!(agents::view::herdr_word(&spec, &st).contains("blocked: permission"));
+    let waiting = agents::view::waiting_in_herdr(&agents::list(&home).unwrap().runs);
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0]["kind"], "permission");
+
+    let err = agents::say(&home, &spec.id, "go on").unwrap_err();
+    assert!(format!("{err:#}").contains("answer it there"), "{err:#}");
+
+    f.set(&t, "status", "working");
+    f.set(&t, "kind", "");
+    agents::tick(&home).unwrap();
+    assert_eq!(agents::needs(&spec, &state(&home, &spec.id)), None);
+}
+
+#[test]
+fn reply_pause_and_mark_done_are_send_interrupt_and_kill() {
+    let (_, home, repo, f) = setup("talk");
+    let spec = hire(&home, &repo, "edit");
+    let t = address(&state(&home, &spec.id));
+
+    agents::say(&home, &spec.id, "  also update the README  ").unwrap();
+    assert_eq!(f.sent(&t), ["also update the README"]);
+    agents::pause(&home, &spec.id).unwrap();
+    assert!(f.calls().contains(&format!("interrupt | {t}")));
+    assert!(
+        agents::screen(&home, &spec.id, 40)
+            .unwrap()
+            .contains(&spec.id)
+    );
+    assert!(
+        f.calls().contains(&format!("read | {t} | --lines | 40")),
+        "{}",
+        f.calls()
+    );
+
+    std::fs::write(spec.workdir.join("made-by-agent.txt"), "by hand\n").unwrap();
+    let st = agents::mark_done(&home, &spec.id).unwrap();
+    assert!(f.calls().contains(&format!("kill | {t}")));
+    assert_eq!(st.status, Status::Done);
+    assert_eq!(st.judged_on.as_deref(), Some("marked done"));
+    let ended = st.herdr.as_ref().unwrap();
+    assert!(
+        !ended.live && ended.reason.as_deref() == Some("killed"),
+        "{ended:?}"
+    );
+    assert_eq!(st.verdict.unwrap().outcome, Outcome::Accepted);
+    assert_eq!(ledger_lines(&home), 1);
+
+    let err = agents::say(&home, &spec.id, "more").unwrap_err();
+    assert!(format!("{err:#}").contains("has ended"), "{err:#}");
+
+    agents::clean(&home, &spec.id, true).unwrap();
+    assert!(f.calls().contains(&format!("rm | {t}")));
+    assert!(!f.exists(&t), "its terminal is removed");
+}
+
+#[test]
+fn open_in_herdr_shows_its_terminal_in_the_window() {
+    let (_, home, repo, f) = setup("open");
+    let spec = hire(&home, &repo, "edit");
+    let t = address(&state(&home, &spec.id));
+    let said = agents::open_in_herdr(&home, &spec.id).unwrap();
+    assert!(said.contains(&t), "{said}");
+    assert!(
+        f.app_log()
+            .contains(&format!("do agent.focus --terminal {t}")),
+        "{}",
+        f.app_log()
+    );
+
+    std::fs::write(f.state.join("app_closed"), "").unwrap();
+    let err = agents::open_in_herdr(&home, &spec.id).unwrap_err();
+    assert!(
+        format!("{err:#}").contains(&format!("cos-{}", spec.id)),
+        "names the terminal: {err:#}"
+    );
+}
+
+#[test]
+fn cos_never_touches_a_terminal_that_is_not_its_hire() {
+    let (_, home, repo, f) = setup("not-ours");
+    let spec = hire(&home, &repo, "edit");
+    let t = address(&state(&home, &spec.id));
+    f.set(&t, "labels", "hire=someone-else\n");
+    assert!(agents::say(&home, &spec.id, "hi").is_err());
+    assert!(agents::pause(&home, &spec.id).is_err());
+    assert!(agents::mark_done(&home, &spec.id).is_err());
+    let calls = f.calls();
+    for verb in ["send |", "interrupt |", "kill |", "rm |"] {
+        assert!(
+            !calls.contains(verb),
+            "{verb} reached a terminal cos did not start: {calls}"
+        );
+    }
+    agents::tick(&home).unwrap();
+    let st = state(&home, &spec.id);
+    assert_eq!(st.status, Status::Lost, "{st:?}");
+    assert!(!f.calls().contains("kill |"));
+}
+
+#[test]
+fn an_agent_that_exits_ends_the_run_and_is_judged() {
+    let (_, home, repo, f) = setup("exit");
+    f.exec(true);
+    let spec = agents::spawn(
+        &at(&home),
+        request(Harness::Claude, &agent(), Some(repo), "FAIL please"),
+        Path::new(COS),
+    )
+    .unwrap();
+    agents::tick(&home).unwrap();
+    let st = state(&home, &spec.id);
+    assert_eq!(st.status, Status::Failed);
+    assert!(
+        st.error
+            .as_deref()
+            .unwrap_or("")
+            .contains("exited with code 1"),
+        "{st:?}"
+    );
+    let v = st.verdict.unwrap();
+    assert_eq!(v.outcome, Outcome::Rejected);
+    assert!(v.checks.is_empty(), "a failed run's checks are not run");
+}
+
+#[test]
+fn a_terminal_removed_outside_cos_ends_the_run_lost() {
+    let (_, home, repo, f) = setup("removed");
+    let spec = hire(&home, &repo, "edit");
+    let t = address(&state(&home, &spec.id));
+    std::fs::remove_dir_all(f.state.join("terms").join(&t)).unwrap();
+    agents::tick(&home).unwrap();
+    let st = state(&home, &spec.id);
+    assert_eq!(st.status, Status::Lost);
+    assert!(st.error.unwrap().contains("removed outside cos"));
+}
+
+#[test]
+fn herdr_going_away_changes_nothing() {
+    let (_, home, repo, f) = setup("core-gone");
+    let spec = hire(&home, &repo, "edit");
+    f.down(true);
+    agents::tick(&home).unwrap();
+    assert_eq!(state(&home, &spec.id).status, Status::Running);
+}
+
+#[test]
+fn slots_count_the_runs_live_in_herdr() {
+    let (_, home, repo, _f) = setup("slots");
+    let mut one = request(Harness::Claude, "claude", Some(repo.clone()), "edit");
+    one.slots = Some(1);
+    let first = agents::spawn(&at(&home), one, Path::new(COS)).unwrap();
+    let mut two = request(Harness::Claude, "claude", Some(repo.clone()), "edit");
+    two.slots = Some(1);
+    let err = agents::spawn(&at(&home), two, Path::new(COS)).unwrap_err();
+    assert!(format!("{err:#}").contains("all 1 run slots"), "{err:#}");
+    assert_eq!(agents::live_runs(&home), 1);
+
+    agents::stop(&home, &first.id, Duration::from_secs(5)).unwrap();
+    let mut three = request(Harness::Claude, "claude", Some(repo), "edit");
+    three.slots = Some(1);
+    agents::spawn(&at(&home), three, Path::new(COS)).unwrap();
+}
+
+#[test]
+fn a_run_from_before_herdr_reads_but_cannot_be_resumed() {
+    let root = scratch("legacy");
+    let home = root.join("home");
+    let d = agents::dir(&home, "20261101-090000-0ld1");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("spec.json"),
+        r#"{"id":"20261101-090000-0ld1","harness":"claude","program":"claude","model":null,
+            "repo":null,"base":null,"workdir":"/nowhere","worktree":false,"title":"old",
+            "source":"prompt","prompt":"p","deadline_secs":1800,"budget_usd":5.0,
+            "created":"2026-11-01T09:00:00Z","limits":{"stall_secs":600,"repeat":5}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("state.json"),
+        r#"{"status":"running","supervisor":null,"pgid":null,"pgid_started":null,"started":null,
+            "ended":null,"exit":null,"cost_usd":0.42,"tokens":100,"tool_calls":3,"session":"s",
+            "last":"x","summary":"its words","error":null,"flags":[],"flagged":["stalled"],
+            "verdict":{"outcome":"needs_you","reasons":["no checks"],"changed":[],"out_of_scope":[],
+            "checks":[],"overclaimed":false,"judged":"2026-11-01T09:10:00Z"}}"#,
+    )
+    .unwrap();
+    let (spec, st) = agents::read(&home, "20261101-090000-0ld1").unwrap();
+    assert!(spec.legacy());
+    assert_eq!(st.status, Status::Lost);
+    assert!(st.error.as_deref().unwrap().contains("cannot be resumed"));
+    assert_eq!(
+        st.verdict.unwrap().outcome,
+        Outcome::NeedsYou,
+        "its verdict still reads"
+    );
+    assert_eq!(st.cost_usd, Some(0.42));
+    let err = agents::say(&home, "20261101-090000-0ld1", "hi").unwrap_err();
+    assert!(format!("{err:#}").contains("cannot be resumed"), "{err:#}");
+    assert_eq!(agents::live_runs(&home), 0, "it takes no slot");
 }
 
 #[test]
 fn clean_refuses_a_worktree_holding_work_unless_forced() {
-    let root = scratch("clean");
-    let (home, repo) = (root.join("home"), repo(&root));
-    let (spec, _) = run(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, Some(repo), "edit a file"),
-    );
+    let (_, home, repo, f) = setup("clean");
+    f.exec(true);
+    let spec = agents::spawn(
+        &at(&home),
+        request(Harness::Claude, &agent(), Some(repo), "edit a file"),
+        Path::new(COS),
+    )
+    .unwrap();
+    let live = agents::clean(&home, &spec.id, true).unwrap_err();
+    assert!(format!("{live:#}").contains("stop it first"), "{live:#}");
+    agents::mark_done(&home, &spec.id).unwrap();
 
     let refused = agents::clean(&home, &spec.id, false).unwrap_err();
     assert!(
@@ -234,70 +661,69 @@ fn clean_refuses_a_worktree_holding_work_unless_forced() {
 }
 
 #[test]
-fn a_codex_hire_reports_tokens_and_its_final_message() {
-    let root = scratch("codex");
-    let (home, repo) = (root.join("home"), repo(&root));
-    let (_, st) = run(
+fn spin_off_hires_into_herdr() {
+    let (root, home, repo, f) = setup("spin-off");
+    brief(
         &home,
-        request(Harness::Codex, FAKE_CODEX, Some(repo), "review the parser"),
+        &format!("Fix the parser in `{}/src/lib.rs`.", repo.display()),
     );
-    assert_eq!(st.status, Status::Done, "{st:?}");
-    assert_eq!(st.tokens, Some(1500));
-    assert_eq!(st.summary, "Added the file.");
-    assert_eq!(st.session.as_deref(), Some("thread-9"));
-}
-
-#[test]
-fn stop_relays_to_herdr_and_records_the_run_killed() {
-    let root = scratch("kill");
-    let home = root.join("home");
-    let (mut child, _held) = owner(&root, "kill");
-    let spec = running(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        child.id() as i32,
-    );
-
-    let pid = child.id() as i32;
-    let st = agents::stop(&home, &spec.id, Duration::from_millis(300)).unwrap();
-    assert_eq!(st.status, Status::Killed);
-    // stop SIGKILLed the observer; reap the zombie before reading its liveness.
-    let _ = child.wait();
-    assert!(!cos::proc::alive(pid), "the observer was left running");
-}
-
-#[test]
-fn an_error_result_marks_the_run_failed_with_the_reason() {
-    let root = scratch("fail");
-    let home = root.join("home");
-    let (_, st) = run(&home, request(Harness::Claude, FAKE_CLAUDE, None, "FAIL"));
-    assert_eq!(st.status, Status::Failed);
-    assert!(
-        st.error.as_deref().unwrap_or("").contains("budget spent"),
-        "{st:?}"
-    );
-}
-
-#[test]
-fn a_dead_observer_is_reported_lost() {
-    let root = scratch("lost");
-    let home = root.join("home");
-    let (mut child, _held) = owner(&root, "lost");
-    let spec = running(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        child.id() as i32,
-    );
-    let dead = child.id() as i32;
-    // SAFETY: the owner this test spawned; no memory is touched.
-    unsafe {
-        libc::kill(dead, libc::SIGKILL);
+    let cfg = cos::pipeline::Config {
+        home: home.clone(),
+        install: home.clone(),
+        workspace: home.clone(),
+        projects: root.join("projects"),
+        budget: None,
+        bins: Default::default(),
+    };
+    let args = serde_json::from_value(serde_json::json!({ "from": "brief", "item": 1 })).unwrap();
+    let spec = cos::mcp::spin_off_hire(&cfg, args, Path::new(COS)).unwrap();
+    assert_eq!(spec.repo.as_deref(), Some(repo.as_path()));
+    let until = Instant::now() + Duration::from_secs(20);
+    while state(&home, &spec.id).herdr.is_none() {
+        assert!(Instant::now() < until, "never reached Herdr");
+        std::thread::sleep(Duration::from_millis(50));
     }
-    let _ = child.wait();
-    wait_dead(dead);
+    let t = address(&state(&home, &spec.id));
+    assert_eq!(f.fact(&t, "name"), format!("cos-{}", spec.id));
+    assert!(f.argv(&t).contains(&"claude".to_owned()));
 
-    let (_, st) = agents::read(&home, &spec.id).unwrap();
-    assert_eq!(st.status, Status::Lost);
+    f.down(true);
+    let args = serde_json::from_value(serde_json::json!({ "from": "brief", "item": 1 })).unwrap();
+    let err = cos::mcp::spin_off_hire(&cfg, args, Path::new(COS)).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Herdr isn't running"),
+        "{err:#}"
+    );
+}
+
+fn brief(home: &Path, prompt: &str) {
+    use cos::reports::{Action, Basis, Brief, Verb};
+    let action = |item: &str, prompt: &str| Action {
+        verb: Verb::Do,
+        owner: String::new(),
+        recommendation: item.into(),
+        why: String::new(),
+        next_step: String::new(),
+        source: String::new(),
+        deadline: String::new(),
+        deadline_basis: Basis::None,
+        goal_id: String::new(),
+        deliverable_id: String::new(),
+        agent_prompt: prompt.into(),
+    };
+    let brief = Brief {
+        headline: String::new(),
+        needs_you: vec![action("fix the parser", prompt)],
+        what_changed: vec![],
+        week: Default::default(),
+        calendar: vec![],
+        backlog: vec![],
+        coverage: vec![],
+        gaps: vec![],
+        upcoming: vec![],
+        tickets: vec![],
+    };
+    cos::store::save(home, cos::store::Kind::Briefs, "2026-10-16", &brief, "").unwrap();
 }
 
 #[test]
@@ -395,6 +821,8 @@ fn run_dir_refuses_bad_ids() {
             "stop {id:?}"
         );
         assert!(agents::rejudge(&home, id).is_err(), "rejudge {id:?}");
+        assert!(agents::say(&home, id, "hi").is_err(), "say {id:?}");
+        assert!(agents::mark_done(&home, id).is_err(), "done {id:?}");
         assert!(agents::clean(&home, id, true).is_err(), "clean {id:?}");
     }
 
@@ -406,53 +834,10 @@ fn run_dir_refuses_bad_ids() {
 }
 
 #[test]
-fn spec_id_mismatch_refused() {
-    let root = scratch("forged");
-    let home = root.join("home");
-    let (mut child, _held) = owner(&root, "forged");
-    let spec = running(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        child.id() as i32,
-    );
-    let before = state_bytes(&home, &spec.id);
-
-    let forged = home.join("out/agents/forged");
-    std::fs::create_dir_all(&forged).unwrap();
-    std::fs::copy(
-        home.join("out/agents").join(&spec.id).join("spec.json"),
-        forged.join("spec.json"),
-    )
-    .unwrap();
-
-    assert!(agents::read(&home, "forged").is_err());
-    assert!(agents::stop(&home, "forged", Duration::from_millis(100)).is_err());
-    assert_eq!(state_bytes(&home, &spec.id), before);
-    assert!(
-        cos::proc::alive(child.id() as i32),
-        "the observer of {} was killed",
-        spec.id
-    );
-
-    // SAFETY: the owner this test spawned; no memory is touched.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGKILL);
-    }
-    let _ = child.wait();
-}
-
-#[test]
 fn list_skips_refused_runs() {
     let root = scratch("skips");
     let home = root.join("home");
     let done = finished(&home);
-    let (mut child, _held) = owner(&root, "skips");
-    let live = running(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        child.id() as i32,
-    );
-
     let agents_dir = home.join("out/agents");
     std::os::unix::fs::symlink(agents_dir.join(&done), agents_dir.join("linked")).unwrap();
     std::fs::create_dir_all(agents_dir.join("stale")).unwrap();
@@ -463,11 +848,8 @@ fn list_skips_refused_runs() {
     .unwrap();
 
     let listing = agents::list(&home).unwrap();
-    let mut listed: Vec<&str> = listing.runs.iter().map(|(s, _)| s.id.as_str()).collect();
-    listed.sort_unstable();
-    let mut expected = [done.as_str(), live.id.as_str()];
-    expected.sort_unstable();
-    assert_eq!(listed, expected);
+    let listed: Vec<&str> = listing.runs.iter().map(|(s, _)| s.id.as_str()).collect();
+    assert_eq!(listed, [done.as_str()]);
     let mut skipped = listing.skipped.clone();
     skipped.sort();
     assert_eq!(skipped, ["linked", "stale"]);
@@ -481,23 +863,12 @@ fn list_skips_refused_runs() {
     assert!(out.status.success(), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("skipped:"), "{stderr}");
-    assert!(
-        stderr.contains("linked") && stderr.contains("stale"),
-        "{stderr}"
-    );
     assert!(!agents_dir.join(&done).exists(), "finished run kept");
-    assert!(agents_dir.join(&live.id).exists(), "running run removed");
     assert!(agents_dir.join("stale").exists(), "skipped id removed");
-
-    // SAFETY: the owner this test spawned; no memory is touched.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGKILL);
-    }
-    let _ = child.wait();
 }
 
 #[test]
-fn watch_waits_on_skipped() {
+fn watch_waits_on_skipped_and_ends_when_nothing_is_live() {
     let root = scratch("watch");
     let home = root.join("home");
     let done = finished(&home);
@@ -552,7 +923,7 @@ fn cli_and_mcp_refuse_escaping_ids() {
     std::fs::create_dir_all(&victim).unwrap();
     std::fs::write(victim.join("state.json"), b"victim").unwrap();
 
-    for verb in ["show", "kill"] {
+    for verb in ["show", "kill", "done", "screen"] {
         let out = Command::new(COS)
             .arg("--home")
             .arg(&home)
@@ -586,83 +957,10 @@ fn cli_and_mcp_refuse_escaping_ids() {
 }
 
 #[test]
-fn rejudge_each_run_kind() {
-    let root = scratch("rejudge");
-    let (home, repo) = (root.join("home"), repo(&root));
-    let mut ids = Vec::new();
-    ids.push(
-        run(
-            &home,
-            request(Harness::Claude, FAKE_CLAUDE, Some(repo.clone()), "edit a file"),
-        )
-        .0
-        .id,
-    );
-    ids.push(run(&home, request(Harness::Claude, FAKE_CLAUDE, None, "FAIL")).0.id);
-    let mut in_place = request(Harness::Claude, FAKE_CLAUDE, Some(repo), "FAIL");
-    in_place.worktree = false;
-    ids.push(run(&home, in_place).0.id);
-
-    for id in &ids {
-        agents::rejudge(&home, id).unwrap_or_else(|e| panic!("rejudge {id}: {e:#}"));
-        let (_, st) = agents::read(&home, id).unwrap();
-        assert!(st.verdict.is_some(), "{id} has no verdict after rejudge");
-    }
-}
-
-#[test]
-fn clean_with_tree_gone() {
-    let root = scratch("treegone");
-    let (home, repo) = (root.join("home"), repo(&root));
-    let (spec, _) = run(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, Some(repo), "edit a file"),
-    );
-    std::fs::remove_dir_all(&spec.workdir).unwrap();
-
-    agents::clean(&home, &spec.id, false).unwrap();
-    assert!(!home.join("out/agents").join(&spec.id).exists());
-}
-
-#[test]
-fn classify_matches_reconcile() {
-    let root = scratch("classify");
-    let home = root.join("home");
-    let (mut child, _held) = owner(&root, "classify");
-    let spec = running(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        child.id() as i32,
-    );
-    let (_, st) = agents::read(&home, &spec.id).unwrap();
-    assert_eq!(agents::classify(&spec, &st), Liveness::Live);
-
-    // SAFETY: the owner this test spawned; no memory is touched.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGKILL);
-    }
-    let _ = child.wait();
-    let on_disk: State = serde_json::from_slice(&state_bytes(&home, &spec.id)).unwrap();
-    assert_eq!(agents::classify(&spec, &on_disk), Liveness::Lost);
-
-    let (_, repaired) = agents::read(&home, &spec.id).unwrap();
-    assert_eq!(repaired.status, Status::Lost);
-    assert_eq!(
-        agents::classify(&spec, &State::default()),
-        Liveness::Starting
-    );
-}
-
-#[test]
-fn count_is_read_only() {
+fn count_is_read_only_and_reads_herdr_runs_as_live() {
     let root = scratch("count");
     let home = root.join("home");
-    let (mut child, _held) = owner(&root, "count");
-    let spec = running(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        child.id() as i32,
-    );
+    let live = in_herdr(&home, "t1");
     assert_eq!(
         agents::count(&home).unwrap(),
         agents::Counts {
@@ -673,39 +971,67 @@ fn count_is_read_only() {
         }
     );
 
-    // SAFETY: the owner this test spawned; no memory is touched.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGKILL);
-    }
-    let _ = child.wait();
-
-    let before = state_bytes(&home, &spec.id);
-    assert_eq!(
-        agents::count(&home).unwrap(),
-        agents::Counts {
-            live: 0,
-            lost: 1,
-            starting: 0,
-            unreadable: 0
-        }
-    );
-    assert_eq!(state_bytes(&home, &spec.id), before, "count wrote a record");
-
     let bad = finished(&home);
     std::fs::write(
         home.join("out/agents").join(&bad).join("state.json"),
         b"{ not json",
     )
     .unwrap();
+    let before = state_bytes(&home, &live.id);
     assert_eq!(
         agents::count(&home).unwrap(),
         agents::Counts {
-            live: 0,
-            lost: 1,
+            live: 1,
+            lost: 0,
             starting: 0,
             unreadable: 1
         }
     );
+    assert_eq!(state_bytes(&home, &live.id), before, "count wrote a record");
+}
+
+#[test]
+fn a_hire_whose_preparing_process_is_gone_is_lost() {
+    let root = scratch("launcher");
+    let home = root.join("home");
+    let spec =
+        agents::prepare_spec(&at(&home), request(Harness::Claude, "claude", None, "x")).unwrap();
+    // `prepare_spec` records this test as the launcher: alive, so starting.
+    assert_eq!(
+        agents::count(&home).unwrap(),
+        agents::Counts {
+            live: 1,
+            lost: 0,
+            starting: 1,
+            unreadable: 0
+        }
+    );
+    assert_eq!(
+        agents::live_launchers(&home),
+        vec![std::process::id() as i32]
+    );
+
+    let mut gone = Command::new("true").spawn().unwrap();
+    let dead = gone.id() as i32;
+    gone.wait().unwrap();
+    let st = State {
+        launcher: Some(dead),
+        launcher_started: Some("0.000000".into()),
+        ..State::default()
+    };
+    write_state(&home, &spec.id, &st);
+    let mut old: Spec = spec.clone();
+    old.created = "2020-01-01T00:00:00Z".into();
+    std::fs::write(
+        agents::dir(&home, &spec.id).join("spec.json"),
+        serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(agents::count(&home).unwrap().lost, 1);
+    assert!(agents::live_launchers(&home).is_empty());
+    let (_, read) = agents::read(&home, &spec.id).unwrap();
+    assert_eq!(read.status, Status::Lost);
+    assert!(read.error.unwrap().contains("before the run reached Herdr"));
 }
 
 #[test]
@@ -713,17 +1039,8 @@ fn count_refuses_a_symlinked_run() {
     let root = scratch("count-link");
     let home = root.join("home");
     let other_home = root.join("other");
-    let other = finished(&other_home);
+    let other = in_herdr(&other_home, "t9").id;
     let target = other_home.join("out/agents").join(&other);
-    let stale = State {
-        status: Status::Running,
-        ..State::default()
-    };
-    std::fs::write(
-        target.join("state.json"),
-        serde_json::to_vec(&stale).unwrap(),
-    )
-    .unwrap();
     let before = state_bytes(&other_home, &other);
 
     let agents_dir = home.join("out/agents");
@@ -743,112 +1060,5 @@ fn count_refuses_a_symlinked_run() {
         state_bytes(&other_home, &other),
         before,
         "count wrote a record"
-    );
-}
-
-#[test]
-fn count_reports_a_starting_run_as_starting_and_live() {
-    let root = scratch("count-starting");
-    let home = root.join("home");
-    let id = finished(&home);
-    let starting = State {
-        status: Status::Running,
-        ..State::default()
-    };
-    std::fs::write(
-        home.join("out/agents").join(&id).join("state.json"),
-        serde_json::to_vec(&starting).unwrap(),
-    )
-    .unwrap();
-
-    assert_eq!(
-        agents::count(&home).unwrap(),
-        agents::Counts {
-            live: 1,
-            lost: 0,
-            starting: 1,
-            unreadable: 0
-        }
-    );
-}
-
-#[test]
-fn live_observers_holds_live_pids_only_and_writes_nothing() {
-    let root = scratch("observers");
-    let home = root.join("home");
-    let (mut live_child, _live_held) = owner(&root, "live");
-    let (mut dead_child, _dead_held) = owner(&root, "dead");
-    let live = running(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        live_child.id() as i32,
-    );
-    let lost = running(
-        &home,
-        request(Harness::Claude, FAKE_CLAUDE, None, "SLEEP"),
-        dead_child.id() as i32,
-    );
-
-    // SAFETY: the owner this test spawned; no memory is touched.
-    unsafe {
-        libc::kill(dead_child.id() as i32, libc::SIGKILL);
-    }
-    let _ = dead_child.wait();
-
-    let before = (state_bytes(&home, &live.id), state_bytes(&home, &lost.id));
-    assert_eq!(agents::live_supervisors(&home), vec![live_child.id() as i32]);
-    assert_eq!(
-        (state_bytes(&home, &live.id), state_bytes(&home, &lost.id)),
-        before,
-        "live_supervisors wrote a record"
-    );
-
-    // SAFETY: the owner this test spawned; no memory is touched.
-    unsafe {
-        libc::kill(live_child.id() as i32, libc::SIGKILL);
-    }
-    let _ = live_child.wait();
-}
-
-#[test]
-fn clean_waits_for_the_judging_observer() {
-    let root = scratch("clean-judging");
-    let home = root.join("home");
-    let (mut child, _held) = owner(&root, "judging");
-    let spec = agents::prepare_spec(&at(&home), request(Harness::Claude, FAKE_CLAUDE, None, "edit a file")).unwrap();
-    // Ended, but the observer is still recording its verdict.
-    let ending = State {
-        status: Status::Done,
-        supervisor: Some(child.id() as i32),
-        ..State::default()
-    };
-    std::fs::write(
-        agents::root(&home).join(&spec.id).join("state.json"),
-        serde_json::to_vec(&ending).unwrap(),
-    )
-    .unwrap();
-
-    let pid = child.id() as i32;
-    let judging = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        // SAFETY: the owner the test spawned; no memory is touched.
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
-    });
-    let started = Instant::now();
-    agents::clean(&home, &spec.id, true).unwrap();
-    judging.join().unwrap();
-    // The judging thread SIGKILLed the observer; reap it before reading liveness.
-    let _ = child.wait();
-
-    assert!(
-        started.elapsed() >= Duration::from_millis(250),
-        "clean returned before the observer finished judging"
-    );
-    assert!(!cos::proc::alive(pid), "the observer was left running");
-    assert!(
-        !home.join("out/agents").join(&spec.id).exists(),
-        "run dir not removed"
     );
 }

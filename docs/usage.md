@@ -321,9 +321,14 @@ cos agents spawn --from brief --all           # one agent per action
 cos agents spawn --deliverable D-1            # the handoff for D-1, built from the state
 cos agents spawn --prompt "…" --repo ~/Projects/my-repo
 cos agents spawn --deliverable D-1 --check "task test" --scope src/   # hired against a contract
-cos agents watch                              # the table, redrawn until all finish
-cos agents tail -f <id>                       # each call with its command or path, its result, each message
-cos agents show <id>                          # verdict, checks, diff, cost, how to take it over
+cos agents watch                              # follow them in Herdr: deadlines, one verdict each
+cos agents watch --osc                        # the same, as OSC 7501 records for the Herdr pane it runs in
+cos agents show <id>                          # verdict, checks, diff, its Herdr terminal
+cos agents say <id> "…"                       # a message into its Herdr terminal (hc send)
+cos agents pause <id>                         # its stop key (hc interrupt): the turn ends, it stays
+cos agents done <id>                          # end its terminal and judge it, once
+cos agents open <id>                          # show its terminal in the Herdr window
+cos agents screen <id>                        # its screen and recent history (hc read)
 cos agents judge <id>                         # judge again, e.g. after finishing its work by hand
 cos agents spawn --deliverable D-1 --role reviewer   # hired as a reviewer: judged on REVIEW.md
 cos --dry-run agents spawn --deliverable D-1 --role tester   # the plan: repo, fit, contract; starts nothing
@@ -360,17 +365,36 @@ cos agents clean                              # remove finished worktrees (keeps
   line (`yours` in `show` and the window). A contract with no check, no
   scope and no output file is warned about before hiring: the judge would
   have nothing to run.
+- **Where it runs**: a [Herdr](https://herdr.dev) terminal (`hc run`)
+  named `cos-<id>` and labelled `hire=<id>`, in that worktree, with Claude
+  Code or Codex interactive and the work as its first message. Herdr owns
+  its process for its whole life; cos owns none. Talk to it, approve its
+  prompts and take it over in Herdr. Without herdr-core running, `spawn`,
+  the window and `spin_off` refuse with the fix: `hc server start`. Its
+  command line pins the business that hired it (`COS_HOME`,
+  `COS_WORKSPACE`, `COS_PROJECTS`, with `COS_BUSINESS` cleared), so a `cos`
+  it runs resolves the same business.
 - **What it may do**: edit and run commands inside that worktree. Shell
   commands have no network (Claude Code's sandbox with a strict allowlist;
-  Codex's `workspace-write`), so it cannot push, comment or send; it stops
-  and leaves the draft for you, as every agent prompt asks.
-- **Limits**: `--deadline` seconds (default 1800, ceiling 7200) and
-  `--budget` dollars for Claude (default $5). Codex has no spend flag.
+  Codex's `workspace-write`, asking on request); anything more asks you in
+  Herdr, which shows the run as waiting on you. It cannot push, comment or
+  send without you.
+- **Limits**: `--deadline` seconds (default 1800, ceiling 7200): at it, cos
+  presses its stop key, then ends its terminal 10 s later. Live hires past
+  `COS_AGENT_SLOTS` are refused. Herdr measures no spend, so there is no
+  spend cap and no cost recorded.
+- **Followed, judged once**: the desktop app (every 2 s), `cos agents
+  watch` and `cos mcp` while it serves read each live terminal (`hc get`),
+  stop it at its deadline, and judge it exactly once (`judge.lock`): when
+  Herdr says it is done after its first message, its program ends, the
+  deadline passes, or you mark it done. Later turns are judged on request
+  (`cos agents judge`). cos only writes to a terminal labelled with its own
+  hire.
 - **The hiring policy**: `context/agents.json` (seeded by `task setup`)
   fills what a spawn leaves out, per repo directory name over `defaults`:
-  `checks`, `scope`, `deadline_secs`, `budget_usd`, and the watch limits
-  `stall_secs` (default 600) and `repeat` (default 5). Checks or scope given
-  on the spawn win whole; the policy never adds to them. An unknown field
+  `checks`, `scope` and `deadline_secs`. An old file's `budget_usd`,
+  `stall_secs` and `repeat` are read and ignored. Checks or scope given on
+  the spawn win whole; the policy never adds to them. An unknown field
   makes `cos` ignore the file and say so, rather than hire on a typo.
 - **Roles**: the staff under the chief of staff, in the same file's `roles`
   (the template's eight when the file has none): builder, reviewer,
@@ -385,16 +409,12 @@ cos agents clean                              # remove finished worktrees (keeps
   the role's mandate to the prompt and fills its contract: `expects` (`diff`,
   `file` with an `output` such as `REVIEW.md`, or `none`), checks, scope and
   `done_when`. The role's contract wins over the repo's; the repo's deadline
-  and budget win over the role's. The desktop's Agents tab hires by role.
-- **Trouble while it runs**: `stalled` (no output for `stall_secs`) and
-  `looping` (the same call, arguments and all, `repeat` times in a row) show
-  in the verdict column of `ls` and `/agents`, and in `show`. They flag; they
-  never stop an agent. Spend is not watched live: Claude reports its cost
-  only when it ends, and `--budget` already caps it.
+  wins over the role's. The desktop's Agents tab hires by role.
 - **The scorecard**: every verdict is a line in `out/agents/ledger.jsonl`,
   which `clean` leaves alone. `cos agents scorecard`, `/agents` and the MCP
   `agents` tool group it by role, harness, model and repo: runs, accepted, needs
-  you, rejected, overclaimed, median cost and time.
+  you, rejected, overclaimed and median time; runs in Herdr show "not
+  measured in Herdr" for cost, never 0.
 - **The verdict**: when an agent ends, `cos` judges it from what it left,
   never from its summary. It lists the files that differ from the commit the
   agent started from, re-runs each `--check` in the workdir itself (one 300 s
@@ -405,8 +425,9 @@ cos agents clean                              # remove finished worktrees (keeps
   `expects: file` output is missing or empty, or it changed files under
   `expects: none`; `rejected!` means it claimed success anyway.
   `--deliverable` brings its `doneWhen`.
-- **Take over**: `cos agents show <id>` prints `claude --resume <session>` or
-  `codex resume <session>` for the worktree.
+- **Take over**: it is already yours in Herdr: `hc attach cos-<id>`, or
+  Open in Herdr in the window. A run from before cos followed hires in
+  Herdr reads, but cannot be resumed.
 - **From Claude Desktop or Codex**: the `spin_off`, `agents` and `stop_agent`
   tools (local server only; the remote one never offers them).
 - **In the browser**: `cos dash`, then `/agents`.

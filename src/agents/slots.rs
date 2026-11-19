@@ -1,10 +1,11 @@
 //! The governor: how many agents run at once, and one build at a time.
 //!
-//! A run slot is `out/agents/.slots/run-<i>.lock` under `flock`, held by a
-//! supervisor for its whole life. The kernel drops the lock when the process
-//! exits, however it exits, so a slot cannot leak and a queue needs no
-//! bookkeeping. The build slot is one machine-wide `flock` that the `cargo`
-//! shim on every agent's PATH takes before it execs the real `cargo`.
+//! A run slot is a hire not yet ended: being prepared, or live in Herdr
+//! (`agents::live_runs`). A hire is refused when every slot is taken; the
+//! count and the new run's record happen under `out/agents/.slots/hire.lock`,
+//! so two hires at once cannot both take the last slot. The build slot is one
+//! machine-wide `flock` that the `cargo` shim on every agent's PATH takes
+//! before it execs the real `cargo`.
 
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsRawFd, IntoRawFd};
@@ -60,21 +61,12 @@ pub fn lock_exclusive(path: &Path) -> Result<Held> {
     Ok(Held { _lock: file })
 }
 
-/// The first free run slot, or `None` when all `slots` are held.
-pub fn try_run_slot(home: &Path, slots: usize) -> Result<Option<Held>> {
+/// Waits for the hire lock, held while a hire counts the slots and records
+/// itself.
+pub fn hire_lock(home: &Path) -> Result<Held> {
     let dir = slots_dir(home);
     std::fs::create_dir_all(&dir)?;
-    for i in 0..slots {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(dir.join(format!("run-{i}.lock")))?;
-        if flock(&file, true) {
-            return Ok(Some(Held { _lock: file }));
-        }
-    }
-    Ok(None)
+    lock_exclusive(&dir.join("hire.lock"))
 }
 
 /// The machine-wide build lock: one per user, shared by every `cos` home.

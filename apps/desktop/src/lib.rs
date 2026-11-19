@@ -1,11 +1,12 @@
 //! Chief of Staff desktop: the `cos` report and an agent launcher in one
 //! window, over the `cos` library.
 //!
-//! The app launches and watches; it owns no agent. Each agent is a setsid'd
-//! `cos agents supervise` process, so closing the window stops nothing, and
-//! reopening it reconciles every agent from the state each one recorded. The
-//! report renders in a sandboxed iframe with an opaque origin: a brief quotes
-//! mail and tickets, and nothing in it may reach these commands.
+//! The app hires and judges; it owns no agent. Each hire runs in a Herdr
+//! terminal, so closing the window stops nothing; while the window is open a
+//! follower thread reads those terminals (`agents::tick`) for every
+//! registered business, stops a run at its deadline and judges each once.
+//! The report renders in a sandboxed iframe with an opaque origin: a brief
+//! quotes mail and tickets, and nothing in it may reach these commands.
 
 pub mod servers;
 pub mod settings;
@@ -133,7 +134,7 @@ fn pinned_by(s: &Sources) -> Option<&'static str> {
     .map(|(_, var)| var)
 }
 
-/// The `cos` CLI that supervises agents, resolved once at start: `COS_BIN`, then the
+/// The `cos` CLI a hire's build shims call back into, resolved once at start: `COS_BIN`, then the
 /// settings file, then `cos` beside this executable, then the install's release and debug
 /// builds, then `~/.cargo/bin/cos`.
 fn cos_binary(
@@ -1061,6 +1062,8 @@ async fn docs_save(app: tauri::State<'_, App>, business: String, organize: Value
 struct Row {
     spec: Spec,
     state: State,
+    /// Why it needs you now, in words; `None` when it does not.
+    needs: Option<String>,
 }
 
 #[tauri::command]
@@ -1070,10 +1073,77 @@ async fn agents_list(app: tauri::State<'_, App>) -> Res<Vec<Row>> {
         Ok(agents::list(&home)?
             .runs
             .into_iter()
-            .map(|(spec, state)| Row { spec, state })
+            .map(|(spec, state)| {
+                let needs = agents::needs(&spec, &state);
+                Row { spec, state, needs }
+            })
             .collect())
     })
     .await
+}
+
+/// Your message into the run's Herdr terminal (`hc send`).
+#[tauri::command]
+async fn agents_say(
+    app: tauri::State<'_, App>,
+    business: String,
+    id: String,
+    text: String,
+) -> Res<State> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
+    blocking(move || agents::say(&home, &id, &text)).await
+}
+
+/// The agent's stop key (`hc interrupt`): its turn ends, it stays.
+#[tauri::command]
+async fn agents_pause(app: tauri::State<'_, App>, business: String, id: String) -> Res<State> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
+    blocking(move || agents::pause(&home, &id)).await
+}
+
+/// Ends the run's Herdr terminal (`hc kill`) and judges it, once.
+#[tauri::command]
+async fn agents_done(app: tauri::State<'_, App>, business: String, id: String) -> Res<State> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
+    blocking(move || agents::mark_done(&home, &id)).await
+}
+
+/// Brings the run's terminal up in the Herdr window; says what happened.
+#[tauri::command]
+async fn agents_open(app: tauri::State<'_, App>, id: String) -> Res<String> {
+    let home = app.get().home;
+    blocking(move || agents::open_in_herdr(&home, &id)).await
+}
+
+/// The run's last screen and `lines` of history (`hc read`); once it has
+/// ended, what it showed then.
+#[tauri::command]
+async fn agents_screen(
+    app: tauri::State<'_, App>,
+    id: String,
+    lines: Option<usize>,
+) -> Res<String> {
+    let home = app.get().home;
+    blocking(move || agents::screen(&home, &id, lines.unwrap_or(80).min(2000))).await
+}
+
+/// Whether herdr-core answers. Asked on every render of the hire dialog, so
+/// the answer is reused for a few seconds.
+#[tauri::command]
+async fn herdr_status() -> Res<cos::herdr::Server> {
+    blocking(|| Ok(cos::herdr::server_cached())).await
+}
+
+/// Start Herdr: `hc server start`, then ask again.
+#[tauri::command]
+async fn herdr_start() -> Res<cos::herdr::Server> {
+    blocking(cos::herdr::start).await
 }
 
 /// The staff: every role in `context/agents.json` (the template's when the
@@ -1196,7 +1266,6 @@ struct SpawnArgs {
     model: Option<String>,
     worktree: bool,
     deadline_secs: u64,
-    budget_usd: f64,
     /// Identical agents to start; each gets its own worktree.
     count: usize,
     source: Option<String>,
@@ -1294,15 +1363,11 @@ async fn agents_spawn(
                     model: args.model.clone().filter(|m| !m.trim().is_empty()),
                     worktree: args.worktree,
                     deadline: Duration::from_secs(args.deadline_secs),
-                    budget_usd: args.budget_usd,
                     slots: s.slots,
-                    // The window always sends both.
-                    explicit: agents::policy::Explicit {
-                        deadline: true,
-                        budget: true,
-                    },
+                    // The window always sends it.
+                    explicit: agents::policy::Explicit { deadline: true },
                 })?;
-                agents::spawn(&triple, req, &cos)
+                agents::spawn_background(&triple, req, &cos)
             })
             .collect()
     })
@@ -1365,18 +1430,14 @@ async fn agents_clean(
     blocking(move || agents::clean(&home, &id, force)).await
 }
 
-/// Activity from byte offset `from`: each tool call with what it ran, each
-/// result, each message; and the offset to ask for next. Every entry has a
-/// `key` from its place in the file, so a range read twice adds nothing.
+/// What seeding its worktree did, step by step.
 #[tauri::command]
-async fn agents_tail(app: tauri::State<'_, App>, id: String, from: u64) -> Res<Value> {
+async fn agents_seed(app: tauri::State<'_, App>, id: String) -> Res<Value> {
     let home = app.get().home;
     blocking(move || {
         let run = agents::run_dir(&home, &id)?;
-        let (spec, _) = agents::read(&home, &id)?;
-        let (entries, next) = agents::view::feed(&run.events_path(), spec.harness, from);
         let seed_log = std::fs::read_to_string(run.path().join("seed.log")).ok();
-        Ok(json!({ "entries": entries, "next": next, "seedLog": seed_log }))
+        Ok(json!({ "seedLog": seed_log }))
     })
     .await
 }
@@ -1688,7 +1749,7 @@ fn git_repos(projects: &Path) -> Vec<String> {
 struct Watched {
     stamp: String,
     starting: usize,
-    supervisors: Vec<i32>,
+    launchers: Vec<i32>,
 }
 
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
@@ -1709,13 +1770,13 @@ fn registered_homes(registry: &Path) -> BTreeMap<String, PathBuf> {
 
 /// Emits `report-changed` when a run or the workspace writes, and
 /// `agents-changed` when an agent does, so the window refreshes on events
-/// instead of every view polling. Reads metadata only: `agents::list` runs
-/// `ps` per live agent, too dear per tick. An agent's state write renames into
+/// instead of every view polling. Reads metadata only: `agents::list` may
+/// reconcile and write, too dear per tick. An agent's state write renames into
 /// its directory, which moves the directory's mtime that `stamp` reads.
 ///
-/// Publishes a business's row when its stamp changed, a supervisor it last saw live
-/// died, or it has a Starting run, which turns Lost with no file change or pid to
-/// watch. A changed registry publishes every row; a changed `dashboards.toml` emits
+/// Publishes a business's row when its stamp changed, a process preparing a hire
+/// it last saw died, or it has a Starting run, which turns Lost with no file change
+/// or pid to watch. A changed registry publishes every row; a changed `dashboards.toml` emits
 /// `dashboards-changed`. The first tick only records those two files' mtimes.
 fn watch<R: Runtime>(handle: AppHandle<R>) {
     std::thread::spawn(move || {
@@ -1744,10 +1805,10 @@ fn watch<R: Runtime>(handle: AppHandle<R>) {
                     || watched.get(name).is_none_or(|w| {
                         w.stamp != stamp
                             || w.starting > 0
-                            || w.supervisors.iter().any(|&pid| !cos::proc::alive(pid))
+                            || w.launchers.iter().any(|&pid| !cos::proc::alive(pid))
                     });
                 if due {
-                    // Read before the row is built: a supervisor that dies after this
+                    // Read before the row is built: a launcher that dies after this
                     // read is still in the set, so the next tick sees it die.
                     let signals = cos::signals::read(home);
                     watched.insert(
@@ -1755,7 +1816,7 @@ fn watch<R: Runtime>(handle: AppHandle<R>) {
                         Watched {
                             stamp,
                             starting: signals.starting,
-                            supervisors: signals.supervisors,
+                            launchers: signals.launchers,
                         },
                     );
                     recompute.push(name.clone());
@@ -1784,6 +1845,69 @@ fn watch<R: Runtime>(handle: AppHandle<R>) {
                 fleet = now;
             }
             std::thread::sleep(Duration::from_millis(700));
+        }
+    });
+}
+
+/// Follows the hires in Herdr while the window is open, for every registered
+/// business and the window's own: polls each live terminal (`agents::tick`:
+/// one bounded `hc get` per run), stops runs at their deadline and judges
+/// each once. Polling rather than `hc events`: every read is a bounded child
+/// and nothing long-lived has to be owned, reconnected or reaped. A home with
+/// no run in Herdr is read from its files alone and left as it is. Its writes
+/// reach the window through `watch`; a change in which of the window's runs
+/// wait on you in Herdr rebuilds the report, whose Today lists them.
+fn follow_herdr<R: Runtime>(handle: AppHandle<R>) {
+    std::thread::spawn(move || {
+        let start = handle.state::<Start>().inner().clone();
+        let mut waiting = String::new();
+        // Per home: its runs' stamp at the last scan, and the blocked runs
+        // that scan found when some run was in Herdr. A home whose stamp has
+        // not moved and had nothing in Herdr is not read again.
+        let mut seen: BTreeMap<PathBuf, (String, Option<Vec<String>>)> = BTreeMap::new();
+        loop {
+            let current = handle.state::<App>().get().home;
+            let mut homes: Vec<PathBuf> = registered_homes(&start.registry).into_values().collect();
+            if !homes.contains(&current) {
+                homes.push(current.clone());
+            }
+            seen.retain(|h, _| homes.contains(h));
+            for home in &homes {
+                let stamp = cos::dash::stamp([agents::root(home)]);
+                if seen
+                    .get(home)
+                    .is_some_and(|(s, live)| *s == stamp && live.is_none())
+                {
+                    continue;
+                }
+                let live = agents::in_herdr(home);
+                if !live.is_empty()
+                    && let Err(e) = agents::tick(home)
+                {
+                    eprintln!("cos: following hires in Herdr: {e:#}");
+                }
+                let blocked = (!live.is_empty()).then(|| {
+                    agents::in_herdr(home)
+                        .into_iter()
+                        .filter(|(_, st)| st.herdr.as_ref().and_then(|h| h.blocked()).is_some())
+                        .map(|(spec, _)| spec.id)
+                        .collect()
+                });
+                seen.insert(
+                    home.clone(),
+                    (cos::dash::stamp([agents::root(home)]), blocked),
+                );
+            }
+            let now = seen
+                .get(&current)
+                .and_then(|(_, b)| b.as_ref())
+                .map(|b| b.join(","))
+                .unwrap_or_default();
+            if now != waiting {
+                let _ = handle.emit("report-changed", ());
+                waiting = now;
+            }
+            std::thread::sleep(Duration::from_secs(2));
         }
     });
 }
@@ -1911,6 +2035,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
                     .build()?;
             }
             watch(app.handle().clone());
+            follow_herdr(app.handle().clone());
             // Off the window's path, so the Flows tab's first open shows a page at once.
             flows_behind(app.handle().clone());
             Ok(())
@@ -1935,7 +2060,14 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             agents_record,
             agents_stop,
             agents_clean,
-            agents_tail,
+            agents_seed,
+            agents_say,
+            agents_pause,
+            agents_done,
+            agents_open,
+            agents_screen,
+            herdr_status,
+            herdr_start,
             agent_tasks,
             agents_roles,
             agents_scorecard,
