@@ -80,6 +80,7 @@ fn main() -> Result<()> {
     workspace(&home, today)?;
     docs_room(&home, today, &mut rng)?;
     staff(&home, today)?;
+    herdr_runs(&home, today)?;
     flows(&home)?;
 
     let report = cos::report::build(&home, &home)?;
@@ -92,6 +93,178 @@ fn main() -> Result<()> {
         "  COS_CN={0}/bin/cn cos --home {0} --projects {0}/projects dash",
         home.display()
     );
+    println!(
+        "  its hires answer to a stand-in Herdr: COS_HC={} FAKE_HC_STATE={}/.herdr-demo",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fake-hc.sh")
+            .display(),
+        home.display()
+    );
+    Ok(())
+}
+
+/// Two hires live in Herdr, as a fake herdr-core (`.herdr-demo/`, read by
+/// `tests/fixtures/fake-hc.sh`) reports them: a Researcher's meeting prep
+/// waiting on your permission in Herdr, and a Tester that said done at its
+/// first turn, judged, with your result still to record.
+fn herdr_runs(home: &Path, today: Date) -> Result<()> {
+    use cos::agents::{Contract, Expects, Harness, Outcome, Seen, Spec, State, Status, Verdict};
+
+    let root = cos::agents::root(home);
+    let fake = home.join(".herdr-demo/terms");
+    // The live hires start minutes before the demo is written, so a follower
+    // reading them later in the day does not stop them at their deadline.
+    let now = jiff::Timestamp::now();
+    let ago = |mins: i64| (now - jiff::SignedDuration::from_mins(mins)).to_string();
+    let terminal =
+        |address: &str, id: &str, word: &str, kind: &str, turn: u64, screen: &str| -> Result<()> {
+            let d = fake.join(address);
+            std::fs::create_dir_all(&d)?;
+            std::fs::write(d.join("name"), cos::agents::follow::terminal_name(id))?;
+            std::fs::write(
+                d.join("labels"),
+                format!("hire={id}\ncos=hire\nharness=claude\n"),
+            )?;
+            std::fs::write(d.join("state"), "live\n")?;
+            std::fs::write(d.join("status"), format!("{word}\n"))?;
+            std::fs::write(d.join("kind"), kind)?;
+            std::fs::write(d.join("turn"), format!("{turn}\n"))?;
+            std::fs::write(d.join("screen"), screen)?;
+            Ok(())
+        };
+
+    // The Researcher: waiting on you in Herdr to allow a GitHub read.
+    let id = format!("{}-130200-c001", today.strftime("%Y%m%d"));
+    let dir = root.join(&id);
+    let scratch = dir.join("scratch");
+    std::fs::create_dir_all(&scratch)?;
+    let out = "DRAFT.md";
+    write(
+        &scratch.join(out),
+        "# Gateway sync: prep\n\n**Position:** ship 3.4 on Tuesday behind the token-rate flag; hold the cookie removal to 3.5.\n\n\
+         Sources: api-gateway#412, docs/plans/gateway-3.4.md, the 2026 roadmap note.\n",
+    )?;
+    let spec = Spec {
+        id: id.clone(),
+        harness: Harness::Claude,
+        program: "claude".into(),
+        model: None,
+        repo: None,
+        base: None,
+        workdir: scratch,
+        worktree: false,
+        title: "Go into Gateway sync with a position on 3.4".into(),
+        source: format!("brief {today} #1"),
+        prompt: "Role: Researcher. Gather what is known and write the prep. Leave your result in `DRAFT.md`; you are judged on that file.\n\nGo into Gateway sync (15:00) with a position on 3.4 and the cookie removal.".into(),
+        deadline_secs: 1800,
+        created: ago(9),
+        slots: Some(3),
+        contract: Contract {
+            done_when: Some(format!("{out} is a one-page draft with sources.")),
+            checks: vec![format!("test -s {out}")],
+            expects: Expects::File,
+            output: Some(out.into()),
+            ..Contract::default()
+        },
+        role: Some("researcher".into()),
+        terminal: Some(cos::agents::follow::terminal_name(&id)),
+        workspace: None,
+        projects: None,
+    };
+    let screen = "> Reading the PR, the plan and the roadmap note, then I will write the prep.\n\n\
+                  ● Bash(gh pr view 412 --repo northwind/api-gateway --json state,reviews)\n\n\
+                  Do you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again for gh pr view commands\n  3. No, and tell Claude what to do differently\n";
+    terminal("t901", &id, "blocked", "permission", 1, screen)?;
+    let state = State {
+        status: Status::Running,
+        started: Some(ago(9)),
+        herdr: Some(Seen {
+            address: "t901".into(),
+            word: Some("blocked".into()),
+            kind: Some("permission".into()),
+            turn: 1,
+            live: true,
+            at: ago(2),
+            ..Seen::default()
+        }),
+        ..State::default()
+    };
+    std::fs::write(dir.join("spec.json"), serde_json::to_vec_pretty(&spec)?)?;
+    std::fs::write(dir.join("state.json"), serde_json::to_vec_pretty(&state)?)?;
+
+    // The Tester: said done at its first turn, judged, your result to record.
+    let id = format!("{}-133000-c002", today.strftime("%Y%m%d"));
+    let dir = root.join(&id);
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&tree)?;
+    write(
+        &tree.join("TEST-PLAN.md"),
+        "# Smoke test: gateway 3.4 on staging\n\n\
+         Run `./scripts/smoke.sh --env staging --sdk 2.0.0-beta.3` from a release build.\n\n\
+         ## Evidence\n\n- [ ] the build and SDK version\n- [ ] frame and verdict logs\n",
+    )?;
+    let spec = Spec {
+        id: id.clone(),
+        harness: Harness::Claude,
+        program: "claude".into(),
+        model: None,
+        repo: Some(home.join("projects/api-gateway")),
+        base: Some("4f1c2a9e0b7d3c6a5e8f9d0c1b2a3e4f5d6c7b8a".into()),
+        workdir: tree,
+        worktree: true,
+        title: "API-77: Smoke-test gateway 3.4 on staging".into(),
+        source: "deliverable D-5".into(),
+        prompt: "Role: Tester. Draft the test; you run it. Leave your result in `TEST-PLAN.md`; you are judged on that file.\n\nAPI-77: Smoke-test gateway 3.4 against the staging mobile build.".into(),
+        deadline_secs: 1800,
+        created: ago(6),
+        slots: Some(3),
+        contract: Contract {
+            done_when: Some("A draft ready for you to resolve API-77: `TEST-PLAN.md`, with its evidence. The outward step stays with you.".into()),
+            finish_line: Some("API-77 resolved in Jira".into()),
+            checks: vec!["test -s TEST-PLAN.md".into(), "grep -qi evidence TEST-PLAN.md".into()],
+            scope: vec!["TEST-PLAN.md".into()],
+            expects: Expects::File,
+            output: Some("TEST-PLAN.md".into()),
+        },
+        role: Some("tester".into()),
+        terminal: Some(cos::agents::follow::terminal_name(&id)),
+        workspace: None,
+        projects: None,
+    };
+    terminal(
+        "t902",
+        &id,
+        "done",
+        "",
+        1,
+        "> The plan is in TEST-PLAN.md: run the smoke script against staging with the beta build,\n  and capture the items on its evidence list.\n",
+    )?;
+    let state = State {
+        status: Status::Running,
+        started: Some(ago(6)),
+        verdict: Some(Verdict {
+            outcome: Outcome::Accepted,
+            reasons: Vec::new(),
+            changed: vec!["TEST-PLAN.md".into()],
+            out_of_scope: Vec::new(),
+            checks: vec![],
+            overclaimed: false,
+            judged: ago(1),
+        }),
+        judged_on: Some("done at turn 1".into()),
+        herdr: Some(Seen {
+            address: "t902".into(),
+            word: Some("done".into()),
+            turn: 1,
+            live: true,
+            at: ago(1),
+            ..Seen::default()
+        }),
+        ..State::default()
+    };
+    std::fs::write(dir.join("spec.json"), serde_json::to_vec_pretty(&spec)?)?;
+    std::fs::write(dir.join("state.json"), serde_json::to_vec_pretty(&state)?)?;
+    std::fs::write(home.join(".herdr-demo/next"), "903\n")?;
     Ok(())
 }
 
@@ -1230,12 +1403,12 @@ fn git(dir: &Path, args: &[&str]) -> Result<()> {
 }
 
 /// Finished agents across the staff roles, with the verdicts and ledger rows a
-/// real run leaves: the Agents tab's roster, scorecard and run detail. All
-/// ended, so nothing claims to be running; their worktrees do not exist.
+/// real run in Herdr leaves: the Agents tab's roster, scorecard and run
+/// detail. All ended, so nothing claims to be running; their worktrees do not
+/// exist.
 fn staff(home: &Path, today: Date) -> Result<()> {
-    use cos::agents::watch::{Kind as Flag, Limits};
     use cos::agents::{
-        Contract, Expects, Harness, Outcome, Spec, State, Status, Verdict, judge, ledger,
+        Contract, Expects, Harness, Outcome, Seen, Spec, State, Status, Verdict, judge, ledger,
     };
 
     struct Run {
@@ -1253,10 +1426,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
         output: Option<&'static str>,
         done_when: &'static str,
         finish_line: Option<&'static str>,
-        cost: f64,
         mins: (u8, u8, u8),
-        tools: u32,
-        flagged: &'static [Flag],
         model: Option<&'static str>,
     }
     let runs = [
@@ -1279,10 +1449,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: None,
             done_when: "Burst limit enforced per token, with tests",
             finish_line: None,
-            cost: 1.84,
             mins: (9, 2, 16),
-            tools: 63,
-            flagged: &[],
             model: None,
         },
         Run {
@@ -1300,10 +1467,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: Some("REVIEW.md"),
             done_when: "Review submitted with a verdict and blocking findings listed",
             finish_line: None,
-            cost: 0.91,
             mins: (9, 20, 26),
-            tools: 31,
-            flagged: &[],
             model: Some("sonnet"),
         },
         Run {
@@ -1321,10 +1485,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: Some("DRAFT.md"),
             done_when: "DRAFT.md is a one-page draft with sources.",
             finish_line: None,
-            cost: 0.62,
             mins: (10, 5, 9),
-            tools: 18,
-            flagged: &[],
             model: None,
         },
         Run {
@@ -1346,10 +1507,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: None,
             done_when: "Beta branch builds green and TestFlight has a build",
             finish_line: None,
-            cost: 2.40,
             mins: (10, 30, 58),
-            tools: 112,
-            flagged: &[Flag::Looping],
             model: None,
         },
         Run {
@@ -1367,10 +1525,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: Some("ANSWER.md"),
             done_when: "ANSWER.md answers the question with file:line anchors.",
             finish_line: None,
-            cost: 0.35,
             mins: (11, 0, 7),
-            tools: 22,
-            flagged: &[],
             model: Some("haiku"),
         },
         Run {
@@ -1388,10 +1543,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: None,
             done_when: "The docs describe what shipped, and nothing outside docs changed.",
             finish_line: None,
-            cost: 0.77,
             mins: (11, 20, 33),
-            tools: 40,
-            flagged: &[Flag::Stalled],
             model: None,
         },
         Run {
@@ -1409,10 +1561,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: None,
             done_when: "The notes and the checklist are drafted for you to read.",
             finish_line: None,
-            cost: 0.18,
             mins: (12, 0, 4),
-            tools: 9,
-            flagged: &[],
             model: None,
         },
         Run {
@@ -1430,10 +1579,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: None,
             done_when: "",
             finish_line: None,
-            cost: 0.44,
             mins: (8, 0, 11),
-            tools: 14,
-            flagged: &[],
             model: None,
         },
         Run {
@@ -1454,10 +1600,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             output: Some("TEST-PLAN.md"),
             done_when: "A draft ready for you to resolve API-77: `TEST-PLAN.md`, with its evidence. The outward step stays with you.",
             finish_line: Some("API-77 resolved in Jira"),
-            cost: 0.71,
             mins: (12, 30, 41),
-            tools: 26,
-            flagged: &[],
             model: None,
         },
     ];
@@ -1491,7 +1634,6 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             source: r.source.into(),
             prompt: format!("Role: {}. {}", r.role.unwrap_or("none"), r.title),
             deadline_secs: 1800,
-            budget_usd: 5.0,
             created: at(h, m0),
             slots: Some(3),
             contract: Contract {
@@ -1502,8 +1644,10 @@ fn staff(home: &Path, today: Date) -> Result<()> {
                 output: r.output.map(Into::into),
                 finish_line: r.finish_line.map(Into::into),
             },
-            limits: Limits::default(),
             role: r.role.map(Into::into),
+            terminal: Some(cos::agents::follow::terminal_name(&id)),
+            workspace: None,
+            projects: None,
         };
         let verdict = Verdict {
             outcome: r.outcome,
@@ -1528,16 +1672,26 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             started: Some(at(h, m0)),
             ended: Some(at(h, m1)),
             exit: Some(if r.status == Status::Done { 0 } else { 143 }),
-            cost_usd: Some(r.cost),
-            tokens: Some(u64::from(r.tools) * 2_150),
-            tool_calls: r.tools,
-            session: Some(format!("demo-session-{i}")),
-            last: "result: success".into(),
-            summary: "Done. Every check passes and the change is ready for review.".into(),
             seeded: vec!["linked target/ from the repo (clonefile)".into()],
             shimmed: vec!["cargo".into()],
             verdict: Some(verdict),
-            flagged: r.flagged.to_vec(),
+            judged_on: Some(
+                if r.status == Status::Done {
+                    "done at turn 1"
+                } else {
+                    "it was stopped"
+                }
+                .into(),
+            ),
+            herdr: Some(Seen {
+                address: format!("t{}", 800 + i),
+                turn: 1,
+                live: false,
+                exit_code: (r.status == Status::Done).then_some(0),
+                reason: Some(if r.status == Status::Done { "exited" } else { "killed" }.into()),
+                at: at(h, m1),
+                ..Seen::default()
+            }),
             recorded: (r.role == Some("tester")).then(|| cos::agents::Recorded {
                 outcome: cos::agents::Tested::Passed,
                 notes: "Ran the script against staging with mobile build 2.0.0-beta.3: 12 of 12 steps passed, token refresh under 200 ms.".into(),
@@ -1548,47 +1702,13 @@ fn staff(home: &Path, today: Date) -> Result<()> {
         };
         std::fs::write(dir.join("spec.json"), serde_json::to_vec_pretty(&spec)?)?;
         std::fs::write(dir.join("state.json"), serde_json::to_vec_pretty(&state)?)?;
-        let (look, run) = match r.output {
-            Some(out) => ("README.md", format!("test -s {out}")),
-            None => ("src/lib.rs", "task test".to_owned()),
-        };
-        let call = |n: u8, name: &str, input: serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": format!("d{i}-{n}"), "name": name, "input": input}]}});
-        let answer = |n: u8, error: bool, text: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": format!("d{i}-{n}"), "is_error": error, "content": text}]}});
-        let say = |text: String| json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}});
-        let events = [
-            json!({"type": "system", "subtype": "init", "session_id": format!("demo-session-{i}"), "model": "claude-demo"}),
-            say(format!("Starting on: {}", r.title)),
-            call(
-                1,
-                "Bash",
-                json!({"command": "git status --short; git log --oneline -3", "description": "Where the worktree stands"}),
+        std::fs::write(
+            dir.join("screen.txt"),
+            format!(
+                "> {}\n\n● Bash(git status --short)\n  ⎿  clean\n\n> Done. Every check passes and the change is ready for review.\n",
+                r.title
             ),
-            answer(1, false, "4f1c2a9 Release 3.4 candidate"),
-            call(2, "Read", json!({"file_path": look})),
-            answer(2, false, "api-gateway (fictional)"),
-            call(
-                3,
-                "Grep",
-                json!({"pattern": "refresh_token", "path": "src/"}),
-            ),
-            answer(3, false, "src/auth/refresh.rs:42"),
-            call(
-                4,
-                "Bash",
-                json!({"command": "curl -sI https://staging.northwind.example/health"}),
-            ),
-            answer(
-                4,
-                true,
-                "curl: (6) Could not resolve host: the sandbox has no network",
-            ),
-            call(5, "Bash", json!({"command": run})),
-            answer(5, false, ""),
-            say("Done. Every check passes and the change is ready for review.".into()),
-            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Done.", "total_cost_usd": r.cost, "num_turns": 7}),
-        ];
-        let lines: Vec<String> = events.iter().map(|e| e.to_string()).collect();
-        std::fs::write(dir.join("events.jsonl"), lines.join("\n") + "\n")?;
+        )?;
         if let Some(row) = ledger::row(&spec, &state) {
             ledger::append(home, &row)?;
         }
@@ -1639,8 +1759,8 @@ fn staff(home: &Path, today: Date) -> Result<()> {
                 checks: 1,
                 cost_usd: Some(cost),
                 secs: Some(secs),
-                tool_calls: 40,
-                flagged: Vec::new(),
+                tool_calls: Some(40),
+                herdr: false,
                 role: role.map(Into::into),
             },
         )?;

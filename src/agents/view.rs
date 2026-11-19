@@ -1,36 +1,70 @@
-//! Agents rendered for the terminal (`cos agents ls/show/tail`) and for
+//! Agents rendered for the terminal (`cos agents ls/show`) and for
 //! `cos dash` (`/agents`).
 
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::path::Path;
 
-use super::{Harness, Spec, State, Status, harness, ledger};
+use super::{Harness, Spec, State, ledger};
 
 pub fn table(agents: &[(Spec, State)]) -> String {
     if agents.is_empty() {
         return "no agents yet — `cos agents spawn --from brief --item 1`\n".into();
     }
     let mut s = format!(
-        "{:<21} {:<9} {:<9} {:<6} {:>5} {:>7}  {}\n",
-        "ID", "STATUS", "VERDICT", "HARN", "TOOLS", "COST", "TITLE / LAST"
+        "{:<21} {:<9} {:<22} {:<9} {:<6}  {}\n",
+        "ID", "STATUS", "IN HERDR", "VERDICT", "HARN", "TITLE / NOTE"
     );
     for (spec, st) in agents {
         let _ = writeln!(
             s,
-            "{:<21} {:<9} {:<9} {:<6} {:>5} {:>7}  {}\n{:>63}{}",
+            "{:<21} {:<9} {:<22} {:<9} {:<6}  {}\n{:>71}{}",
             spec.id,
             st.status.to_string(),
+            herdr_word(spec, st),
             verdict_word(st),
             harness_name(spec.harness),
-            st.tool_calls,
-            cost(st),
             spec.title,
             "",
-            if st.last.is_empty() { "—" } else { &st.last },
+            st.error.as_deref().unwrap_or("—"),
         );
     }
     s
+}
+
+/// What Herdr last said about the run, in its own words.
+pub fn herdr_word(spec: &Spec, st: &State) -> String {
+    if spec.legacy() {
+        return "not in Herdr".into();
+    }
+    match &st.herdr {
+        None => "not yet".into(),
+        Some(h) if !h.live => format!("ended ({})", h.reason.as_deref().unwrap_or("exited")),
+        Some(h) => match (h.word.as_deref(), h.kind.as_deref()) {
+            (Some("blocked"), Some(k)) => format!("blocked: {k}"),
+            (Some(w), _) => format!("{w} · turn {}", h.turn),
+            (None, _) => "no status yet".into(),
+        },
+    }
+}
+
+/// The hires Herdr says wait on you, for Today: `{ id, title, kind,
+/// terminal, address }`, oldest first.
+pub fn waiting_in_herdr(agents: &[(Spec, State)]) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = agents
+        .iter()
+        .filter_map(|(spec, st)| {
+            let h = st.herdr.as_ref()?;
+            let kind = h.blocked()?;
+            Some(serde_json::json!({
+                "id": spec.id,
+                "title": spec.title,
+                "kind": kind,
+                "terminal": spec.terminal,
+                "address": h.address,
+            }))
+        })
+        .collect();
+    out.reverse();
+    out
 }
 
 pub fn show(spec: &Spec, st: &State) -> String {
@@ -56,16 +90,32 @@ pub fn show(spec: &Spec, st: &State) -> String {
                 .unwrap_or_default()
         );
     }
-    let _ = writeln!(
-        s,
-        "budget   ${:.2}   deadline {}s   tools {}   cost {}",
-        spec.budget_usd,
-        spec.deadline_secs,
-        st.tool_calls,
-        cost(st)
-    );
-    if let Some(t) = st.tokens {
-        let _ = writeln!(s, "tokens   {t}");
+    let _ = writeln!(s, "deadline {}s", spec.deadline_secs);
+    match (&spec.terminal, &st.herdr) {
+        (None, _) => {
+            let _ = writeln!(s, "herdr    {}", super::LEGACY);
+        }
+        (Some(name), Some(h)) => {
+            let _ = writeln!(
+                s,
+                "herdr    {name} ({})  {}",
+                h.address,
+                herdr_word(spec, st)
+            );
+            if h.live {
+                let _ = writeln!(
+                    s,
+                    "talk     hc attach {name}   ·   cos agents say {} \"…\"   ·   cos agents done {}",
+                    spec.id, spec.id
+                );
+            }
+            if let Some(why) = h.unsent() {
+                let _ = writeln!(s, "UNSENT   its first message did not go in: {why}");
+            }
+        }
+        (Some(name), None) => {
+            let _ = writeln!(s, "herdr    {name}, not started yet");
+        }
     }
     for (k, v) in [("started", &st.started), ("ended", &st.ended)] {
         if let Some(v) = v {
@@ -74,13 +124,6 @@ pub fn show(spec: &Spec, st: &State) -> String {
     }
     if let Some(e) = &st.error {
         let _ = writeln!(s, "error    {e}");
-    }
-    if let Some(session) = &st.session {
-        let resume = match spec.harness {
-            Harness::Claude => format!("claude --resume {session}"),
-            Harness::Codex => format!("codex resume {session}"),
-        };
-        let _ = writeln!(s, "take over: cd {} && {resume}", spec.workdir.display());
     }
     let c = &spec.contract;
     if let Some(d) = &c.done_when {
@@ -101,24 +144,21 @@ pub fn show(spec: &Spec, st: &State) -> String {
     if !c.scope.is_empty() {
         let _ = writeln!(s, "scope    {}", c.scope.join(", "));
     }
-    for f in &st.flags {
-        let _ = writeln!(s, "TROUBLE  {}: {}", f.kind, f.detail);
-    }
-    if st.flags.is_empty() && !st.flagged.is_empty() {
-        let kinds: Vec<String> = st.flagged.iter().map(ToString::to_string).collect();
-        let _ = writeln!(s, "flagged  {} during the run", kinds.join(", "));
-    }
     match &st.verdict {
         Some(v) => {
             let _ = writeln!(
                 s,
-                "\nverdict  {}{}",
+                "\nverdict  {}{}{}",
                 v.outcome,
                 if v.overclaimed {
                     "  (it claimed success; the checks disagree)"
                 } else {
                     ""
-                }
+                },
+                st.judged_on
+                    .as_deref()
+                    .map(|w| format!("  (judged on: {w})"))
+                    .unwrap_or_default()
             );
             for r in &v.reasons {
                 let _ = writeln!(s, "  - {r}");
@@ -144,64 +184,17 @@ pub fn show(spec: &Spec, st: &State) -> String {
         None if st.status.terminal() => {
             let _ = writeln!(s, "\nverdict  judging…");
         }
-        None => {}
+        None => {
+            let _ = writeln!(
+                s,
+                "\nverdict  judged once, when Herdr says it is done or it ends"
+            );
+        }
     }
-    if !st.summary.is_empty() {
-        let _ = writeln!(
-            s,
-            "\nits own summary (not evidence):\n{}",
-            st.summary.trim()
-        );
+    if let Some(summary) = st.summary.as_deref().filter(|x| !x.trim().is_empty()) {
+        let _ = writeln!(s, "\nits own summary (not evidence):\n{}", summary.trim());
     }
     s
-}
-
-/// Feed entries from `events.jsonl` starting at byte `from`; returns them and
-/// the offset to continue from. Keys come from byte offsets, so a reader that
-/// asks for the same range twice can drop what it already has.
-pub fn feed(events: &Path, harness: Harness, from: u64) -> (Vec<harness::Entry>, u64) {
-    let Ok(mut f) = std::fs::File::open(events) else {
-        return (Vec::new(), from);
-    };
-    if f.seek(SeekFrom::Start(from)).is_err() {
-        return (Vec::new(), from);
-    }
-    let mut r = BufReader::new(f);
-    let (mut out, mut at, mut buf) = (Vec::new(), from, String::new());
-    while let Ok(n) = r.read_line(&mut buf) {
-        // A line without its newline is still being written; read it next time.
-        if n == 0 || !buf.ends_with('\n') {
-            break;
-        }
-        out.extend(harness::entries(harness, buf.trim_end(), &at.to_string()));
-        at += n as u64;
-        buf.clear();
-    }
-    (out, at)
-}
-
-/// One feed entry as a terminal line (`cos agents tail`). `answering` is the
-/// call a result answers, as the terminal showed it, when known: parallel
-/// calls come back out of order.
-pub fn feed_line(e: &harness::Entry, answering: Option<&str>) -> String {
-    use harness::EntryKind as K;
-    let tool = e.tool.as_deref().unwrap_or("");
-    let to = answering
-        .map(|a| match a.char_indices().nth(40) {
-            Some((i, _)) => format!("[{}…] ", &a[..i]),
-            None => format!("[{a}] "),
-        })
-        .unwrap_or_default();
-    match e.kind {
-        K::Start => format!("--   {}", e.detail),
-        K::Call => format!("call {tool}  {}", e.detail),
-        K::Result if e.ok == Some(false) => format!("  ERR {to}{}", e.detail),
-        K::Result => format!("  ok  {to}{}", e.detail),
-        K::Say => format!("say  {}", e.detail),
-        K::Denied => format!("DENY {tool}  {}", e.detail),
-        K::Failed => format!("FAILED {}", e.detail),
-        K::End => format!("--   {}", e.detail),
-    }
 }
 
 /// `/agents` for `cos dash`: a self-refreshing table, nothing to install.
@@ -210,19 +203,18 @@ pub fn html(agents: &[(Spec, State)], scores: &[ledger::Score]) -> String {
     for (spec, st) in agents {
         let _ = write!(
             rows,
-            "<tr class=\"{cls}\"><td><code>{id}</code></td><td>{status}</td><td>{verdict}</td><td>{harn}</td>\
-             <td class=n>{tools}</td><td class=n>{cost}</td>\
-             <td><b>{title}</b><br><span class=dim>{last}</span></td>\
+            "<tr class=\"{cls}\"><td><code>{id}</code></td><td>{status}</td><td>{verdict}</td>\
+             <td>{herdr}</td><td>{harn}</td>\
+             <td><b>{title}</b><br><span class=dim>{note}</span></td>\
              <td class=dim><code>{dir}</code></td></tr>",
             cls = if st.status.terminal() { "done" } else { "live" },
             id = esc(&spec.id),
             status = st.status,
             verdict = verdict_word(st),
+            herdr = esc(&herdr_word(spec, st)),
             harn = harness_name(spec.harness),
-            tools = st.tool_calls,
-            cost = esc(&cost(st)),
             title = esc(&spec.title),
-            last = esc(st.error.as_deref().unwrap_or(&st.last)),
+            note = esc(st.error.as_deref().unwrap_or("")),
             dir = esc(&spec.workdir.to_string_lossy()),
         );
     }
@@ -235,16 +227,21 @@ pub fn html(agents: &[(Spec, State)], scores: &[ledger::Score]) -> String {
         .replacen("<!--__SCORE__-->", &scorecard_html(scores), 1)
 }
 
-/// The verdict once judged; while running, the trouble it shows, if any.
 fn verdict_word(st: &State) -> String {
     match &st.verdict {
         Some(v) if v.overclaimed => format!("{}!", v.outcome),
         Some(v) => v.outcome.to_string(),
         None if st.status.terminal() => "judging".into(),
-        None => match st.flags.first() {
-            Some(f) => f.kind.to_string(),
-            None => "—".into(),
-        },
+        None => "—".into(),
+    }
+}
+
+/// A median cost, or why there is none.
+pub fn cost_word(median: Option<f64>, unmeasured: usize) -> String {
+    match median {
+        Some(c) => format!("${c:.2}"),
+        None if unmeasured > 0 => "not measured in Herdr".into(),
+        None => "—".into(),
     }
 }
 
@@ -254,7 +251,7 @@ pub fn scorecard(scores: &[ledger::Score]) -> String {
         return "no judged agents yet\n".into();
     }
     let mut s = format!(
-        "{:<13} {:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>7} {:>6}\n",
+        "{:<13} {:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>21} {:>6}\n",
         "ROLE",
         "HARN",
         "MODEL",
@@ -270,7 +267,7 @@ pub fn scorecard(scores: &[ledger::Score]) -> String {
     for sc in scores {
         let _ = writeln!(
             s,
-            "{:<13} {:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>7} {:>6}",
+            "{:<13} {:<6} {:<18} {:<20} {:>4} {:>8} {:>6} {:>6} {:>6} {:>21} {:>6}",
             sc.role.as_deref().unwrap_or("unassigned"),
             harness_name(sc.harness),
             sc.model.as_deref().unwrap_or("default"),
@@ -280,15 +277,13 @@ pub fn scorecard(scores: &[ledger::Score]) -> String {
             sc.needs_you,
             sc.rejected,
             sc.overclaimed,
-            sc.median_cost_usd
-                .map(|c| format!("${c:.2}"))
-                .unwrap_or_else(|| "—".into()),
+            cost_word(sc.median_cost_usd, sc.unmeasured),
             sc.median_secs
                 .map(|t| t.to_string())
                 .unwrap_or_else(|| "—".into()),
         );
     }
-    s.push_str("COST and SECS are medians; OVER counts agents that claimed success while a check failed.\n");
+    s.push_str("COST and SECS are medians; OVER counts agents that claimed success while a check failed; runs in Herdr have no cost measured.\n");
     s
 }
 
@@ -311,10 +306,7 @@ fn scorecard_html(scores: &[ledger::Score]) -> String {
             needs = sc.needs_you,
             rej = sc.rejected,
             over = sc.overclaimed,
-            cost = sc
-                .median_cost_usd
-                .map(|c| format!("${c:.2}"))
-                .unwrap_or_else(|| "—".into()),
+            cost = esc(&cost_word(sc.median_cost_usd, sc.unmeasured)),
             secs = sc
                 .median_secs
                 .map(|t| format!("{t}s"))
@@ -323,7 +315,7 @@ fn scorecard_html(scores: &[ledger::Score]) -> String {
     }
     format!(
         "<h2>Scorecard</h2><p>Every judged agent, from the ledger; cost and time are medians; \
-         overclaimed = claimed success while a check failed.</p>\
+         overclaimed = claimed success while a check failed; runs in Herdr have no cost measured.</p>\
          <div class=wrap><table><tr><th>Harness</th><th>Model</th><th>Repo</th><th class=n>Runs</th>\
          <th class=n>Accepted</th><th class=n>Needs you</th><th class=n>Rejected</th>\
          <th class=n>Overclaimed</th><th class=n>Cost</th><th class=n>Time</th></tr>{rows}</table></div>"
@@ -332,14 +324,6 @@ fn scorecard_html(scores: &[ledger::Score]) -> String {
 
 fn harness_name(h: Harness) -> &'static str {
     h.program()
-}
-
-fn cost(st: &State) -> String {
-    match st.cost_usd {
-        Some(c) => format!("${c:.2}"),
-        None if st.status == Status::Running => "…".into(),
-        None => "—".into(),
-    }
 }
 
 fn esc(s: &str) -> String {

@@ -51,7 +51,7 @@ impl Deadline<'static> {
         Deadline::on(&SystemClock, total)
     }
 
-    /// For the supervised agents, whose own ceiling sits above `CEILING`.
+    /// For a child whose own ceiling sits above `CEILING` (the brief).
     pub fn capped(total: Duration, ceiling: Duration) -> Self {
         Deadline::new(&SystemClock, total.min(ceiling))
     }

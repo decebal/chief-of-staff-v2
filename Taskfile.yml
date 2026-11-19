@@ -98,7 +98,7 @@ tasks:
       - timeout 120 python3 -B scripts/release.py --output "{{.OUT}}"
 
   desktop:
-    desc: The desktop app (report + agent launcher); builds cos first so it can supervise agents
+    desc: The desktop app (report + agent launcher); builds cos first, which each hire's build shims call back into
     cmds:
       # One after the other: the desktop build would otherwise race this one.
       - timeout 300 cargo build --bin cos
@@ -120,7 +120,7 @@ tasks:
       - cp apps/desktop/bundle/Info.plist "{{.STAGE}}/Contents/Info.plist"
       - cp apps/desktop/icons/icon.icns "{{.STAGE}}/Contents/Resources/icon.icns"
       - cp target/debug/cos-desktop "{{.STAGE}}/Contents/MacOS/cos-desktop"
-      # The app supervises agents with the `cos` beside it (Settings::cos_binary).
+      # A hire's build shims call back into the `cos` beside the app (Settings::cos_binary).
       - cp target/debug/cos "{{.STAGE}}/Contents/MacOS/cos"
       - codesign --force --deep --sign - "{{.STAGE}}"
       - mkdir -p "{{.HOME}}/Applications"

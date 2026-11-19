@@ -53,9 +53,10 @@
     <div>
       <header>
         <h2 id="hire-title">Hire</h2>
-        <p>Pick a role and the work. The contract below is what the agent is judged on when it ends.</p>
+        <p>Pick a role and the work. It runs in a Herdr terminal; the contract below is what it is judged on.</p>
       </header>
       <section>
+        <div id="h-herdr" aria-live="polite"></div>
         <form id="hire-form" class="form-grid">
           <div class="field">
             <label for="h-role">Role</label>
@@ -136,10 +137,6 @@
               <input id="h-deadline" class="input num" type="number" min="60" max="7200" value="1800">
             </div>
             <div class="field">
-              <label for="h-budget">Budget ($)</label>
-              <input id="h-budget" class="input num" type="number" min="0.5" step="0.5" value="5">
-            </div>
-            <div class="field">
               <label for="h-count">Copies</label>
               <input id="h-count" class="input num" type="number" min="1" max="32" value="1">
             </div>
@@ -147,7 +144,7 @@
 
           <div class="permission">
             <h3>Permission</h3>
-            <p>Sandboxed worktree, no network for shell commands. Drafts only: nothing is sent, merged, tagged or deployed. This hire grants nothing outside the worktree.</p>
+            <p>Sandboxed worktree, no network for shell commands; anything more asks you in Herdr. Drafts only: nothing is sent, merged, tagged or deployed. This hire grants nothing outside the worktree.</p>
           </div>
           <div id="h-msg" class="muted" role="status"></div>
         </form>
@@ -232,7 +229,7 @@
           <div class="table-container">
             <table class="table runs" id="agents">
               <thead>
-                <tr><th>id</th><th>role</th><th>status</th><th>verdict</th><th>title</th><th class="n">tools</th><th class="n">cost</th><th>latest</th></tr>
+                <tr><th>id</th><th>role</th><th>status</th><th>in Herdr</th><th>verdict</th><th>title</th><th>latest</th></tr>
               </thead>
               <tbody></tbody>
             </table>
@@ -245,14 +242,23 @@
             <button id="d-back" class="btn" data-variant="ghost" data-size="sm" type="button"><i data-icon="arrow-left"></i>Back</button>
             <h2 id="d-title"></h2>
             <div class="actions">
+              <button id="d-open" class="btn" data-variant="primary" data-size="sm" type="button" hidden><i data-icon="external-link"></i>Open in Herdr</button>
+              <button id="d-pause" class="btn" data-variant="outline" data-size="sm" type="button"><i data-icon="hand"></i>Pause</button>
+              <button id="d-done" class="btn" data-variant="outline" data-size="sm" type="button"><i data-icon="circle-check"></i>Mark done</button>
               <button id="d-stop" class="btn" data-variant="outline" data-size="sm" type="button"><i data-icon="square"></i>Stop</button>
               <button id="d-rejudge" class="btn" data-variant="outline" data-size="sm" type="button"><i data-icon="scale"></i>Re-judge</button>
               <button id="d-clean" class="btn" data-variant="destructive" data-size="sm" type="button"><i data-icon="trash-2"></i>Clean</button>
             </div>
           </div>
           <div id="d-badges" class="badges"></div>
-          <div id="d-flags"></div>
           <p id="d-error" class="error" hidden></p>
+          <div id="d-herdr"></div>
+          <form id="d-reply" class="form-grid" hidden>
+            <label for="d-say">Message its Herdr terminal</label>
+            <textarea id="d-say" class="textarea" rows="2" placeholder="Sent into its terminal as you would type it; ⌘↩ sends"></textarea>
+            <p id="d-reply-note" class="muted small" role="status"></p>
+            <div><button id="d-send" class="btn" data-variant="primary" data-size="sm" type="submit"><i data-icon="send"></i><span>Send</span></button></div>
+          </form>
           <div class="run-grid">
             <article class="card" data-size="sm" id="d-verdict-card">
               <header><h3>Verdict</h3><p>From the diff, the checks cos re-ran and the scope; never the agent's own words.</p></header>
@@ -272,6 +278,7 @@
             <pre id="d-summary"></pre>
           </details>
           <details id="d-seed" class="card box" hidden><summary>Seed log</summary><pre id="d-seed-log"></pre></details>
+          <details id="d-screen-box" class="card box" hidden><summary>Its last screen in Herdr</summary><pre id="d-screen"></pre></details>
           <article class="card" data-size="sm" id="d-record-card" hidden>
             <header><h3>Your result</h3><p>What happened when you ran what it drafted. Stored on this run only; nothing is sent.</p></header>
             <section>
@@ -300,16 +307,14 @@
               </form>
             </section>
           </article>
-          <h3 class="section-title">Activity</h3>
-          <ol id="d-feed" class="feed"></ol>
         </div>
 
         <div id="pane-scorecard" class="pane" hidden>
-          <p class="muted">Every judged agent, from the ledger; it outlives clean. Cost and time are medians; overclaimed counts agents that said they succeeded while a check disagreed.</p>
+          <p class="muted">Every judged agent, from the ledger; it outlives clean. Cost and time are medians; overclaimed counts agents that said they succeeded while a check disagreed; runs in Herdr have no cost measured.</p>
           <div class="table-container">
             <table class="table" id="scores">
               <thead>
-                <tr><th>role</th><th>harness</th><th>model</th><th>repo</th><th class="n">runs</th><th class="n">accepted</th><th class="n">needs you</th><th class="n">rejected</th><th class="n">overclaimed</th><th class="n">flagged</th><th class="n">cost</th><th class="n">time</th></tr>
+                <tr><th>role</th><th>harness</th><th>model</th><th>repo</th><th class="n">runs</th><th class="n">accepted</th><th class="n">needs you</th><th class="n">rejected</th><th class="n">overclaimed</th><th class="n">cost</th><th class="n">time</th></tr>
               </thead>
               <tbody></tbody>
             </table>

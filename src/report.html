@@ -520,6 +520,7 @@ const DATA = "__COS_DATA__";
     if (d.type === "cos-host") {
       canHire = Boolean(d.hire);
       for (const b of document.querySelectorAll("[data-hire]")) b.textContent = canHire ? "Hire" : "Copy prompt";
+      for (const b of document.querySelectorAll("[data-herdr-open]")) b.textContent = canHire ? "Open in Herdr" : "Copy hc attach";
       $("host-run").hidden = d.runBrief !== true;
     } else if (d.type === "cos-brief-state") {
       const running = d.state === "running";
@@ -552,6 +553,14 @@ const DATA = "__COS_DATA__";
   document.addEventListener("click", (e) => {
     const why = e.target.closest(".why");
     if (why) { why.classList.toggle("open"); return; }
+    // A hire waiting on you in Herdr: the window opens its terminal there;
+    // a browser copies the command that attaches to it.
+    const herdr = e.target.closest("[data-herdr-open]");
+    if (herdr) {
+      if (canHire) tellHost({ type: "cos-open-herdr", id: herdr.dataset.herdrOpen });
+      else copy(`hc attach ${herdr.dataset.terminal}`, herdr);
+      return;
+    }
     const b = e.target.closest("[data-copy]");
     if (!b) return;
     if (canHire && b.dataset.hire) { tellHost({ type: "cos-hire", brief: Number(b.dataset.hire) }); return; }

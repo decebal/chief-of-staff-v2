@@ -1,14 +1,28 @@
-//! The judge, end to end: the stand-in harness run in a real git worktree
-//! exactly as a hire would, then the verdict `cos` records from what it left.
-//! herdr owns the run in production; the judge reads the worktree the same way.
+//! The judge, end to end: a stand-in agent run by a stand-in Herdr in a real
+//! git worktree, then the verdict `cos` records from what it left.
+
+#[allow(dead_code)]
+mod fake_herdr;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use cos::agents::{self, Contract, Expects, Harness, Outcome, Spec, State, Status, Verdict};
+use cos::agents::{
+    self, Contract, Expects, Harness, Outcome, Request, Spec, State, Status, Verdict,
+};
 
-const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
+const COS: &str = env!("CARGO_BIN_EXE_cos");
+
+fn at(home: &Path) -> cos::business::Triple {
+    cos::business::Triple {
+        home: home.to_owned(),
+        workspace: home.to_owned(),
+        projects: home.join("projects"),
+        business: None,
+        layer: cos::business::Layer::Flags,
+    }
+}
 
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cos-judge-{name}-{}", std::process::id()));
@@ -35,12 +49,6 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(st.success(), "git {args:?}");
 }
 
-fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}");
-    String::from_utf8(out.stdout).unwrap().trim().to_owned()
-}
-
 fn repo(root: &Path) -> PathBuf {
     let r = root.join("projects/demo-repo");
     std::fs::create_dir_all(&r).unwrap();
@@ -51,81 +59,57 @@ fn repo(root: &Path) -> PathBuf {
     r
 }
 
-/// Runs one fake agent (it writes `made-by-agent.txt` and claims success,
-/// unless the prompt says FAIL) and returns its state once judged.
+/// Runs one fake agent (it writes `made-by-agent.txt` and says done, unless
+/// the prompt says FAIL) and returns its state once judged.
 fn run(name: &str, prompt: &str, contract: Contract) -> (State, Verdict) {
-    let (_, _, st, v) = judged(name, prompt, contract);
+    let (_, _, st, v, _) = judged(name, prompt, contract);
     (st, v)
 }
 
-fn judged(name: &str, prompt: &str, contract: Contract) -> (PathBuf, Spec, State, Verdict) {
+fn judged(
+    name: &str,
+    prompt: &str,
+    contract: Contract,
+) -> (PathBuf, Spec, State, Verdict, fake_herdr::Fake) {
     let root = scratch(name);
+    let fake = fake_herdr::fake(&root);
+    fake.exec(true);
     let (home, repo) = (root.join("home"), repo(&root));
-    let id = "test-run".to_string();
-    let base = git_out(&repo, &["rev-parse", "HEAD"]);
-    let d = agents::root(&home).join(&id);
-    std::fs::create_dir_all(&d).unwrap();
-    let workdir = d.join("tree");
-    git(
-        &repo,
-        &["worktree", "add", "--detach", &workdir.to_string_lossy(), &base],
-    );
+    let spec = agents::spawn(
+        &at(&home),
+        Request {
+            harness: Harness::Claude,
+            program: Some(fake_herdr::agent()),
+            model: None,
+            repo: Some(repo),
+            worktree: true,
+            title: "test task".into(),
+            source: "test".into(),
+            prompt: prompt.into(),
+            deadline: Duration::from_secs(30),
+            slots: Some(8),
+            contract,
+            explicit: Default::default(),
+            role: None,
+        },
+        Path::new(COS),
+    )
+    .unwrap();
+    agents::tick(&home).unwrap();
+    let (spec, st) = agents::read(&home, &spec.id).unwrap();
+    let v = st
+        .verdict
+        .clone()
+        .unwrap_or_else(|| panic!("never judged: {st:?}"));
+    (home, spec, st, v, fake)
+}
 
-    let spec = Spec {
-        id,
-        harness: Harness::Claude,
-        program: FAKE_CLAUDE.into(),
-        model: None,
-        repo: Some(repo),
-        base: Some(base),
-        workdir,
-        worktree: true,
-        title: "test task".into(),
-        source: "test".into(),
-        prompt: prompt.into(),
-        deadline_secs: 30,
-        budget_usd: 1.0,
-        created: String::new(),
-        slots: None,
-        contract,
-        limits: Default::default(),
-        role: None,
-    };
-
-    // Run the harness as a hire would (herdr owns this in production), then fold
-    // its stream into the state cos records.
-    let out = agents::harness::command(&spec).output().unwrap();
-    let mut state = State::default();
-    let mut failed = None;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let t = agents::harness::read(spec.harness, line);
-        if let Some(l) = t.last {
-            state.last = l;
-        }
-        state.tool_calls += t.tool_calls;
-        if t.cost_usd.is_some() {
-            state.cost_usd = t.cost_usd;
-        }
-        if let Some(s) = t.summary {
-            state.summary = s;
-        }
-        if t.failed.is_some() {
-            failed = t.failed;
-        }
-    }
-    state.exit = out.status.code();
-    state.status = if out.status.success() && failed.is_none() {
-        Status::Done
-    } else {
-        Status::Failed
-    };
-    state.error = failed;
-
-    let verdict = agents::judge::judge(&spec, &state, None);
-    state.verdict = Some(verdict.clone());
-    std::fs::write(d.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
-    std::fs::write(d.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
-    (home, spec, state, verdict)
+/// What its Herdr terminal last said.
+fn said(st: &State) -> String {
+    st.herdr
+        .as_ref()
+        .and_then(|h| h.word.clone())
+        .unwrap_or_default()
 }
 
 fn contract(checks: &[&str], scope: &[&str]) -> Contract {
@@ -164,7 +148,7 @@ fn an_agent_that_never_writes_its_expected_file_is_rejected_as_overclaiming() {
         "READONLY",
         expecting(Expects::File, "REVIEW.md", &["true"]),
     );
-    assert_eq!(st.status, Status::Done);
+    assert_eq!(said(&st), "done");
     assert_eq!(v.outcome, Outcome::Rejected);
     assert!(v.overclaimed, "it claimed success");
     assert!(
@@ -229,7 +213,7 @@ fn passing_checks_and_an_in_scope_diff_are_accepted() {
         "edit a file",
         contract(&["test -f made-by-agent.txt"], &["made-by-agent.txt"]),
     );
-    assert_eq!(st.status, Status::Done);
+    assert_eq!(said(&st), "done");
     assert_eq!(v.outcome, Outcome::Accepted, "{v:?}");
     assert_eq!(v.changed, ["made-by-agent.txt"]);
     assert!(v.reasons.is_empty() && !v.overclaimed);
@@ -243,11 +227,7 @@ fn a_failing_check_rejects_an_agent_that_claimed_success() {
         "edit a file",
         contract(&["test -f made-by-agent.txt", "echo nope; exit 3"], &[]),
     );
-    assert_eq!(
-        st.status,
-        Status::Done,
-        "the agent itself said it succeeded"
-    );
+    assert_eq!(said(&st), "done", "the agent itself said it succeeded");
     assert_eq!(v.outcome, Outcome::Rejected);
     assert!(v.overclaimed);
     assert!(v.checks[0].passed);
@@ -285,7 +265,8 @@ fn an_agent_that_failed_is_rejected_without_running_its_checks() {
 
 #[test]
 fn a_check_past_the_judging_budget_fails_and_the_rest_are_not_run() {
-    let (_, mut spec, st, _) = judged("budget", "edit a file", Contract::default());
+    let (_, mut spec, mut st, _, _fake) = judged("budget", "edit a file", Contract::default());
+    st.status = Status::Done;
     spec.contract.checks = vec!["sleep 5".into(), "true".into()];
     let started = Instant::now();
     let v = agents::judge::judge_within(&spec, &st, None, Duration::from_secs(1));
@@ -300,7 +281,7 @@ fn a_check_past_the_judging_budget_fails_and_the_rest_are_not_run() {
 
 #[test]
 fn rejudge_records_a_new_verdict_after_the_work_is_fixed() {
-    let (home, spec, _, first) = judged(
+    let (home, spec, _, first, _fake) = judged(
         "rejudge",
         "edit a file",
         contract(&["test -f fixed.txt"], &[]),

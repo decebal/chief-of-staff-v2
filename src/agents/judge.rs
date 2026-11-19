@@ -108,7 +108,7 @@ pub struct Verdict {
 }
 
 /// Judges within [`BUDGET`]. `bin` goes first on the checks' PATH: the
-/// supervisor's build-tool shims, so a check's `cargo` waits for the build slot.
+/// run's build-tool shims, so a check's `cargo` waits for the build slot.
 pub fn judge(spec: &Spec, state: &State, bin: Option<&Path>) -> Verdict {
     judge_within(spec, state, bin, BUDGET)
 }

@@ -1,8 +1,12 @@
-//! The window's commands through Tauri's IPC on the mock runtime, against the
-//! real `cos` supervisor binary and a stand-in harness: spawn several agents
-//! past the slot limit, watch one queue, tail, stop, clean, switch between
-//! businesses and refuse the switches it must, and serve the report on its own
-//! scheme.
+//! The window's commands through Tauri's IPC on the mock runtime, against a
+//! stand-in Herdr (cos's `tests/fixtures/fake-hc.sh`, never the real core):
+//! hire into Herdr, refuse past the slots or without Herdr, reply, pause,
+//! open, mark done, stop, clean, switch between businesses and refuse the
+//! switches it must, and serve the report on its own scheme.
+
+#[allow(dead_code)]
+#[path = "../../../tests/fake_herdr/mod.rs"]
+mod fake_herdr;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,10 +36,7 @@ fn scratch(name: &str) -> PathBuf {
 
 fn cos_bin() -> PathBuf {
     let cos = Path::new(ROOT).join("target/debug/cos");
-    assert!(
-        cos.is_file(),
-        "build the supervisor first: cargo build --bin cos"
-    );
+    assert!(cos.is_file(), "build cos first: cargo build --bin cos");
     cos
 }
 
@@ -121,24 +122,24 @@ fn open(start: Start) -> (tauri::App<MockRuntime>, Win) {
     (app, w)
 }
 
-/// A run that never ended under `home`, whose supervisor is `supervisor`; returns its state file.
-fn plant_run(home: &Path, id: &str, supervisor: i32) -> PathBuf {
-    plant(home, id, json!(supervisor), "2020-01-01T00:00:00Z")
+/// A hire still being prepared under `home` by `launcher`, created long ago;
+/// returns its state file.
+fn plant_run(home: &Path, id: &str, launcher: i32) -> PathBuf {
+    plant(home, id, Some(launcher), "2020-01-01T00:00:00Z")
 }
 
-fn plant(home: &Path, id: &str, supervisor: Value, created: &str) -> PathBuf {
+fn plant(home: &Path, id: &str, launcher: Option<i32>, created: &str) -> PathBuf {
     let dir = home.join("out/agents").join(id);
     std::fs::create_dir_all(&dir).unwrap();
     let spec = json!({
         "id": id, "harness": "claude", "program": "claude", "model": null, "repo": null,
         "base": null, "workdir": dir, "worktree": false, "title": "planted", "source": "test",
-        "prompt": "planted", "deadline_secs": 60, "budget_usd": 1.0,
-        "created": created,
+        "prompt": "planted", "deadline_secs": 60, "created": created,
+        "terminal": format!("cos-{id}"),
     });
     let state = json!({
-        "status": "running", "supervisor": supervisor, "pgid": null, "pgid_started": null,
-        "started": null, "ended": null, "exit": null, "cost_usd": null, "tokens": null,
-        "tool_calls": 0, "session": null, "last": "", "summary": "", "error": null,
+        "status": "starting", "launcher": launcher,
+        "launcher_started": launcher.and_then(cos::agents::started_at),
     });
     std::fs::write(dir.join("spec.json"), spec.to_string()).unwrap();
     std::fs::write(dir.join("state.json"), state.to_string()).unwrap();
@@ -183,6 +184,45 @@ fn wait(w: &Win, id: &str, want: &str) {
     }
 }
 
+fn row_of(w: &Win, id: &str) -> Value {
+    call(w, "agents_list", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["spec"]["id"] == id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Hired from the window for `business`; returns once its Herdr terminal is up.
+fn hire(w: &Win, business: &str, args: Value) -> String {
+    let specs = call(
+        w,
+        "agents_spawn",
+        json!({ "business": business, "args": args }),
+    )
+    .unwrap();
+    let id = specs[0]["id"].as_str().unwrap().to_owned();
+    let until = Instant::now() + Duration::from_secs(20);
+    while row_of(w, &id)["state"]["herdr"].is_null() {
+        let st = &row_of(w, &id)["state"];
+        assert!(
+            Instant::now() < until && st["status"] != "failed",
+            "never reached Herdr: {st}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    id
+}
+
+fn address(w: &Win, id: &str) -> String {
+    row_of(w, id)["state"]["herdr"]["address"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 fn switch(w: &Win, name: &str) -> Result<Value, Value> {
     call(w, "switch_business", json!({ "args": { "name": name } }))
 }
@@ -191,10 +231,22 @@ fn error_text(e: &Value) -> &str {
     e.as_str().unwrap()
 }
 
+fn hire_args(repo: &Path, extra: Value) -> Value {
+    let mut a = json!({
+        "harness": "claude", "repo": repo, "worktree": true, "deadlineSecs": 600, "count": 1,
+        "program": fake_herdr::agent(),
+    });
+    a.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    a
+}
+
 #[test]
-fn the_window_spawns_queues_tails_stops_and_cleans_agents() {
+fn the_window_hires_into_herdr_refuses_past_its_slots_or_without_herdr_and_cleans() {
     let cos = cos_bin();
     let root = scratch("spawn");
+    let herdr = fake_herdr::fake(&root);
     let d = dirs(&root, "default");
     let demo = seed(&d.workspace, None);
     let (home, ws, projects) = (d.home.clone(), d.workspace.clone(), d.projects.clone());
@@ -215,88 +267,84 @@ fn the_window_spawns_queues_tails_stops_and_cleans_agents() {
     let repos = call(&w, "repos", json!({})).unwrap();
     assert_eq!(repos, json!([repo.to_string_lossy()]));
 
-    let specs = call(
+    let up = call(&w, "herdr_status", json!({})).unwrap();
+    assert_eq!(up["up"], true, "{up}");
+
+    let id = hire(
+        &w,
+        "default",
+        hire_args(&repo, json!({ "prompt": "edit", "title": "one" })),
+    );
+    let row = row_of(&w, &id);
+    assert_eq!(row["state"]["status"], "running");
+    assert_eq!(row["spec"]["terminal"], format!("cos-{id}"));
+    let t = address(&w, &id);
+    assert_eq!(herdr.fact(&t, "name"), format!("cos-{id}"));
+    assert!(
+        row["spec"].get("budget_usd").is_none(),
+        "no budget on a hire: {row}"
+    );
+    let argv = herdr.argv(&t);
+    assert!(
+        argv.contains(&format!("COS_WORKSPACE={}", ws.display())),
+        "the hire is pinned to its business: {argv:?}"
+    );
+
+    let past = call(
         &w,
         "agents_spawn",
-        json!({ "business": "default", "args": {
-            "harness": "claude", "repo": repo, "prompt": "SLEEP", "title": "two at once",
-            "worktree": true, "deadlineSecs": 60, "budgetUsd": 1.0, "count": 2,
-            "program": concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/fake-claude.sh"),
-        }}),
+        json!({ "business": "default", "args": hire_args(&repo, json!({ "prompt": "edit" })) }),
+    )
+    .unwrap_err();
+    assert!(past.as_str().unwrap().contains("all 1 run slots"), "{past}");
+
+    call(&w, "agents_seed", json!({ "id": id })).unwrap();
+    assert_eq!(
+        call(
+            &w,
+            "agents_stop",
+            json!({ "business": "default", "id": id })
+        )
+        .unwrap()["status"],
+        "killed"
+    );
+    assert_eq!(herdr.fact(&t, "state"), "finished");
+    call(
+        &w,
+        "agents_clean",
+        json!({ "business": "default", "id": id, "force": true }),
     )
     .unwrap();
-    let ids: Vec<String> = specs
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["id"].as_str().unwrap().to_owned())
-        .collect();
-    assert_eq!(ids.len(), 2);
-    assert_ne!(
-        specs[0]["workdir"], specs[1]["workdir"],
-        "each copy gets its own worktree"
-    );
-
-    let until = Instant::now() + Duration::from_secs(20);
-    let (running, queued) = loop {
-        let (a, b) = (status(&w, &ids[0]), status(&w, &ids[1]));
-        match (a.as_str(), b.as_str()) {
-            ("running", "queued") => break (ids[0].clone(), ids[1].clone()),
-            ("queued", "running") => break (ids[1].clone(), ids[0].clone()),
-            _ => assert!(
-                Instant::now() < until,
-                "never one running, one queued: {a} {b}"
-            ),
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-
-    let tail = call(&w, "agents_tail", json!({ "id": running, "from": 0 })).unwrap();
-    let entries = tail["entries"].as_array().unwrap();
-    let bash = entries
-        .iter()
-        .find(|e| e["kind"] == "call")
-        .expect("a call");
-    assert_eq!(
-        (&bash["tool"], &bash["detail"]),
-        (&json!("Bash"), &json!("git status --short")),
-        "{tail}"
-    );
-    let again = call(&w, "agents_tail", json!({ "id": running, "from": 0 })).unwrap();
-    assert_eq!(
-        again["entries"][0]["key"], tail["entries"][0]["key"],
-        "the same range keys the same"
-    );
-
-    assert_eq!(
-        call(
-            &w,
-            "agents_stop",
-            json!({ "business": "default", "id": running })
-        )
-        .unwrap()["status"],
-        "killed"
-    );
-    wait(&w, &queued, "running");
-    assert_eq!(
-        call(
-            &w,
-            "agents_stop",
-            json!({ "business": "default", "id": queued })
-        )
-        .unwrap()["status"],
-        "killed"
-    );
-
-    for id in &ids {
-        call(
-            &w,
-            "agents_clean",
-            json!({ "business": "default", "id": id, "force": true }),
-        )
-        .unwrap();
-    }
+    assert!(!herdr.exists(&t), "its terminal was removed");
     assert_eq!(call(&w, "agents_list", json!({})).unwrap(), json!([]));
+
+    herdr.down(true);
+    let started = call(&w, "herdr_start", json!({})).unwrap();
+    assert_eq!(started["up"], true, "Start Herdr brought it up: {started}");
+    herdr.down(true);
+    std::thread::sleep(Duration::from_secs(4));
+    let down = call(&w, "herdr_status", json!({})).unwrap();
+    assert_eq!(down["up"], false, "{down}");
+    assert!(
+        down["why"]
+            .as_str()
+            .unwrap()
+            .contains("Herdr isn't running"),
+        "{down}"
+    );
+    let refused = call(
+        &w,
+        "agents_spawn",
+        json!({ "business": "default", "args": hire_args(&repo, json!({ "prompt": "edit" })) }),
+    )
+    .unwrap_err();
+    let refused = refused.as_str().unwrap();
+    assert!(
+        refused.contains("Herdr isn't running") && refused.contains("hc server start"),
+        "{refused}"
+    );
+    assert_eq!(call(&w, "agents_list", json!({})).unwrap(), json!([]));
+    herdr.down(false);
 
     let report = cos_desktop::report_response(app.handle(), "/");
     assert_eq!(report.status(), 200);
@@ -381,6 +429,8 @@ fn the_window_spawns_queues_tails_stops_and_cleans_agents() {
 fn the_window_hires_by_role_from_a_deliverable_and_reads_the_staff_back() {
     let cos = cos_bin();
     let root = scratch("staff");
+    let herdr = fake_herdr::fake(&root);
+    herdr.exec(true);
     let d = dirs(&root, "default");
     let demo = seed(&d.workspace, None);
     let repo = d.projects.join("demo-repo");
@@ -421,32 +471,20 @@ fn the_window_hires_by_role_from_a_deliverable_and_reads_the_staff_back() {
     assert_eq!(summary["day"], Value::Null, "no brief saved yet");
     assert_eq!(summary["openDeliverables"], 1);
 
-    let fake = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/fake-claude.sh"
-    );
     let refused = call(
         &w,
         "agents_spawn",
-        json!({ "business": "default", "args": {
-            "harness": "claude", "repo": repo, "role": "chief-of-staff", "deliverable": "D-1",
-            "worktree": true, "deadlineSecs": 60, "budgetUsd": 1.0, "count": 1, "program": fake,
-        }}),
+        json!({ "business": "default", "args": hire_args(&repo, json!({ "role": "chief-of-staff", "deliverable": "D-1" })) }),
     )
     .unwrap_err();
     assert!(refused.as_str().unwrap().contains("not hired"), "{refused}");
 
-    let specs = call(
+    let id = hire(
         &w,
-        "agents_spawn",
-        json!({ "business": "default", "args": {
-            "harness": "claude", "repo": repo, "role": "builder", "deliverable": "D-1",
-            "worktree": true, "deadlineSecs": 60, "budgetUsd": 1.0, "count": 1, "program": fake,
-        }}),
-    )
-    .unwrap();
-    let spec = &specs[0];
-    let id = spec["id"].as_str().unwrap().to_owned();
+        "default",
+        hire_args(&repo, json!({ "role": "builder", "deliverable": "D-1" })),
+    );
+    let spec = &row_of(&w, &id)["spec"];
     assert_eq!(spec["role"], "builder");
     assert_eq!(spec["source"], "deliverable D-1");
     assert_eq!(spec["title"], demo["deliverables"][0]["title"]);
@@ -458,22 +496,7 @@ fn the_window_hires_by_role_from_a_deliverable_and_reads_the_staff_back() {
     assert!(prompt.starts_with("Role: Builder."), "{prompt}");
     assert!(prompt.contains("Handoff: D-1"), "{prompt}");
 
-    let until = Instant::now() + Duration::from_secs(20);
-    let verdict = loop {
-        let list = call(&w, "agents_list", json!({})).unwrap();
-        let v = list
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| r["spec"]["id"] == id)
-            .map(|r| r["state"]["verdict"].clone())
-            .unwrap_or_default();
-        if !v.is_null() {
-            break v;
-        }
-        assert!(Instant::now() < until, "never judged");
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    let verdict = wait_judged(&w, &d.home, &id);
     assert_eq!(verdict["outcome"], "needs_you", "{verdict}");
 
     let again = call(
@@ -494,8 +517,127 @@ fn the_window_hires_by_role_from_a_deliverable_and_reads_the_staff_back() {
         (role["runs"].as_u64(), role["needs_you"].as_u64()),
         (Some(1), Some(1))
     );
-    assert_eq!(role["median_cost_usd"], 0.12);
+    assert_eq!(
+        role["median_cost_usd"],
+        Value::Null,
+        "Herdr measures no cost"
+    );
+    assert_eq!(role["unmeasured"], 1);
 
+    call(
+        &w,
+        "agents_done",
+        json!({ "business": "default", "id": id }),
+    )
+    .unwrap();
+    call(
+        &w,
+        "agents_clean",
+        json!({ "business": "default", "id": id, "force": true }),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_run_waiting_in_herdr_needs_you_and_the_window_replies_pauses_opens_and_marks_it_done() {
+    let cos = cos_bin();
+    let root = scratch("herdr-run");
+    let herdr = fake_herdr::fake(&root);
+    let d = dirs(&root, "default");
+    seed(&d.workspace, None);
+    let repo = repo_in(&d.projects, "demo-repo");
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &d, true);
+    let (app, w) = open(start);
+
+    let id = hire(
+        &w,
+        "default",
+        hire_args(&repo, json!({ "prompt": "edit", "role": "builder" })),
+    );
+    let t = address(&w, &id);
+
+    herdr.set(&t, "status", "blocked");
+    herdr.set(&t, "kind", "permission");
+    cos::agents::tick(&d.home).unwrap();
+    let row = row_of(&w, &id);
+    assert_eq!(
+        row["needs"], "waiting on you in Herdr (permission)",
+        "{row}"
+    );
+    assert_eq!(row["state"]["herdr"]["word"], "blocked");
+    let blocked = call(
+        &w,
+        "agents_say",
+        json!({ "business": "default", "id": id, "text": "go on" }),
+    )
+    .unwrap_err();
+    assert!(
+        blocked.as_str().unwrap().contains("answer it there"),
+        "{blocked}"
+    );
+
+    let report = cos_desktop::report_response(app.handle(), "/");
+    let html = String::from_utf8_lossy(report.body());
+    assert!(html.contains("Waiting on you in Herdr"), "Today lists it");
+    assert!(
+        html.contains(&format!(r#"data-herdr-open="{id}""#)),
+        "with Open in Herdr"
+    );
+
+    let shown = call(&w, "agents_open", json!({ "id": id })).unwrap();
+    assert!(shown.as_str().unwrap().contains(&t), "{shown}");
+    assert!(
+        herdr
+            .app_log()
+            .contains(&format!("agent.focus --terminal {t}"))
+    );
+
+    herdr.set(&t, "status", "idle");
+    herdr.set(&t, "kind", "");
+    cos::agents::tick(&d.home).unwrap();
+    assert_eq!(row_of(&w, &id)["needs"], Value::Null);
+    let stale = call(
+        &w,
+        "agents_say",
+        json!({ "business": "acme", "id": id, "text": "hi" }),
+    )
+    .unwrap_err();
+    assert!(
+        error_text(&stale).contains("nothing written, run or killed"),
+        "{stale}"
+    );
+    call(
+        &w,
+        "agents_say",
+        json!({ "business": "default", "id": id, "text": "Thanks, now finish" }),
+    )
+    .unwrap();
+    assert_eq!(herdr.sent(&t), ["Thanks, now finish"]);
+    call(
+        &w,
+        "agents_pause",
+        json!({ "business": "default", "id": id }),
+    )
+    .unwrap();
+    assert!(herdr.calls().contains(&format!("interrupt | {t}")));
+    let screen = call(&w, "agents_screen", json!({ "id": id, "lines": 30 })).unwrap();
+    assert!(screen.as_str().unwrap().contains(&id), "{screen}");
+
+    let done = call(
+        &w,
+        "agents_done",
+        json!({ "business": "default", "id": id }),
+    )
+    .unwrap();
+    assert_eq!(done["status"], "done");
+    assert_eq!(done["judged_on"], "marked done");
+    assert!(herdr.calls().contains(&format!("kill | {t}")));
+    let kept = call(&w, "agents_screen", json!({ "id": id })).unwrap();
+    assert!(
+        kept.as_str().unwrap().contains(&id),
+        "its last screen is kept: {kept}"
+    );
     call(
         &w,
         "agents_clean",
@@ -508,6 +650,8 @@ fn the_window_hires_by_role_from_a_deliverable_and_reads_the_staff_back() {
 fn the_dialog_checks_fit_before_hiring_and_a_tester_run_takes_your_result() {
     let cos = cos_bin();
     let root = scratch("fit");
+    let herdr = fake_herdr::fake(&root);
+    herdr.exec(true);
     let d = dirs(&root, "default");
     cos::state::initialize(&d.workspace).unwrap();
     let mut st: Value = serde_json::from_str(cos::state::DEMO_STATE).unwrap();
@@ -537,14 +681,11 @@ fn the_dialog_checks_fit_before_hiring_and_a_tester_run_takes_your_result() {
     let start = start(&root, cos, 2, Sources::default());
     register(&start, "default", &d, true);
     let (_app, w) = open(start);
-    let fake = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/fake-claude.sh"
-    );
+    let fake = fake_herdr::agent();
     let args = |role: &str, extra: Value| {
         let mut a = json!({
-            "harness": "claude", "role": role, "worktree": true, "deadlineSecs": 60,
-            "budgetUsd": 1.0, "count": 1, "program": fake,
+            "harness": "claude", "role": role, "worktree": true, "deadlineSecs": 600,
+            "count": 1, "program": fake,
         });
         a.as_object_mut()
             .unwrap()
@@ -615,7 +756,7 @@ fn the_dialog_checks_fit_before_hiring_and_a_tester_run_takes_your_result() {
         "{fit}"
     );
 
-    // The stand-in harness writes TEST-PLAN.md only when its prompt says
+    // The stand-in agent writes TEST-PLAN.md only when its prompt says
     // TESTPLAN, so this hire is an own prompt rather than the deliverable.
     let specs = call(
         &w,
@@ -628,25 +769,8 @@ fn the_dialog_checks_fit_before_hiring_and_a_tester_run_takes_your_result() {
     .unwrap();
     let id = specs[0]["id"].as_str().unwrap().to_owned();
     assert_eq!(specs[0]["role"], "tester");
-    let row = |w: &Win| {
-        call(w, "agents_list", json!({}))
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| r["spec"]["id"] == id)
-            .cloned()
-            .unwrap_or_default()
-    };
-    let until = Instant::now() + Duration::from_secs(20);
-    let verdict = loop {
-        let v = row(&w)["state"]["verdict"].clone();
-        if !v.is_null() {
-            break v;
-        }
-        assert!(Instant::now() < until, "never judged");
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    let row = |w: &Win| row_of(w, &id);
+    let verdict = wait_judged(&w, &d.home, &id);
     assert_eq!(verdict["outcome"], "accepted", "{verdict}");
     assert_eq!(verdict["changed"], json!(["TEST-PLAN.md"]));
 
@@ -663,6 +787,12 @@ fn the_dialog_checks_fit_before_hiring_and_a_tester_run_takes_your_result() {
         row(&w)["state"]["recorded"]["notes"],
         "12 of 12 steps passed"
     );
+    call(
+        &w,
+        "agents_done",
+        json!({ "business": "default", "id": id }),
+    )
+    .unwrap();
     call(
         &w,
         "agents_clean",
@@ -1018,7 +1148,7 @@ fn businesses_spawns_no_ps() {
             .iter()
             .find(|r| r["name"] == "default")
             .unwrap();
-        assert_eq!(row["live"].as_u64(), Some(1), "supervisor {pid}: {rows}");
+        assert_eq!(row["live"].as_u64(), Some(1), "launcher {pid}: {rows}");
         assert!(row["unread"].is_boolean(), "{row}");
         assert!(row["scheduled"].is_boolean(), "{row}");
         return;
@@ -1039,9 +1169,9 @@ fn businesses_spawns_no_ps() {
     let start = start(&root, cos.clone(), 2, Sources::default());
     register(&start, "default", &a, true);
 
-    let sup_home = root.join("supervisor");
+    let sup_home = root.join("launcher");
     std::fs::create_dir_all(&sup_home).unwrap();
-    let supervisor = Reap(
+    let launcher = Reap(
         Command::new(&cos)
             .arg("--home")
             .arg(&sup_home)
@@ -1063,7 +1193,7 @@ fn businesses_spawns_no_ps() {
             .spawn()
             .unwrap(),
     );
-    let pid = supervisor.0.id() as i32;
+    let pid = launcher.0.id() as i32;
     let until = Instant::now() + Duration::from_secs(10);
     while !cos::proc::exe(pid).is_some_and(|e| e.file_name().is_some_and(|f| f == "cos")) {
         assert!(Instant::now() < until, "cos {pid} never ran");
@@ -1299,24 +1429,16 @@ fn repo_in(projects: &Path, name: &str) -> PathBuf {
 }
 
 fn spawn_args(repo: &Path, prompt: &str) -> Value {
-    json!({
-        "harness": "claude", "repo": repo, "prompt": prompt, "worktree": true,
-        "deadlineSecs": 60, "budgetUsd": 1.0, "count": 1,
-        "program": concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/fake-claude.sh"),
-    })
+    hire_args(repo, json!({ "prompt": prompt }))
 }
 
-fn wait_judged(w: &Win, id: &str) -> Value {
+/// Follows `home`'s hires until `id` is judged: the stand-in agent says done
+/// at its first turn, so one look is usually enough.
+fn wait_judged(w: &Win, home: &Path, id: &str) -> Value {
     let until = Instant::now() + Duration::from_secs(20);
     loop {
-        let v = call(w, "agents_list", json!({}))
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| r["spec"]["id"] == id)
-            .map(|r| r["state"]["verdict"].clone())
-            .unwrap_or_default();
+        cos::agents::tick(home).unwrap();
+        let v = row_of(w, id)["state"]["verdict"].clone();
         if !v.is_null() {
             return v;
         }
@@ -1453,6 +1575,8 @@ fn cosreport_get_and_other_methods_follow_the_origin_rule() {
 fn writes_land_in_new_business() {
     let cos = cos_bin();
     let root = scratch("writes");
+    let herdr = fake_herdr::fake(&root);
+    herdr.exec(true);
     let a = dirs(&root, "default");
     seed(&a.workspace, None);
     let b = dirs(&root, "acme");
@@ -1492,13 +1616,7 @@ fn writes_land_in_new_business() {
         org2
     );
 
-    let specs = call(
-        &w,
-        "agents_spawn",
-        json!({ "business": "acme", "args": spawn_args(&repo, "acme prompt") }),
-    )
-    .unwrap();
-    let id = specs[0]["id"].as_str().unwrap().to_owned();
+    let id = hire(&w, "acme", spawn_args(&repo, "acme prompt"));
     assert!(
         b.home
             .join("out/agents")
@@ -1509,7 +1627,7 @@ fn writes_land_in_new_business() {
     );
     assert!(!a.home.join("out/agents").join(&id).exists());
 
-    let verdict = wait_judged(&w, &id);
+    let verdict = wait_judged(&w, &b.home, &id);
     assert!(!verdict.is_null());
     let st = call(
         &w,
@@ -1532,6 +1650,7 @@ fn writes_land_in_new_business() {
         default_before,
         "default's organize changed"
     );
+    call(&w, "agents_done", json!({ "business": "acme", "id": id })).unwrap();
     call(
         &w,
         "agents_clean",
@@ -1584,6 +1703,18 @@ fn stale_business_writes_refused() {
         (
             "agents_clean",
             json!({ "business": "default", "id": "run-a", "force": true }),
+        ),
+        (
+            "agents_say",
+            json!({ "business": "default", "id": "run-a", "text": "stale" }),
+        ),
+        (
+            "agents_pause",
+            json!({ "business": "default", "id": "run-a" }),
+        ),
+        (
+            "agents_done",
+            json!({ "business": "default", "id": "run-a" }),
         ),
         ("brief_run", json!({ "business": "default" })),
         (
@@ -1687,7 +1818,19 @@ fn app_run_commands_refuse_bad_ids() {
                 "agents_record",
                 json!({ "business": "default", "args": { "id": id, "outcome": "passed", "notes": "x" } }),
             ),
-            call(&w, "agents_tail", json!({ "id": id, "from": 0 })),
+            call(&w, "agents_seed", json!({ "id": id })),
+            call(&w, "agents_screen", json!({ "id": id })),
+            call(&w, "agents_open", json!({ "id": id })),
+            call(
+                &w,
+                "agents_say",
+                json!({ "business": "default", "id": id, "text": "x" }),
+            ),
+            call(
+                &w,
+                "agents_done",
+                json!({ "business": "default", "id": id }),
+            ),
         ];
         for r in fails {
             assert!(r.is_err(), "id {id:?} accepted: {r:?}");
@@ -1704,6 +1847,7 @@ fn app_run_commands_refuse_bad_ids() {
 fn run_spawned_before_switch_survives() {
     let cos = cos_bin();
     let root = scratch("survives");
+    let _herdr = fake_herdr::fake(&root);
     let a = dirs(&root, "default");
     seed(&a.workspace, None);
     let repo = repo_in(&a.projects, "demo-repo");
@@ -1715,13 +1859,7 @@ fn run_spawned_before_switch_survives() {
     register(&start, "acme", &b, false);
     let (_app, w) = open(start);
 
-    let specs = call(
-        &w,
-        "agents_spawn",
-        json!({ "business": "default", "args": spawn_args(&repo, "SLEEP") }),
-    )
-    .unwrap();
-    let id = specs[0]["id"].as_str().unwrap().to_owned();
+    let id = hire(&w, "default", spawn_args(&repo, "keep working"));
     wait(&w, &id, "running");
 
     switch(&w, "acme").unwrap();
@@ -2024,14 +2162,14 @@ impl Drop for Reaped {
 }
 
 #[test]
-fn a_killed_supervisor_turns_its_row_lost_within_one_tick() {
+fn a_killed_launcher_turns_its_row_lost_within_one_tick() {
     let root = scratch("cuj8");
     let a = dirs(&root, "default");
     seed(&a.workspace, None);
     let cos = cos_bin();
-    let sup_home = root.join("supervisor");
+    let sup_home = root.join("launcher");
     std::fs::create_dir_all(&sup_home).unwrap();
-    let mut supervisor = Reaped(
+    let mut launcher = Reaped(
         Command::new(&cos)
             .arg("--home")
             .arg(&sup_home)
@@ -2053,7 +2191,7 @@ fn a_killed_supervisor_turns_its_row_lost_within_one_tick() {
             .spawn()
             .unwrap(),
     );
-    let pid = supervisor.0.id() as i32;
+    let pid = launcher.0.id() as i32;
     let until = Instant::now() + Duration::from_secs(10);
     while !cos::proc::exe(pid).is_some_and(|e| e.file_name().is_some_and(|f| f == "cos")) {
         assert!(Instant::now() < until, "cos {pid} never ran");
@@ -2073,8 +2211,8 @@ fn a_killed_supervisor_turns_its_row_lost_within_one_tick() {
         "the first tick did not emit the live run"
     );
 
-    supervisor.0.kill().unwrap();
-    supervisor.0.wait().unwrap();
+    launcher.0.kill().unwrap();
+    launcher.0.wait().unwrap();
     let lost = next_event(&rx, BUSINESSES_CHANGED, ONE_TICK, |rows| {
         row(rows, "default")["lost"] == 1
     });
@@ -2091,7 +2229,7 @@ fn a_starting_run_turns_lost_after_the_grace_without_a_call() {
     let margin = Duration::from_secs(4);
     let created = jiff::Timestamp::now()
         - jiff::SignedDuration::try_from(cos::agents::START_GRACE - margin).unwrap();
-    plant(&a.home, "r1", Value::Null, &created.to_string());
+    plant(&a.home, "r1", None, &created.to_string());
     let lost_at = Instant::now() + margin;
 
     let start = start(&root, cos_bin(), 2, Sources::default());
