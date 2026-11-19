@@ -1,51 +1,55 @@
-//! `cos agents`: spin off coding agents (Claude Code, Codex) on the prompts a
-//! brief hands out, then watch them.
+//! `cos agents`: hire coding agents (Claude Code, Codex) on the prompts a
+//! brief hands out, run them in Herdr, and judge what they leave.
 //!
-//! Each agent gets its own detached worktree and runs in a herdr space, which
-//! owns the harness for its whole life. cos starts a `cos agents observe`
-//! process that watches that space (never drives it) and judges the worktree
-//! when it ends — one owner per run. Everything an agent leaves is under
-//! `out/agents/<id>/`: `spec.json`, `state.json` and the worktree.
+//! cos plans the hire (`hire.rs`), cuts and seeds a detached worktree, then
+//! starts the harness interactive in a Herdr terminal (`hc run`) named
+//! `cos-<id>` and labelled `hire=<id>`. Herdr owns that process for its whole
+//! life: you talk to it, approve its prompts and take it over there. cos
+//! follows the terminal's status (`follow.rs`), stops it at its deadline, and
+//! judges the worktree once when it reports `done`, ends, or is marked done.
+//! Everything cos keeps is under `out/agents/<id>/`: `spec.json`,
+//! `state.json`, `seed.log`, `screen.txt` and the worktree.
 
 use std::fmt;
-use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::business::Triple;
+use crate::herdr;
 use crate::proc;
 use crate::reports::Brief;
 use crate::store::{self, Kind};
 
 pub mod fit;
+pub mod follow;
 pub mod harness;
 pub mod hire;
 pub mod judge;
 pub mod ledger;
 pub mod osc;
 pub mod policy;
-pub mod observe;
 pub mod seed;
 pub mod slots;
 pub mod view;
-pub mod watch;
 
+pub use follow::{mark_done, open_in_herdr, pause, say, screen, tick};
 pub use judge::{Contract, Expects, Outcome, Verdict};
-pub use observe::observe;
 
 /// No agent runs longer than this, whatever it asks for.
 pub const CEILING: Duration = Duration::from_secs(2 * 60 * 60);
 
-/// A supervisor that has not recorded its pid within this is presumed dead.
+/// A run whose preparing process has not been seen within this is presumed
+/// to have lost it.
 pub const START_GRACE: Duration = Duration::from_secs(15);
 
-/// How long `clean` waits for a supervisor still judging an ended run.
-const JUDGE_GRACE: Duration = Duration::from_secs(15);
+/// What a run from before Herdr followed it says on its page.
+pub const LEGACY: &str =
+    "ran before cos followed hires in Herdr: it cannot be resumed; hire again to carry the work on";
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, schemars::JsonSchema,
@@ -93,21 +97,33 @@ pub struct Spec {
     pub source: String,
     pub prompt: String,
     pub deadline_secs: u64,
-    pub budget_usd: f64,
     pub created: String,
-    /// Agents allowed to run at once while this one waits; fixed at spawn.
+    /// Agents allowed to run at once when this one was hired.
     #[serde(default)]
     pub slots: Option<usize>,
-    /// What it is judged against when it ends.
+    /// What it is judged against.
     #[serde(default)]
     pub contract: Contract,
-    /// When the supervisor flags it as stalled or looping.
-    #[serde(default)]
-    pub limits: watch::Limits,
-    /// The staff role it was hired into (`context/agents.json`); `None` for
-    /// agents spawned before roles, or without one.
+    /// The staff role it was hired into (`context/agents.json`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Its Herdr terminal's name (`cos-<id>`); `None` for a run from before
+    /// cos followed hires in Herdr.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<String>,
+    /// The business's workspace and projects, pinned on the agent's command
+    /// so a `cos` it runs resolves the business that hired it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projects: Option<PathBuf>,
+}
+
+impl Spec {
+    /// Run before cos followed hires in Herdr: readable, never resumed.
+    pub fn legacy(&self) -> bool {
+        self.terminal.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -115,16 +131,17 @@ pub struct Spec {
 pub enum Status {
     #[default]
     Starting,
-    /// Waiting for a run slot (`slots::run_slots`).
+    /// Read from runs from before Herdr only.
     Queued,
     /// Its worktree is being seeded.
     Seeding,
+    /// Its Herdr terminal is live.
     Running,
     Done,
     Failed,
     Killed,
     TimedOut,
-    /// The supervisor died without recording an outcome.
+    /// It ended without cos seeing how.
     Lost,
 }
 
@@ -134,6 +151,11 @@ impl Status {
             self,
             Self::Starting | Self::Queued | Self::Seeding | Self::Running
         )
+    }
+
+    /// Being prepared, before Herdr has it.
+    pub fn preparing(self) -> bool {
+        matches!(self, Self::Starting | Self::Queued | Self::Seeding)
     }
 }
 
@@ -153,46 +175,94 @@ impl fmt::Display for Status {
     }
 }
 
-/// What the supervisor has seen so far; rewritten as the harness streams.
+/// What cos last saw of a run's Herdr terminal. Every word here is Herdr's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Seen {
+    /// `t7`: the terminal for good on this core.
+    pub address: String,
+    /// `idle`, `working`, `done`, `blocked` or `error`; `None` when the
+    /// program never said, or has exited.
+    pub word: Option<String>,
+    /// For `blocked`: `permission`, `question` or `auth`.
+    pub kind: Option<String>,
+    pub msg: Option<String>,
+    /// Goes up each time it stops working.
+    pub turn: u64,
+    pub live: bool,
+    pub exit_code: Option<i32>,
+    /// Why its program ended, in Herdr's word (`exited`, `killed`, …).
+    pub reason: Option<String>,
+    /// hc's word on the first message, when the launch gave one; the prompt
+    /// is otherwise on the agent's command line.
+    pub first_message: Option<herdr::FirstMessage>,
+    /// When cos last read it.
+    pub at: String,
+    /// When cos pressed its stop key at the deadline.
+    pub interrupted: Option<String>,
+}
+
+impl Seen {
+    /// Herdr says it is waiting on you, and on what.
+    pub fn blocked(&self) -> Option<String> {
+        (self.live && self.word.as_deref() == Some("blocked"))
+            .then(|| self.kind.clone().unwrap_or_else(|| "a question".into()))
+    }
+
+    /// The first message did not go in.
+    pub fn unsent(&self) -> Option<String> {
+        self.first_message.as_ref().filter(|f| !f.sent).map(|f| {
+            f.reason
+                .clone()
+                .unwrap_or_else(|| "Herdr gave no reason".into())
+        })
+    }
+}
+
+/// What cos knows of a run; rewritten as it changes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct State {
     pub status: Status,
-    pub supervisor: Option<i32>,
-    pub pgid: Option<i32>,
-    /// The harness leader's start time (`started_at`), checked before any
-    /// signal to `pgid`.
-    pub pgid_started: Option<String>,
     pub started: Option<String>,
     pub ended: Option<String>,
     pub exit: Option<i32>,
-    pub cost_usd: Option<f64>,
-    pub tokens: Option<u64>,
-    pub tool_calls: u32,
-    /// The harness's session id, for `claude --resume` / `codex resume`.
-    pub session: Option<String>,
-    /// The latest activity line.
-    pub last: String,
-    /// The final message.
-    pub summary: String,
     pub error: Option<String>,
     /// What seeding did to the worktree, in order.
-    #[serde(default)]
     pub seeded: Vec<String>,
-    /// Build tools shimmed onto the harness's PATH to share the build slot.
-    #[serde(default)]
+    /// Build tools shimmed onto the agent's PATH to share the build slot.
     pub shimmed: Vec<String>,
-    /// Set once it has ended and been judged; `None` while running or judging.
-    #[serde(default)]
+    /// Set once judged.
     pub verdict: Option<Verdict>,
-    /// Trouble showing right now; cleared when it passes.
-    #[serde(default)]
-    pub flags: Vec<watch::Flag>,
-    /// Every kind of trouble it showed at any point in the run.
-    #[serde(default)]
-    pub flagged: Vec<watch::Kind>,
+    /// What made cos judge it: "done at turn 2", "it ended", "marked done".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judged_on: Option<String>,
     /// What you found when you ran what it drafted; never written by the agent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub recorded: Option<Recorded>,
+    /// Its Herdr terminal, as last seen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub herdr: Option<Seen>,
+    /// The process preparing it before Herdr has it, and when that process
+    /// started (`started_at`), so a recycled pid is not taken for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launcher_started: Option<String>,
+    /// Measured from the stream before hires ran interactive in Herdr; runs
+    /// in Herdr leave them empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pgid: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pgid_started: Option<String>,
 }
 
 /// The outcome you record for a run, e.g. after running a tester's script.
@@ -238,7 +308,6 @@ pub struct Request {
     pub source: String,
     pub prompt: String,
     pub deadline: Duration,
-    pub budget_usd: f64,
     /// Run slots; `None` takes `slots::run_slots()`.
     pub slots: Option<usize>,
     pub contract: Contract,
@@ -262,7 +331,7 @@ pub fn root(home: &Path) -> PathBuf {
     home.join("out/agents")
 }
 
-fn dir(home: &Path, id: &str) -> PathBuf {
+pub fn dir(home: &Path, id: &str) -> PathBuf {
     root(home).join(id)
 }
 
@@ -274,10 +343,6 @@ pub struct RunDir {
 impl RunDir {
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    pub fn events_path(&self) -> PathBuf {
-        self.path.join("events.jsonl")
     }
 }
 
@@ -392,88 +457,62 @@ pub fn infer_repo(prompt: &str, projects: &Path) -> Option<PathBuf> {
         .find(|repo| repo.join(".git").exists())
 }
 
-/// Cuts the worktree and records the spec, seeds the worktree, then runs the
-/// hire's harness in a herdr space. herdr owns that process for its whole life;
-/// a detached `cos agents observe` watches the space and judges the worktree
-/// when it ends. cos never owns the run — one owner per run. The observer's env
-/// pins `triple`, so a `cos` it runs resolves the business that spawned it.
-pub fn spawn_in_herdr(triple: &Triple, req: Request) -> Result<(Spec, String)> {
-    let Prepared {
-        spec,
-        home,
-        workspace,
-        projects,
-    } = prepare(triple, req)?;
-    let run = RunDir {
-        path: dir(&home, &spec.id),
-    };
+/// Hires and starts the agent in Herdr: refuses without Herdr or a free run
+/// slot, cuts and seeds its worktree, then `hc run`. Returns once Herdr has
+/// it. `cos` is the binary the agent's build shims call back into.
+pub fn spawn(triple: &Triple, req: Request, cos: &Path) -> Result<Spec> {
+    let spec = create(triple, req)?;
+    let home = std::path::absolute(&triple.home)?;
+    launch(&home, &spec.id, cos)?;
+    read_json(&dir(&home, &spec.id).join("spec.json"))
+}
 
-    if let (true, Some(repo)) = (spec.worktree, spec.repo.as_deref()) {
-        let (_, mut state) = load(&run)?;
-        state.status = Status::Seeding;
-        write_state(&run, &state)?;
-        state.seeded = seed::run(repo, &spec.workdir, &run.path().join("seed.log"))
-            .context("seed the worktree")?;
-        write_state(&run, &state)?;
-    }
-
-    let addr = crate::herdr::open(&spec, &home, &workspace, &projects)?;
-
-    let cos = std::env::current_exe().context("locate the cos binary")?;
-    let log = std::fs::File::create(run.path().join("observe.log"))?;
-    let mut cmd = Command::new(&cos);
-    cmd.arg("--home")
-        .arg(&home)
-        .args(["agents", "observe", &spec.id])
-        .env_remove("COS_BUSINESS")
-        .env("COS_HOME", &home)
-        .env("COS_WORKSPACE", &workspace)
-        .env("COS_PROJECTS", &projects)
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    // SAFETY: setsid is async-signal-safe and touches no memory. Its own
-    // session keeps a closed terminal here from reaching the observer.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    let mut child = cmd.spawn().context("start the hire's observer")?;
-    // Reaped here so a long-lived parent (`cos mcp`) collects no zombie.
+/// `spawn`, returning once the run is recorded; seeding and the launch go
+/// on in a thread of this process, which a long-lived caller (the window,
+/// `cos mcp`) keeps alive. If this process ends first the run reads `lost`.
+pub fn spawn_background(triple: &Triple, req: Request, cos: &Path) -> Result<Spec> {
+    let spec = create(triple, req)?;
+    let home = std::path::absolute(&triple.home)?;
+    let (id, cos) = (spec.id.clone(), cos.to_path_buf());
     std::thread::spawn(move || {
-        let _ = child.wait();
+        if let Err(e) = launch(&home, &id, &cos) {
+            eprintln!("cos: {id} did not reach Herdr: {e:#}");
+        }
     });
-
-    Ok((spec, addr))
+    Ok(spec)
 }
 
-/// The spec and worktree a hire would run in — policy and role applied,
-/// recorded on disk — without launching anything. For a dry run and for tests.
+/// Records the run (its directory, worktree and spec) after the checks
+/// that refuse it: no Herdr, no free slot, an empty prompt.
+pub fn create(triple: &Triple, req: Request) -> Result<Spec> {
+    record_run(triple, req, true)
+}
+
+/// The spec and worktree a hire would run in, policy and role applied and
+/// recorded on disk, without asking Herdr or launching anything. For tests.
 pub fn prepare_spec(triple: &Triple, req: Request) -> Result<Spec> {
-    Ok(prepare(triple, req)?.spec)
+    record_run(triple, req, false)
 }
 
-struct Prepared {
-    spec: Spec,
-    home: PathBuf,
-    workspace: PathBuf,
-    projects: PathBuf,
-}
-
-/// Builds the run directory, worktree and spec and records them, up to the point
-/// a run is owned by whoever starts the harness. Shared by `spawn` (a cos
-/// supervisor) and `spawn_in_herdr` (a herdr terminal).
-fn prepare(triple: &Triple, mut req: Request) -> Result<Prepared> {
+fn record_run(triple: &Triple, mut req: Request, herdr_up: bool) -> Result<Spec> {
     if req.prompt.trim().is_empty() {
         bail!("empty prompt");
     }
     let home = std::path::absolute(&triple.home)?;
-    let workspace = std::path::absolute(&triple.workspace)?;
-    let projects = std::path::absolute(&triple.projects)?;
     let explicit = req.explicit;
-    let limits = policy::load(&home).apply(&mut req, explicit)?;
+    policy::load(&home).apply(&mut req, explicit)?;
+    if herdr_up {
+        herdr::require()?;
+    }
+    std::fs::create_dir_all(root(&home))?;
+    let n = req.slots.unwrap_or_else(slots::run_slots);
+    let _held = slots::hire_lock(&home)?;
+    let busy = live_runs(&home);
+    if busy >= n {
+        bail!(
+            "all {n} run slots are taken by hires still running: wait for one to end, or stop one (COS_AGENT_SLOTS raises the number)"
+        );
+    }
     let id = new_id()?;
     let d = dir(&home, &id);
     std::fs::create_dir_all(&d)?;
@@ -518,22 +557,188 @@ fn prepare(triple: &Triple, mut req: Request) -> Result<Prepared> {
         source: req.source,
         prompt: req.prompt,
         deadline_secs: req.deadline.min(CEILING).as_secs(),
-        budget_usd: req.budget_usd,
         created: jiff::Timestamp::now().to_string(),
-        slots: Some(req.slots.unwrap_or_else(slots::run_slots)),
+        slots: Some(n),
         contract: req.contract,
-        limits,
         role: req.role,
+        terminal: Some(follow::terminal_name(&id)),
+        workspace: Some(std::path::absolute(&triple.workspace)?),
+        projects: Some(std::path::absolute(&triple.projects)?),
     };
     write_json(&d.join("spec.json"), &spec)?;
-    write_state(&RunDir { path: d.clone() }, &State::default())?;
+    let me = std::process::id() as i32;
+    let state = State {
+        launcher: Some(me),
+        launcher_started: started_at(me),
+        ..State::default()
+    };
+    write_state(&home, &id, &state)?;
+    Ok(spec)
+}
 
-    Ok(Prepared {
-        spec,
-        home,
-        workspace,
-        projects,
-    })
+/// Runs a hire that is not yet working: until the worktree is seeded and its
+/// Herdr terminal is live. A `stop` file in the run directory ends it.
+pub fn launch(home: &Path, id: &str, cos: &Path) -> Result<()> {
+    let d = run_dir(home, id)?.path;
+    let spec: Spec = read_json(&d.join("spec.json"))?;
+    let mut state: State = read_json(&d.join("state.json")).unwrap_or_default();
+    let stop_file = d.join("stop");
+    let stopped = || stop_file.exists();
+    let prepared = prepare(home, &spec, &mut state, cos);
+    if stopped() {
+        let _ = std::fs::remove_file(&stop_file);
+        return follow::end(
+            home,
+            &spec,
+            &mut state,
+            Status::Killed,
+            Some("stopped on request".into()),
+        );
+    }
+    if let Err(e) = prepared {
+        let why = format!("{e:#}");
+        follow::end(home, &spec, &mut state, Status::Failed, Some(why.clone()))?;
+        bail!(why);
+    }
+    let argv = environment(home, &spec, &state, cos, harness::argv(&spec));
+    let name = follow::terminal_name(id);
+    let mut labels = vec![
+        ("hire".to_owned(), id.to_owned()),
+        ("cos".to_owned(), "hire".to_owned()),
+        ("harness".to_owned(), spec.harness.program().to_owned()),
+    ];
+    if let Some(r) = &spec.role {
+        labels.push(("role".to_owned(), r.clone()));
+    }
+    let launched = herdr::run(&herdr::Launch {
+        name: &name,
+        cwd: &spec.workdir,
+        labels: &labels,
+        argv: &argv,
+    });
+    match launched {
+        Ok(t) => {
+            state.herdr = Some(follow::seen(&t, None));
+            state.status = Status::Running;
+            state.started = Some(jiff::Timestamp::now().to_string());
+            state.launcher = None;
+            state.launcher_started = None;
+            if let Some(why) = state.herdr.as_ref().and_then(Seen::unsent) {
+                state.error = Some(format!(
+                    "Herdr did not send it the work ({why}): read its screen in Herdr before sending it again"
+                ));
+            }
+            write_state(home, id, &state)
+        }
+        Err(e) => {
+            let why = format!("Herdr did not start it: {e:#}");
+            follow::end(home, &spec, &mut state, Status::Failed, Some(why.clone()))?;
+            bail!(why)
+        }
+    }
+}
+
+/// Seeds a worktree hire and writes the build-tool shims.
+fn prepare(home: &Path, spec: &Spec, state: &mut State, cos: &Path) -> Result<()> {
+    let d = dir(home, &spec.id);
+    if let (true, Some(repo)) = (spec.worktree, spec.repo.as_deref()) {
+        state.status = Status::Seeding;
+        write_state(home, &spec.id, state)?;
+        state.seeded =
+            seed::run(repo, &spec.workdir, &d.join("seed.log")).context("seed the worktree")?;
+    }
+    let mut path = std::env::var("PATH").unwrap_or_default();
+    // A cos started from the Dock has no login PATH: the tools in
+    // ~/.cargo/bin are looked for there too.
+    if let Some(cargo) = std::env::var_os("HOME").map(|h| Path::new(&h).join(".cargo/bin"))
+        && cargo.is_dir()
+    {
+        path = format!("{path}:{}", cargo.display());
+    }
+    state.shimmed = slots::write_shims(&d.join("bin"), cos, &slots::build_lock()?, &path)?;
+    write_state(home, &spec.id, state)
+}
+
+/// The agent's command line with what it runs beside: the business it was
+/// hired for, where the run is, and the build shims first on its PATH. Herdr
+/// starts programs in its own environment, not cos's, so the business is
+/// pinned here: `COS_BUSINESS` is cleared and the pinned directories decide
+/// it. PATH is extended, not replaced.
+fn environment(
+    home: &Path,
+    spec: &Spec,
+    state: &State,
+    cos: &Path,
+    argv: Vec<String>,
+) -> Vec<String> {
+    let mut a = vec![
+        "/usr/bin/env".to_owned(),
+        "-u".to_owned(),
+        "COS_BUSINESS".to_owned(),
+        format!("COS_HOME={}", home.display()),
+    ];
+    let pins = [
+        ("COS_WORKSPACE", &spec.workspace),
+        ("COS_PROJECTS", &spec.projects),
+    ];
+    for (k, v) in pins {
+        if let Some(v) = v {
+            a.push(format!("{k}={}", v.display()));
+        }
+    }
+    a.extend([
+        format!("COS_RUN_ID={}", spec.id),
+        format!("COS_BIN={}", cos.display()),
+    ]);
+    if !state.shimmed.is_empty() {
+        a.extend([
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            r#"PATH="$0:$PATH" exec "$@""#.to_owned(),
+            dir(home, &spec.id)
+                .join("bin")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+    }
+    a.extend(argv);
+    a
+}
+
+/// Why a run needs you now, in words; `None` when it does not. Herdr's
+/// `blocked` first: a run waiting on you there waits on nothing else.
+pub fn needs(spec: &Spec, state: &State) -> Option<String> {
+    let seen = state.herdr.as_ref();
+    if let Some(kind) = seen.and_then(Seen::blocked) {
+        return Some(format!("waiting on you in Herdr ({kind})"));
+    }
+    if !state.status.terminal() && seen.and_then(Seen::unsent).is_some() {
+        return Some("its first message did not go in: read its screen in Herdr".into());
+    }
+    if state.status == Status::Killed || (spec.legacy() && !state.status.terminal()) {
+        return None;
+    }
+    state
+        .verdict
+        .as_ref()
+        .filter(|v| v.outcome == Outcome::NeedsYou)
+        .map(|_| {
+            if state.status.terminal() {
+                "ended: needs you".into()
+            } else {
+                "judged: needs you".into()
+            }
+        })
+}
+
+/// Hires still being prepared or live in Herdr: what the run slots count.
+pub fn live_runs(home: &Path) -> usize {
+    list(home)
+        .map(|l| l.runs)
+        .unwrap_or_default()
+        .iter()
+        .filter(|(spec, st)| !spec.legacy() && !st.status.terminal())
+        .count()
 }
 
 /// Every run that resolves, newest first. An id that fails `run_dir` or `read`
@@ -544,15 +749,18 @@ pub struct Listing {
     pub skipped: Vec<String>,
 }
 
-/// Spec and state for one agent, reconciled against the process table.
+/// Spec and state for one agent, reconciled.
 pub fn read(home: &Path, id: &str) -> Result<(Spec, State)> {
-    load(&run_dir(home, id)?)
+    let (spec, state) = read_raw(home, id)?;
+    let state = reconcile(home, &spec, state)?;
+    Ok((spec, state))
 }
 
-fn load(run: &RunDir) -> Result<(Spec, State)> {
-    let spec: Spec = read_json(&run.path.join("spec.json"))?;
-    let state: State = read_json(&run.path.join("state.json")).unwrap_or_default();
-    let state = reconcile(run, &spec, state)?;
+/// Spec and state as they are on disk.
+pub(crate) fn read_raw(home: &Path, id: &str) -> Result<(Spec, State)> {
+    let d = run_dir(home, id)?.path;
+    let spec: Spec = read_json(&d.join("spec.json")).with_context(|| format!("no agent {id}"))?;
+    let state: State = read_json(&d.join("state.json")).unwrap_or_default();
     Ok((spec, state))
 }
 
@@ -579,37 +787,51 @@ pub fn list(home: &Path) -> Result<Listing> {
     Ok(listing)
 }
 
-/// What a run that has not ended is doing, from its record alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Liveness {
-    Live,
-    /// No supervisor pid yet, within `START_GRACE` of spawn.
-    Starting,
-    /// Its supervisor is gone.
-    Lost,
-}
-
-/// Callers check `status.terminal()` first; this is for runs that have not ended.
-pub fn classify(spec: &Spec, state: &State) -> Liveness {
-    match state.supervisor {
-        Some(pid) if is_cos(pid) => Liveness::Live,
-        None if age(&spec.created) < START_GRACE => Liveness::Starting,
-        _ => Liveness::Lost,
-    }
-}
-
 /// Run counts under one home, for the picker's badge.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
     /// Includes the runs counted in `starting`.
     pub live: usize,
     pub lost: usize,
+    /// Being prepared, before Herdr has it.
     pub starting: usize,
     /// Runs whose spec or state cannot be read, or whose id is refused.
     pub unreadable: usize,
 }
 
-/// Counts runs without reconciling them: nothing is written and no process is signalled.
+/// What a run that has not ended is, from its record and the kernel alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Open {
+    /// Herdr has it.
+    Live,
+    /// Being prepared by a process still there, or within `START_GRACE`.
+    Starting,
+    /// Its preparing process is gone, or it is from before Herdr.
+    Lost,
+}
+
+fn open(spec: &Spec, state: &State) -> Open {
+    if spec.legacy() {
+        return Open::Lost;
+    }
+    if state.herdr.is_some() || !state.status.preparing() {
+        return Open::Live;
+    }
+    if launcher_alive(state) || age(&spec.created) < START_GRACE {
+        Open::Starting
+    } else {
+        Open::Lost
+    }
+}
+
+fn launcher_alive(state: &State) -> bool {
+    state.launcher.is_some_and(|pid| {
+        proc::alive(pid) && started_at(pid).as_deref() == state.launcher_started.as_deref()
+    })
+}
+
+/// Counts runs without reconciling them: nothing is written, nothing spawned
+/// and no process signalled.
 pub fn count(home: &Path) -> Result<Counts> {
     let mut counts = Counts::default();
     for run in open_runs(home) {
@@ -617,26 +839,36 @@ pub fn count(home: &Path) -> Result<Counts> {
             counts.unreadable += 1;
             continue;
         };
-        match classify(&spec, &state) {
-            Liveness::Live => counts.live += 1,
-            Liveness::Starting => {
+        match open(&spec, &state) {
+            Open::Live => counts.live += 1,
+            Open::Starting => {
                 counts.live += 1;
                 counts.starting += 1;
             }
-            Liveness::Lost => counts.lost += 1,
+            Open::Lost => counts.lost += 1,
         }
     }
     Ok(counts)
 }
 
-/// Supervisor pids of the runs `count` classifies Live, read the same way:
-/// nothing is written and no process is signalled.
-pub fn live_supervisors(home: &Path) -> Vec<i32> {
+/// The processes preparing hires right now, read the way `count` reads:
+/// when one of them ends, the run it was preparing changes how it counts.
+pub fn live_launchers(home: &Path) -> Vec<i32> {
     open_runs(home)
         .into_iter()
         .flatten()
-        .filter(|(spec, state)| classify(spec, state) == Liveness::Live)
-        .filter_map(|(_, state)| state.supervisor)
+        .filter(|(spec, state)| open(spec, state) == Open::Starting)
+        .filter_map(|(_, state)| state.launcher)
+        .collect()
+}
+
+/// The runs Herdr has that have not ended, read the way `count` reads: a
+/// follower with none of them has nothing to ask Herdr.
+pub fn in_herdr(home: &Path) -> Vec<(Spec, State)> {
+    open_runs(home)
+        .into_iter()
+        .flatten()
+        .filter(|(spec, state)| !spec.legacy() && state.herdr.is_some())
         .collect()
 }
 
@@ -670,53 +902,60 @@ fn open_runs(home: &Path) -> Vec<Option<(Spec, State)>> {
     runs
 }
 
-/// A running state whose supervisor is gone becomes `lost`, and the harness
-/// it left behind is stopped: nothing else would ever reap it.
-fn reconcile(run: &RunDir, spec: &Spec, state: State) -> Result<State> {
-    if state.status.terminal() || classify(spec, &state) != Liveness::Lost {
-        return Ok(state);
-    }
-    // `state` may predate the supervisor's last write; now that it is gone it
-    // cannot write again, so the file on disk is final.
-    let mut state: State = read_json(&run.path.join("state.json")).unwrap_or(state);
+/// A run from before Herdr still marked live ends `lost`, and the harness
+/// group its supervisor left is stopped. A hire whose preparing process is
+/// gone before Herdr had it ends `lost` too.
+fn reconcile(home: &Path, spec: &Spec, mut state: State) -> Result<State> {
     if state.status.terminal() {
         return Ok(state);
     }
-    let mut note = "supervisor exited without recording an outcome".to_owned();
-    if let Some(pgid) = harness_group(&state) {
-        proc::kill_group(pgid);
-        note.push_str(&format!("; stopped its harness group {pgid}"));
+    if spec.legacy() {
+        if let Some(pid) = state.supervisor.filter(|&p| is_cos(p)) {
+            proc::signal_pid(pid, libc::SIGKILL);
+        }
+        if let Some(pgid) = harness_group(&state) {
+            proc::kill_group(pgid);
+        }
+        state.status = Status::Lost;
+        state.ended = Some(jiff::Timestamp::now().to_string());
+        state.error = Some(LEGACY.into());
+        write_state(home, &spec.id, &state)?;
+        return Ok(state);
     }
-    state.status = Status::Lost;
-    state.ended = Some(jiff::Timestamp::now().to_string());
-    state.error = Some(note);
-    write_state(run, &state)?;
-    Ok(state)
+    if open(spec, &state) != Open::Lost {
+        return Ok(state);
+    }
+    follow::end(
+        home,
+        spec,
+        &mut state,
+        Status::Lost,
+        Some("cos stopped before the run reached Herdr".into()),
+    )?;
+    Ok(read_raw(home, &spec.id)?.1)
 }
 
-/// Judges an ended agent again and records the new verdict, e.g. after its
-/// checks were fixed or its work was finished by hand.
+/// Judges an agent again and records the new verdict, e.g. after its checks
+/// were fixed or its work was finished by hand.
 pub fn rejudge(home: &Path, id: &str) -> Result<Verdict> {
-    let run = run_dir(home, id)?;
-    let (spec, mut state) = load(&run)?;
-    if !state.status.terminal() {
-        bail!("{id} is {}; it is judged when it ends", state.status);
+    let (spec, state) = read(home, id)?;
+    if state.status.preparing() {
+        bail!("{id} is {}; it is judged once Herdr has it", state.status);
     }
-    let bin = run.path.join("bin");
-    let v = judge::judge(&spec, &state, bin.exists().then_some(bin.as_path()));
-    state.verdict = Some(v.clone());
-    write_state(&run, &state)?;
-    if let Some(row) = ledger::row(&spec, &state) {
-        ledger::append(home, &row)?;
+    if state
+        .herdr
+        .as_ref()
+        .is_some_and(|h| h.live && h.word.as_deref() == Some("working"))
+    {
+        bail!("{id} is working in Herdr; judge it when it stops");
     }
-    Ok(v)
+    follow::judge(home, &spec, "judged again", true)
 }
 
 /// Records what you found when you ran what a judged agent drafted. Stored
 /// on the run's state only; nothing is sent anywhere.
 pub fn record(home: &Path, id: &str, mut r: Recorded) -> Result<State> {
-    let run = run_dir(home, id)?;
-    let (_, mut state) = load(&run)?;
+    let (_, mut state) = read(home, id)?;
     if state.verdict.is_none() {
         bail!(
             "{id} is {}; record a result once it is judged",
@@ -729,86 +968,78 @@ pub fn record(home: &Path, id: &str, mut r: Recorded) -> Result<State> {
     r.evidence.retain(|e| !e.trim().is_empty());
     r.at = jiff::Timestamp::now().to_string();
     state.recorded = Some(r);
-    write_state(&run, &state)?;
+    write_state(home, id, &state)?;
     Ok(state)
 }
 
-/// Ends the hire's herdr space — herdr owns the process, so the stop goes
-/// through it — and waits up to `wait` for the observer to record the outcome.
-/// An observer that does not answer is killed and the stop recorded here.
+/// Stops an agent: a live Herdr terminal is ended (its last screen kept), a
+/// hire still being prepared is told to stop and given `wait` to do so.
 pub fn stop(home: &Path, id: &str, wait: Duration) -> Result<State> {
-    let run = run_dir(home, id)?;
-    let (_, state) = load(&run)?;
+    let (spec, state) = read(home, id)?;
     if state.status.terminal() {
         return Ok(state);
     }
-    // Tells the observer to record this as a stop rather than a plain failure.
-    std::fs::write(run.path.join("stop"), "")?;
-    let _ = Command::new("hc")
-        .args(["kill", &crate::herdr::name(id)])
-        .status();
-    let until = Instant::now() + wait;
-    while Instant::now() < until {
-        let (_, s) = load(&run)?;
+    if state.herdr.is_some() {
+        follow::finish(
+            home,
+            &spec,
+            Status::Killed,
+            Some("stopped on request".into()),
+            "stopped",
+        )?;
+        return Ok(read_raw(home, id)?.1);
+    }
+    std::fs::write(dir(home, id).join("stop"), "")?;
+    let until = proc::Deadline::after(wait);
+    while !until.expired() {
+        let (_, s) = read_raw(home, id)?;
         if s.status.terminal() {
             return Ok(s);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let (_, mut s) = load(&run)?;
-    if let Some(pid) = s.supervisor.filter(|&p| is_cos(p)) {
-        // SAFETY: signalling the observer this agent recorded; no memory is touched.
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
+    let (_, mut s) = read_raw(home, id)?;
+    if !s.status.terminal() {
+        follow::end(
+            home,
+            &spec,
+            &mut s,
+            Status::Killed,
+            Some("stopped while it was being prepared".into()),
+        )?;
     }
-    s.status = Status::Killed;
-    s.ended = Some(jiff::Timestamp::now().to_string());
-    s.error = Some("stopped on request".into());
-    write_state(&run, &s)?;
-    Ok(s)
+    Ok(read_raw(home, id)?.1)
 }
 
-/// Removes a finished agent's directory and worktree. Refuses while the
-/// worktree holds uncommitted changes or commits past its base, unless
-/// `force`: that work exists nowhere else.
+/// Removes a finished agent's directory, worktree and Herdr terminal.
+/// Refuses while the worktree holds uncommitted changes or commits past its
+/// base, unless `force`: that work exists nowhere else.
 pub fn clean(home: &Path, id: &str, force: bool) -> Result<()> {
-    let run = run_dir(home, id)?;
-    let (spec, state) = load(&run)?;
+    let (spec, state) = read(home, id)?;
     if !state.status.terminal() {
         bail!(
             "{id} is {}; stop it first (`cos agents kill {id}`)",
             state.status
         );
     }
-    // The supervisor records the outcome, then judges and writes again; deleting under it
-    // fails with ENOTEMPTY or loses the verdict, so the directory waits for it to exit.
-    if let Some(pid) = state.supervisor {
-        let until = Instant::now() + JUDGE_GRACE;
-        while is_cos(pid) {
-            if Instant::now() >= until {
-                bail!("{id} is still being judged; clean it once its verdict is recorded");
-            }
-            std::thread::sleep(Duration::from_millis(100));
+    if spec.worktree && spec.workdir.exists() && !force {
+        let dirty = git(&spec.workdir, &["status", "--porcelain"])?;
+        let ahead = match &spec.base {
+            Some(base) => git(
+                &spec.workdir,
+                &["log", "--oneline", &format!("{base}..HEAD")],
+            )?,
+            None => String::new(),
+        };
+        if !dirty.is_empty() || !ahead.is_empty() {
+            bail!(
+                "{id} left work in {}:\n{dirty}\n{ahead}\ncommit or copy it, or pass --force",
+                spec.workdir.display()
+            );
         }
     }
+    follow::remove_terminal(&spec, &state)?;
     if spec.worktree && spec.workdir.exists() {
-        if !force {
-            let dirty = git(&spec.workdir, &["status", "--porcelain"])?;
-            let ahead = match &spec.base {
-                Some(base) => git(
-                    &spec.workdir,
-                    &["log", "--oneline", &format!("{base}..HEAD")],
-                )?,
-                None => String::new(),
-            };
-            if !dirty.is_empty() || !ahead.is_empty() {
-                bail!(
-                    "{id} left work in {}:\n{dirty}\n{ahead}\ncommit or copy it, or pass --force",
-                    spec.workdir.display()
-                );
-            }
-        }
         let repo = spec.repo.as_deref().context("worktree without a repo")?;
         git(
             repo,
@@ -820,12 +1051,12 @@ pub fn clean(home: &Path, id: &str, force: bool) -> Result<()> {
             ],
         )?;
     }
-    std::fs::remove_dir_all(run.path())?;
+    std::fs::remove_dir_all(run_dir(home, id)?.path)?;
     Ok(())
 }
 
-pub(crate) fn write_state(run: &RunDir, state: &State) -> Result<()> {
-    write_json(&run.path.join("state.json"), state)
+pub(crate) fn write_state(home: &Path, id: &str, state: &State) -> Result<()> {
+    write_json(&dir(home, id).join("state.json"), state)
 }
 
 /// Write-then-rename, so a reader never sees half a file.
@@ -872,25 +1103,29 @@ fn age(timestamp: &str) -> Duration {
         .unwrap_or_default()
 }
 
+/// When `pid` started, from the kernel; with the pid, this names one process.
+pub fn started_at(pid: i32) -> Option<String> {
+    proc::start_time(pid).map(|(s, us)| format!("{s}.{us:06}"))
+}
+
 /// `pid` is alive and is a `cos` binary, not a recycled pid.
 fn is_cos(pid: i32) -> bool {
     proc::alive(pid) && proc::exe(pid).is_some_and(|p| p.file_name().is_some_and(|f| f == "cos"))
 }
 
-/// When `pid` started, as `ps` prints it; with the pid, this names one process.
-pub(crate) fn started_at(pid: i32) -> Option<String> {
-    let out = Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    (!s.is_empty()).then_some(s)
-}
-
-/// The harness group recorded in `state` still has its original leader, so
-/// killing the group cannot reach a recycled pid.
+/// The harness group a supervisor from before Herdr recorded, if it still
+/// has its original leader (as `ps` printed its start), so killing it cannot
+/// reach a recycled pid.
 fn harness_group(state: &State) -> Option<i32> {
     let pgid = state.pgid?;
     let started = state.pgid_started.as_deref()?;
-    (proc::group_alive(pgid) && started_at(pgid).as_deref() == Some(started)).then_some(pgid)
+    if !proc::group_alive(pgid) {
+        return None;
+    }
+    let out = proc::run(
+        Command::new("ps").args(["-o", "lstart=", "-p", &pgid.to_string()]),
+        Duration::from_secs(5),
+    )
+    .ok()?;
+    (out.stdout.trim() == started).then_some(pgid)
 }

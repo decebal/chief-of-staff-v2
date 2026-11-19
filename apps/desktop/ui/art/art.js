@@ -76,6 +76,20 @@
     // A tidy stack under a check: all clear.
     clear: svg("clear", stack() + '<circle class="a-accent" cx="80" cy="20" r="12"/><path class="a-mark" d="M74.5 20.5l4 4 7.5-8"/>'),
 
+    // A plug pulled from its socket over a dim stack: Herdr is not running.
+    herdr_down: svg(
+      "herdr_down",
+      stack("a-dim") +
+        '<path class="a-stroke" d="M58 21h12M58 27h12"/><rect class="a-accent" x="70" y="16" width="9" height="16" rx="2"/><rect class="a-glass" x="88" y="16" width="9" height="16" rx="2"/><path class="a-stroke" d="M97 24h11"/><path class="a-stroke a-crack" d="M83 14l2 5-2 5 2 5"/>',
+    ),
+
+    // A speech bubble asking over the stack: an agent waits on you in Herdr.
+    herdr_waiting: svg(
+      "herdr_waiting",
+      stack() +
+        '<path class="a-accent" d="M64 8h32a4 4 0 0 1 4 4v14a4 4 0 0 1-4 4H80l-7 6v-6h-9a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4z"/><path class="a-mark" d="M76 15a4 4 0 1 1 5.5 3.7c-1 .5-1.5 1.3-1.5 2.3M80 25v.5"/>',
+    ),
+
     // A bell over the stack: something needs you.
     needs_you: svg(
       "needs_you",

@@ -243,7 +243,8 @@ const FALLBACK: &str = r#"<div class="celebrate"><div class="card wins-card"><h3
 pub fn body(data: &Value) -> String {
     let cx = Ctx::new(data);
     let Some(b) = &cx.brief else {
-        let mut s = FALLBACK.to_owned();
+        let mut s = herdr_waiting(&cx);
+        s.push_str(FALLBACK);
         s.push_str(&crate::constraints::section(data));
         s.push_str(&crate::delivery::section(data));
         return s;
@@ -273,7 +274,36 @@ fn verb(a: &crate::reports::Action) -> (&'static str, String) {
     }
 }
 
+/// Hires Herdr says wait on you (`data["herdr_waiting"]`), above the brief's
+/// own actions: each with what it waits on and Open in Herdr.
+fn herdr_waiting(cx: &Ctx) -> String {
+    let runs = cx.data["herdr_waiting"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if runs.is_empty() {
+        return String::new();
+    }
+    let mut s = format!(
+        r#"<section class="acts" data-section="herdr" aria-labelledby="herdr-h"><div class="sec-head"><h2 id="herdr-h">Waiting on you in Herdr <span class="count num">{}</span></h2></div><div class="act-grid">"#,
+        runs.len()
+    );
+    for r in runs {
+        let str_of = |k: &str| r[k].as_str().unwrap_or_default();
+        let _ = write!(
+            s,
+            r#"<article class="act act-decide" data-herdr="{id}"><header><span class="verb verb-decide">In Herdr</span></header><h3>{title}</h3><p class="next"><b>Waiting on you in Herdr</b> ({kind}): its terminal <code>{term}</code></p><footer><button type="button" class="primary" data-herdr-open="{id}" data-terminal="{term}">Open in Herdr</button></footer></article>"#,
+            id = esc(str_of("id")),
+            title = esc(str_of("title")),
+            kind = esc(str_of("kind")),
+            term = esc(str_of("terminal")),
+        );
+    }
+    s.push_str("</div></section>");
+    s
+}
+
 fn actions(s: &mut String, cx: &Ctx, b: &Brief) {
+    s.push_str(&herdr_waiting(cx));
     let n = b.needs_you.len();
     if n == 0 {
         s.push_str(r#"<p class="quiet" data-section="actions">Nothing needs you today.</p>"#);

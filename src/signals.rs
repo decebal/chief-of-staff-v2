@@ -21,8 +21,8 @@ pub struct Signals {
     pub live: usize,
     pub lost: usize,
     pub starting: usize,
-    /// Supervisor pids of the Live runs.
-    pub supervisors: Vec<i32>,
+    /// The processes preparing the Starting runs.
+    pub launchers: Vec<i32>,
     pub brief: Option<Brief>,
 }
 
@@ -32,7 +32,7 @@ pub fn read(home: &Path) -> Signals {
         live: counts.live,
         lost: counts.lost,
         starting: counts.starting,
-        supervisors: agents::live_supervisors(home),
+        launchers: agents::live_launchers(home),
         brief: latest_brief(home),
     }
 }

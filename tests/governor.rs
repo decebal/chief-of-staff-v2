@@ -176,5 +176,8 @@ fn shims_wrap_cargo_and_never_find_themselves() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "real-cargo build -q\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "real-cargo build -q\n"
+    );
 }

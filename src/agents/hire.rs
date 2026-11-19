@@ -172,7 +172,6 @@ pub struct Run {
     /// Cut a worktree of the repo, rather than work in its checkout.
     pub worktree: bool,
     pub deadline: std::time::Duration,
-    pub budget_usd: f64,
     pub slots: Option<usize>,
     pub explicit: policy::Explicit,
 }
@@ -193,7 +192,6 @@ impl Plan {
             source: self.source,
             prompt: self.prompt,
             deadline: run.deadline,
-            budget_usd: run.budget_usd,
             slots: run.slots,
             contract: self.contract,
             explicit: run.explicit,

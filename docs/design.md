@@ -156,24 +156,26 @@ or `--deliverable D-1` runs it instead of leaving it to be pasted
 
 | Piece | Where | Does |
 |---|---|---|
-| spawn | `agents::spawn` | cuts a detached worktree from the repo the prompt names (`~/Projects/<repo>`), writes `spec.json`, starts the supervisor in its own session |
-| supervisor | `agents::supervise` (`cos agents supervise <id>`, hidden) | owns the harness for its whole life: own process group, one deadline (default 1800 s, ceiling 7200 s), streams `events.jsonl`, rewrites `state.json`, kills the group and reaps on exit, stop or deadline |
-| harness | `agents::harness` | Claude Code `-p --output-format stream-json`, `acceptEdits`, `--permission-prompts none`, Seatbelt sandbox with a strict network allowlist and no unsandboxed retry, `--max-budget-usd`; Codex `exec --json --sandbox workspace-write` |
-| monitor | `cos agents ls / watch / show / tail -f`, `cos dash` → `/agents`, MCP `agents` | status, tool calls, cost or tokens, latest activity, the session id to take over with |
-| stop | `cos agents kill`, MCP `stop_agent` | a `stop` file the supervisor polls every 250 ms; a supervisor that does not answer in 10 s is SIGKILLed and its harness group with it |
-| reconcile | every read | a running state whose supervisor is gone becomes `lost`, and its harness group is killed, but only if the group leader's recorded start time still matches, so a recycled pid is never signalled |
-| clean | `cos agents clean` | removes finished worktrees; refuses one with uncommitted changes or commits past its base unless `--force` |
+| spawn | `agents::spawn` | refused without herdr-core (`hc server status`) or a free slot; cuts a detached worktree from the repo the prompt names (`~/Projects/<repo>`), writes `spec.json`, seeds the worktree, then `hc run --bg --no-parent` a terminal `cos-<id>` labelled `hire=<id>` |
+| harness | `agents::harness` | interactive, the work as its first message: Claude Code `acceptEdits` with the Seatbelt sandbox (strict network allowlist, no unsandboxed retry); Codex `--sandbox workspace-write --ask-for-approval on-request`. The command line pins the business that hired it |
+| follow | `agents::follow`: the desktop app every 2 s, `cos agents watch`, `cos mcp` | one bounded `hc get` per live terminal; at the deadline (default 1800 s, ceiling 7200 s) `hc interrupt`, then `hc kill` 10 s later; judges once under `judge.lock` on `done` after the first message, an exit, the deadline or Mark done |
+| talk | `cos agents say / pause / done / open / screen`, the run page | `hc send`, `hc interrupt`, `hc kill` then the judge, focus in the Herdr window, `hc read`; each reads the terminal back and checks its `hire` label first |
+| monitor | `cos agents ls / watch / show`, `cos dash` → `/agents`, MCP `agents` | status, what Herdr says (blocked shows as waiting on you in Herdr), the verdict |
+| stop | `cos agents kill`, MCP `stop_agent` | `hc kill` for a live terminal, its last screen kept; a hire still being prepared is told to stop by a `stop` file |
+| reconcile | every read | a hire whose preparing process is gone before Herdr had it becomes `lost`; a run from before Herdr reads, never resumes |
+| clean | `cos agents clean` | removes finished worktrees and their Herdr terminals; refuses one with uncommitted changes or commits past its base unless `--force` |
 
 The agents are the one place `cos` writes outside `out/`: in their own
-worktree. Shell commands get no network in either harness, so a push, a PR
-comment or a mail is refused by the sandbox, not by the prompt's request to
-stop. Agents run past the 5-minute command ceiling by design; they are
-background work with their own deadline and spend cap, and no CLI call waits
-on one. Codex has no spend flag, so its cap is the deadline alone.
+worktree. Herdr owns every agent process; cos owns none, and no CLI call
+waits on one. Shell commands get no network in either harness, so a push, a
+PR comment or a mail asks you in Herdr. Herdr measures no spend, so a run in
+Herdr has no cost recorded and no spend cap; its deadline is the cap.
 
-`tests/agents.rs` drives the real supervisor binary against stand-in
-harnesses (`tests/fixtures/`): done, failed, killed, timed out, lost, and
-clean refusing work.
+`tests/agents.rs` drives a stand-in herdr-core (`tests/fixtures/fake-hc.sh`)
+and a stand-in agent (`fake-agent.sh`): the terminal's name, label and argv,
+judged once on done, the deadline's interrupt then kill, blocked as waiting
+on you, reply, pause, mark done, exits, removals, slots and clean refusing
+work. No test reaches the real core.
 
 ## Not built
 

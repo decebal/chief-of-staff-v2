@@ -29,7 +29,8 @@ struct Cli {
     /// Directory scanned for chronis repos. Env: COS_PROJECTS.
     #[arg(long)]
     projects: Option<PathBuf>,
-    /// Spending cap per Claude run, in USD.
+    /// Spending cap per Claude run of the brains (brief, ask), in USD; hires
+    /// in Herdr have none.
     #[arg(long)]
     budget: Option<f64>,
     /// Print the prompt instead of calling Claude; for `agents spawn`, the
@@ -233,8 +234,8 @@ enum DocsCmd {
 
 #[derive(Subcommand)]
 enum AgentCmd {
-    /// Start an agent in the background; prints its id. `--budget` caps a
-    /// Claude agent's spend (default $5; Codex has no budget flag).
+    /// Hire an agent into a Herdr terminal (`cos-<id>`); prints its id once
+    /// Herdr has it. Refused when herdr-core is not running.
     Spawn {
         /// Take the prompt from the latest saved brief: its actions, or its week's goals.
         #[arg(long, value_enum, conflicts_with_all = ["prompt", "deliverable"])]
@@ -280,8 +281,26 @@ enum AgentCmd {
         /// contract and mandate fill what the other flags leave empty.
         #[arg(long)]
         role: Option<String>,
+        /// The program the terminal runs instead of the harness's own
+        /// (a stand-in agent for a proof that costs nothing).
+        #[arg(long, hide = true)]
+        program: Option<String>,
     },
-    /// Judge an ended agent again: its diff, its checks, its scope.
+    /// Send a message into a run's Herdr terminal (`hc send`).
+    Say { id: String, message: Vec<String> },
+    /// Press the agent's stop key (`hc interrupt`): its turn ends, it stays.
+    Pause { id: String },
+    /// End a run's Herdr terminal (`hc kill`) and judge it, once.
+    Done { id: String },
+    /// Show a run's terminal in the Herdr window.
+    Open { id: String },
+    /// A run's terminal screen and recent history (`hc read`).
+    Screen {
+        id: String,
+        #[arg(long, default_value_t = 80)]
+        lines: usize,
+    },
+    /// Judge an agent again: its diff, its checks, its scope.
     Judge { id: String },
     /// Record what you found when you ran what a judged agent drafted (a
     /// tester's script). Stored on the run; nothing is sent.
@@ -297,25 +316,19 @@ enum AgentCmd {
     },
     /// How agents did, by harness, model and repo, from every verdict.
     Scorecard,
-    /// Every agent: status, tool calls, cost, latest activity.
+    /// Every agent: its status, what Herdr says, its verdict.
     Ls,
-    /// The table, redrawn every 2 s until no agent is running.
+    /// Follow every run in Herdr, redrawing the table every 2 s: stops runs
+    /// at their deadline and judges each once, until none is live.
     Watch {
-        /// Emit one OSC 7501 status record per agent instead of the table, for
-        /// a fleet runner (herdr) that reads the pty.
+        /// Emit one OSC 7501 status record per agent instead of the table, so
+        /// the Herdr pane it runs in shows every hire.
         #[arg(long)]
         osc: bool,
     },
-    /// One agent in full, with the command to take it over interactively.
+    /// One agent in full, with how to reach its Herdr terminal.
     Show { id: String },
-    /// Its activity, one line per tool call or message.
-    Tail {
-        id: String,
-        /// Keep following until it ends.
-        #[arg(short, long)]
-        follow: bool,
-    },
-    /// Stop an agent and its whole process group.
+    /// Stop an agent: its Herdr terminal is ended, or its preparation.
     Kill { id: String },
     /// Remove finished agents' directories and worktrees. Refuses one whose
     /// worktree holds work, unless --force.
@@ -324,8 +337,6 @@ enum AgentCmd {
         #[arg(long)]
         force: bool,
     },
-    #[command(hide = true)]
-    Observe { id: String },
     /// The build-tool shim: wait for the machine-wide build lock, then exec.
     #[command(hide = true)]
     BuildSlot {
@@ -365,15 +376,7 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
     match &cli.cmd {
         Cmd::Ritual { cmd } => ritual_cmd(cmd),
         Cmd::Business { cmd } => business_cmd(cli, cmd),
-        // These take their paths as arguments and never resolve a triple.
-        Cmd::Agents {
-            cmd: AgentCmd::Observe { id },
-        } => agents::observe(
-            cli.home
-                .as_deref()
-                .context("agents observe needs --home")?,
-            id,
-        ),
+        // This takes its paths as arguments and never resolves a triple.
         Cmd::Agents {
             cmd:
                 AgentCmd::BuildSlot {
@@ -771,6 +774,7 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
             scope,
             done_when,
             role,
+            program,
         } => {
             use agents::hire::Ask;
             let picked: Vec<Ask> = match (from, prompt) {
@@ -831,23 +835,28 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
                 }
                 let req = plan.request(agents::hire::Run {
                     harness: *harness,
-                    program: None,
+                    program: program.clone(),
                     model: model.clone(),
                     worktree: !in_place,
                     deadline: Duration::from_secs(deadline.unwrap_or(1800)),
-                    budget_usd: cli.budget.unwrap_or(5.0),
                     slots: None,
                     explicit: agents::policy::Explicit {
                         deadline: deadline.is_some(),
-                        budget: cli.budget.is_some(),
                     },
                 })?;
-                let (spec, addr) = agents::spawn_in_herdr(t, req)?;
+                let cos = std::env::current_exe().context("locate the cos binary")?;
+                let spec = agents::spawn(t, req, &cos)?;
                 println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
-                eprintln!("herdr: {addr}  ·  watch: hc attach cos-{}", spec.id);
+                let name = spec.terminal.clone().unwrap_or_default();
+                eprintln!(
+                    "in Herdr: {name} (hc attach {name})   ·   reply: cos agents say {} \"…\"   ·   end: cos agents done {}",
+                    spec.id, spec.id
+                );
             }
             if !cli.dry_run {
-                eprintln!("watch: cos agents watch   ·   live page: cos dash → /agents");
+                eprintln!(
+                    "follow: cos agents watch (stops at the deadline, judges once)   ·   live page: cos dash → /agents"
+                );
             }
             Ok(())
         }
@@ -858,6 +867,7 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
             Ok(())
         }
         AgentCmd::Watch { osc } => loop {
+            agents::tick(home)?;
             let listing = agents::list(home)?;
             if *osc {
                 let mut out = std::io::stdout().lock();
@@ -869,44 +879,47 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
                 print!("\x1b[2J\x1b[H{}", agents::view::table(&listing.runs));
                 note_skipped(&listing.skipped);
             }
-            if listing.skipped.is_empty() && listing.runs.iter().all(|(_, s)| s.status.terminal()) {
+            if listing.skipped.is_empty()
+                && listing
+                    .runs
+                    .iter()
+                    .all(|(spec, s)| spec.legacy() || s.status.terminal())
+            {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_secs(2));
         },
         AgentCmd::Show { id } => {
+            agents::follow::observe(home, id)?;
             let (spec, state) = agents::read(home, id)?;
             print!("{}", agents::view::show(&spec, &state));
             Ok(())
         }
-        AgentCmd::Tail { id, follow } => {
+        AgentCmd::Say { id, message } => {
+            agents::say(home, id, &message.join(" "))?;
+            println!("{id}: sent into its Herdr terminal");
+            Ok(())
+        }
+        AgentCmd::Pause { id } => {
+            let state = agents::pause(home, id)?;
+            println!("{id}: its turn was stopped; it waits for your next message");
             let (spec, _) = agents::read(home, id)?;
-            let events = agents::run_dir(home, id)?.events_path();
-            let mut at = 0;
-            let mut calls = std::collections::HashMap::new();
-            loop {
-                let (entries, next) = agents::view::feed(&events, spec.harness, at);
-                for e in &entries {
-                    let answering = match (e.kind, &e.call) {
-                        (agents::harness::EntryKind::Call, Some(id)) => {
-                            calls.insert(id.clone(), e.detail.clone());
-                            None
-                        }
-                        (_, Some(id)) => calls.get(id).map(String::as_str),
-                        _ => None,
-                    };
-                    println!("{}", agents::view::feed_line(e, answering));
-                }
-                at = next;
-                let (_, state) = agents::read(home, id)?;
-                if !follow || state.status.terminal() {
-                    if *follow {
-                        println!("— {}", state.status);
-                    }
-                    return Ok(());
-                }
-                std::thread::sleep(Duration::from_millis(500));
-            }
+            println!("in Herdr: {}", agents::view::herdr_word(&spec, &state));
+            Ok(())
+        }
+        AgentCmd::Done { id } => {
+            let state = agents::mark_done(home, id)?;
+            let (spec, _) = agents::read(home, id)?;
+            print!("{}", agents::view::show(&spec, &state));
+            Ok(())
+        }
+        AgentCmd::Open { id } => {
+            println!("{}", agents::open_in_herdr(home, id)?);
+            Ok(())
+        }
+        AgentCmd::Screen { id, lines } => {
+            print!("{}", agents::screen(home, id, *lines)?);
+            Ok(())
         }
         AgentCmd::Scorecard => {
             let scores = agents::ledger::scorecard(&agents::ledger::read(home));
@@ -971,8 +984,8 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
             anyhow::ensure!(refused == 0, "{refused} agent(s) kept");
             Ok(())
         }
-        AgentCmd::Observe { .. } | AgentCmd::BuildSlot { .. } => {
-            unreachable!("run dispatches these before a triple resolves")
+        AgentCmd::BuildSlot { .. } => {
+            unreachable!("run dispatches it before a triple resolves")
         }
     }
 }

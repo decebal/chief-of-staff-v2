@@ -6,9 +6,12 @@
 //!
 //! Precedence, field by field: what the spawn set, then the role's contract
 //! (checks, scope, expects, output, done_when: a reviewer is judged on its
-//! review file in any repo), then the repo's entry, then `defaults`. Limits
-//! (deadline, budget, stall, repeat) take the repo before the role: the repo
-//! knows what its build costs.
+//! review file in any repo), then the repo's entry, then `defaults`. The
+//! deadline takes the repo before the role: the repo knows what its build
+//! costs.
+//!
+//! `budget_usd`, `stall_secs` and `repeat` from before hires ran in Herdr
+//! are read and ignored, so an old file still loads.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,8 +21,10 @@ use serde::{Deserialize, Serialize};
 
 use super::fit::Vocab;
 use super::judge::Expects;
-use super::watch::Limits;
 use super::{Harness, Request};
+
+/// A key a file may still carry from before hires ran in Herdr.
+type Retired = Option<serde_json::Value>;
 
 /// The template every home is seeded from; its roles stand in for a home
 /// whose own file has none.
@@ -36,12 +41,12 @@ pub struct Terms {
     pub scope: Vec<String>,
     #[serde(default)]
     pub deadline_secs: Option<u64>,
-    #[serde(default)]
-    pub budget_usd: Option<f64>,
-    #[serde(default)]
-    pub stall_secs: Option<u64>,
-    #[serde(default)]
-    pub repeat: Option<usize>,
+    #[serde(default, rename = "budget_usd", skip_serializing)]
+    pub retired_budget: Retired,
+    #[serde(default, rename = "stall_secs", skip_serializing)]
+    pub retired_stall: Retired,
+    #[serde(default, rename = "repeat", skip_serializing)]
+    pub retired_repeat: Retired,
 }
 
 /// One job on the staff: what it is for, where it works, and what it is
@@ -92,12 +97,12 @@ pub struct Role {
     pub scope: Vec<String>,
     #[serde(default)]
     pub deadline_secs: Option<u64>,
-    #[serde(default)]
-    pub budget_usd: Option<f64>,
-    #[serde(default)]
-    pub stall_secs: Option<u64>,
-    #[serde(default)]
-    pub repeat: Option<usize>,
+    #[serde(default, rename = "budget_usd", skip_serializing)]
+    pub retired_budget: Retired,
+    #[serde(default, rename = "stall_secs", skip_serializing)]
+    pub retired_stall: Retired,
+    #[serde(default, rename = "repeat", skip_serializing)]
+    pub retired_repeat: Retired,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -165,9 +170,7 @@ impl Policy {
             checks: or(&o.checks, &d.checks),
             scope: or(&o.scope, &d.scope),
             deadline_secs: o.deadline_secs.or(d.deadline_secs),
-            budget_usd: o.budget_usd.or(d.budget_usd),
-            stall_secs: o.stall_secs.or(d.stall_secs),
-            repeat: o.repeat.or(d.repeat),
+            ..Terms::default()
         }
     }
 
@@ -199,34 +202,22 @@ impl Policy {
         let repo_own = repo
             .and_then(|r| r.file_name())
             .and_then(|n| self.repos.get(n.to_string_lossy().as_ref()));
-        let d = &self.defaults;
-        let limit = |repo: Option<u64>, role: Option<u64>, def: Option<u64>| repo.or(role).or(def);
         Terms {
             checks: or(&r.checks, &t.checks),
             scope: or(&r.scope, &t.scope),
-            deadline_secs: limit(
-                repo_own.and_then(|o| o.deadline_secs),
-                r.deadline_secs,
-                d.deadline_secs,
-            ),
-            budget_usd: repo_own
-                .and_then(|o| o.budget_usd)
-                .or(r.budget_usd)
-                .or(d.budget_usd),
-            stall_secs: limit(
-                repo_own.and_then(|o| o.stall_secs),
-                r.stall_secs,
-                d.stall_secs,
-            ),
-            repeat: repo_own.and_then(|o| o.repeat).or(r.repeat).or(d.repeat),
+            deadline_secs: repo_own
+                .and_then(|o| o.deadline_secs)
+                .or(r.deadline_secs)
+                .or(self.defaults.deadline_secs),
+            ..Terms::default()
         }
     }
 
     /// Fills what the request left empty. A request's own checks and scope
-    /// win whole; the policy never adds to them. Deadline and budget come
-    /// from the policy only when `explicit` is false for them. A request
-    /// naming an unknown role, or the head, is refused.
-    pub fn apply(&self, req: &mut Request, explicit: Explicit) -> Result<Limits> {
+    /// win whole; the policy never adds to them. The deadline comes from the
+    /// policy only when `explicit.deadline` is false. A request naming an
+    /// unknown role, or the head, is refused.
+    pub fn apply(&self, req: &mut Request, explicit: Explicit) -> Result<()> {
         let role = req.role.as_deref().map(|id| self.hire(id)).transpose()?;
         if let (None, Some(r)) = (&req.repo, role)
             && !scratch_ok(r)
@@ -263,14 +254,7 @@ impl Policy {
         if let (false, Some(d)) = (explicit.deadline, t.deadline_secs) {
             req.deadline = std::time::Duration::from_secs(d);
         }
-        if let (false, Some(b)) = (explicit.budget, t.budget_usd) {
-            req.budget_usd = b;
-        }
-        let base = Limits::default();
-        Ok(Limits {
-            stall_secs: t.stall_secs.unwrap_or(base.stall_secs),
-            repeat: t.repeat.unwrap_or(base.repeat),
-        })
+        Ok(())
     }
 }
 
@@ -303,5 +287,4 @@ pub fn preamble(r: &Role) -> String {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Explicit {
     pub deadline: bool,
-    pub budget: bool,
 }

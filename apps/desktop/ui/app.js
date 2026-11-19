@@ -32,26 +32,33 @@ const applyTheme = () => document.documentElement.classList.toggle("dark", media
 media.addEventListener("change", applyTheme);
 applyTheme();
 
-// ---- vocabulary: plain words for the supervisor's states
+// ---- vocabulary: plain words for a run's states, and Herdr's own words
 
 const LIVE = ["starting", "queued", "seeding", "running"];
 const STATUS = {
   starting: ["starting", "info"],
   queued: ["waiting for a slot", "warn"],
   seeding: ["preparing its worktree", "info"],
-  running: ["running", "info"],
+  running: ["in Herdr", "info"],
   done: ["finished", "ok"],
   failed: ["failed", "bad"],
   killed: ["stopped", "muted"],
   timed_out: ["ran out of time", "bad"],
-  lost: ["supervisor lost", "bad"],
+  lost: ["lost", "bad"],
+};
+// What its Herdr terminal says, shown as Herdr says it; never recomputed.
+const HERDR = {
+  idle: ["idle", "muted"],
+  working: ["working", "info"],
+  done: ["says it is done", "ok"],
+  blocked: ["waiting on you in Herdr", "warn"],
+  error: ["says it hit an error", "bad"],
 };
 const OUTCOME = {
   accepted: ["accepted", "ok"],
   needs_you: ["needs you", "warn"],
   rejected: ["rejected", "bad"],
 };
-const FLAG = { stalled: "gone quiet", looping: "repeating one call" };
 const EXPECTS = {
   diff: "a diff against its base commit",
   file: "a file it leaves",
@@ -67,6 +74,17 @@ const outcome = (v) => (v ? badge(...(OUTCOME[v.outcome] ?? [v.outcome, "muted"]
 const roleTitle = (id) =>
   id == null ? "Unassigned" : (ui.roles.find((r) => r.role.id === id)?.role.title ?? id);
 const isLive = (a) => LIVE.includes(a.state.status);
+// A median cost, or why there is none: runs in Herdr measure no cost.
+const cost = (s) => (s.median_cost_usd == null && s.unmeasured ? "not measured in Herdr" : money(s.median_cost_usd));
+const RUN_ID = /^[0-9]{8}-[0-9]{6}-[0-9a-z]{4}$/;
+// Herdr's word for the run, with what it waits on when it is blocked.
+function herdrBadge(a) {
+  const h = a.state.herdr;
+  if (!h) return null;
+  if (!h.live) return badge("ended in Herdr", "muted");
+  const [text, tone] = HERDR[h.word] ?? [h.word ?? "no status yet", "muted"];
+  return badge(h.word === "blocked" && h.kind ? `${text} (${h.kind})` : text, tone);
+}
 const sm = (node, variant) => {
   node.dataset.variant = variant;
   node.dataset.size = "sm";
@@ -109,14 +127,14 @@ async function loadPaths() {
 }
 
 function renderSlots() {
-  const running = ui.agents.filter((a) => ["running", "seeding"].includes(a.state.status)).length;
-  const queued = ui.agents.filter((a) => a.state.status === "queued").length;
+  const busy = ui.agents.filter((a) => a.spec.terminal && isLive(a)).length;
   // Nothing until the backend has said how many slots there are.
   $("slots").hidden = ui.slots == null;
-  fill($("slots"), ui.slots == null ? null : icon("cpu"), ui.slots == null ? "" : `${running} of ${ui.slots} slots busy${queued ? ` · ${queued} waiting` : ""}`);
-  const live = running + queued;
-  $("agent-count").textContent = String(live);
-  $("agent-count").hidden = !live;
+  fill($("slots"), ui.slots == null ? null : icon("cpu"), ui.slots == null ? "" : `${busy} of ${ui.slots} slots busy`);
+  const needs = ui.agents.filter((a) => a.needs);
+  $("agent-count").textContent = String(needs.length);
+  $("agent-count").hidden = !needs.length;
+  $("agent-count").title = needs.map((a) => `${a.spec.title}: ${a.needs}`).join("\n");
   $("runs-count").textContent = ui.agents.length ? String(ui.agents.length) : "";
 }
 
@@ -260,6 +278,8 @@ window.addEventListener("message", (ev) => {
   } else if (d.type === "cos-hire" && Number.isInteger(d.brief) && d.brief > 0) {
     document.querySelector('.app-tab[data-view="agents"]').click();
     openHire({ brief: d.brief }).catch((e) => logDev("hire from report", e));
+  } else if (d.type === "cos-open-herdr" && RUN_ID.test(d.id ?? "")) {
+    openInHerdr(d.id).catch((e) => logDev("open in herdr from report", e));
   }
 });
 
@@ -302,7 +322,9 @@ function openRole(id) {
 function openRun(id) {
   if (ui.run !== id) {
     ui.run = id;
-    feed.reset(id);
+    runPage.reset(id);
+    $("d-say").value = "";
+    $("d-reply-note").textContent = "";
     $("r-outcome").value = "passed";
     $("r-notes").value = "";
     $("r-evidence").value = "";
@@ -463,14 +485,12 @@ function stat(value, label, glyph) {
 
 function roleCard(id, title, mandate) {
   const mine = ui.agents.filter((a) => (a.spec.role ?? null) === id);
-  const running = mine.filter((a) => ["running", "seeding", "starting"].includes(a.state.status)).length;
-  const waiting = mine.filter((a) => a.state.status === "queued").length;
-  const flagged = mine.filter((a) => isLive(a) && a.state.flags?.length).length;
+  const running = mine.filter((a) => a.spec.terminal && isLive(a)).length;
+  const waiting = mine.filter((a) => a.state.herdr?.live && a.state.herdr.word === "blocked").length;
   const sc = ui.scores.roles.find((r) => (r.role ?? null) === id);
   const now = [];
-  if (running) now.push(badge(`${running} running`, "info"));
-  if (waiting) now.push(badge(`${waiting} waiting`, "warn"));
-  if (flagged) now.push(badge(`${flagged} flagged`, "bad"));
+  if (running) now.push(badge(`${running} in Herdr`, "info"));
+  if (waiting) now.push(badge(`${waiting} waiting on you in Herdr`, "warn"));
   const record = sc
     ? el(
         "ul",
@@ -478,7 +498,7 @@ function roleCard(id, title, mandate) {
         stat(sc.runs, "runs", "repeat"),
         stat(pct(sc.accepted, sc.runs), "accepted", "check"),
         stat(sc.needs_you, "need you", "hand"),
-        stat(money(sc.median_cost_usd), "median cost", "coins"),
+        stat(cost(sc), "median cost", "coins"),
       )
     : stateView("empty", { title: mine.length ? "No verdict yet." : "Not hired yet.", line: true });
   const hire = id
@@ -568,9 +588,6 @@ function renderRole() {
               ["checks", t.checks?.length ? t.checks : "the repo's checks", true],
               ["scope", t.scope?.length ? t.scope : "the repo's scope", true],
               ["deadline", t.deadline_secs ? `${t.deadline_secs} s` : null],
-              ["budget", t.budget_usd ? money(t.budget_usd) : null],
-              ["flag if quiet", t.stall_secs ? `${t.stall_secs} s` : null],
-              ["flag if repeating", t.repeat ? `${t.repeat} identical calls` : null],
             ]),
           ),
         ),
@@ -578,7 +595,7 @@ function renderRole() {
     : null;
 
   const scoreTable = scores.length
-    ? table(["harness", "model", "repo", "runs", "accepted", "needs you", "rejected", "overclaimed", "cost", "time"], scores.map((s) => [s.harness, s.model ?? "default", s.repo ?? "(scratch)", s.runs, s.accepted, s.needs_you, s.rejected, s.overclaimed, money(s.median_cost_usd), duration(s.median_secs)]), 3)
+    ? table(["harness", "model", "repo", "runs", "accepted", "needs you", "rejected", "overclaimed", "cost", "time"], scores.map((s) => [s.harness, s.model ?? "default", s.repo ?? "(scratch)", s.runs, s.accepted, s.needs_you, s.rejected, s.overclaimed, cost(s), duration(s.median_secs)]), 3)
     : stateView("empty", { title: "No verdicts in this role yet.", line: true });
 
   const liveList = live.length ? runTable(live) : stateView("empty", { title: "Nobody on this right now.", line: true });
@@ -652,12 +669,11 @@ function runRow(a) {
     { className: spec.id === ui.run ? "selected" : "", tabIndex: 0 },
     el("td", {}, el("code", { textContent: spec.id })),
     el("td", { textContent: roleTitle(spec.role ?? null) }),
-    el("td", {}, status(state.status), ...(state.flags ?? []).map((f) => badge(FLAG[f.kind] ?? f.kind, "bad"))),
-    el("td", {}, outcome(state.verdict) ?? el("span", { className: "muted", textContent: isLive(a) ? "when it ends" : "judging" })),
+    el("td", {}, status(state.status), a.needs ? badge(a.needs, "warn") : null),
+    el("td", {}, herdrBadge(a) ?? el("span", { className: "muted", textContent: spec.terminal ? "not yet" : "before Herdr" })),
+    el("td", {}, outcome(state.verdict) ?? el("span", { className: "muted", textContent: isLive(a) ? "when it says done" : "judging" })),
     el("td", { textContent: spec.title }),
-    el("td", { className: "n num", textContent: String(state.tool_calls) }),
-    el("td", { className: "n num", textContent: money(state.cost_usd) }),
-    el("td", { className: "latest", textContent: state.error || state.last, title: state.error || state.last }),
+    el("td", { className: "latest", textContent: state.error ?? state.herdr?.msg ?? "", title: state.error ?? state.herdr?.msg ?? "" }),
   );
   tr.addEventListener("click", () => {
     if (ui.pane === "runs") ui.from = "runs";
@@ -676,7 +692,7 @@ function runTable(list) {
     el(
       "table",
       { className: "table runs" },
-      el("thead", {}, el("tr", {}, ...["id", "role", "status", "verdict", "title", "tools", "cost", "latest"].map((h, i) => el("th", { textContent: h, className: i === 5 || i === 6 ? "n" : "" })))),
+      el("thead", {}, el("tr", {}, ...["id", "role", "status", "in Herdr", "verdict", "title", "latest"].map((h) => el("th", { textContent: h })))),
       el("tbody", {}, ...list.map(runRow)),
     ),
   );
@@ -692,45 +708,51 @@ function renderRuns() {
     ui.loaded.agents
       ? stateView("empty", {
           title: "No runs yet",
-          detail: "Hire one from the staff. Each runs in its own worktree under a supervisor that outlives this window.",
+          detail: "Hire one from the staff. Each runs in its own worktree, in a Herdr terminal that outlives this window.",
           action: { icon: "user-plus", label: "Hire", variant: "primary", onClick: () => openHire({}) },
         })
       : stateView("reading", { title: "Reading the runs of this business…" }),
   );
 }
 
-// ---- one run
+// ---- one run: cos's verdict and its work here; the conversation is in Herdr
 
 async function renderRun() {
   const row = ui.agents.find((a) => a.spec.id === ui.run);
   if (!row) {
     $("d-title").textContent = "This agent is gone";
-    for (const id of ["d-badges", "d-flags", "d-verdict", "d-contract", "d-meta", "d-feed"]) $(id).replaceChildren();
+    for (const id of ["d-badges", "d-herdr", "d-verdict", "d-contract", "d-meta"]) $(id).replaceChildren();
     $("d-record-card").hidden = true;
+    $("d-reply").hidden = true;
     $("d-error").textContent = "Its directory was cleaned, or another window removed it.";
     $("d-error").hidden = false;
     return;
   }
   const { spec, state } = row;
   const live = isLive(row);
+  const h = state.herdr;
+  const talking = Boolean(h?.live) && state.status === "running";
   $("d-title").textContent = spec.title || spec.id;
   fill(
     $("d-badges"),
     status(state.status),
+    herdrBadge(row),
     outcome(state.verdict),
     badge(roleTitle(spec.role ?? null), "muted"),
     state.verdict?.overclaimed ? badge("claimed success, the evidence disagrees", "bad") : null,
-    ...(!live ? (state.flagged ?? []).map((k) => badge(`was ${FLAG[k] ?? k} during the run`, "warn")) : []),
-  );
-  $("d-flags").replaceChildren(
-    ...(state.flags ?? []).map((f) =>
-      el("div", { className: "alert", tone: "bad" }, el("h2", { textContent: `Flagged: ${FLAG[f.kind] ?? f.kind}` }), el("section", { textContent: `${f.detail}. The supervisor flags; it does not stop the agent.` })),
-    ),
   );
   $("d-error").textContent = state.error ?? "";
   $("d-error").hidden = !state.error;
+  fill($("d-herdr"), herdrItem(row));
+  $("d-open").hidden = !h;
+  $("d-reply").hidden = !talking;
+  $("d-pause").disabled = !talking || h?.word !== "working";
+  $("d-done").disabled = !talking;
+  if (talking) {
+    $("d-reply-note").textContent = h.word === "blocked" ? "It waits on you in Herdr: a message here is refused until you answer there." : "";
+  }
   $("d-stop").disabled = !live;
-  $("d-rejudge").disabled = live;
+  $("d-rejudge").disabled = state.status === "starting" || state.status === "seeding" || (talking && h?.word === "working");
   $("d-clean").disabled = live;
 
   $("d-verdict").replaceChildren(...verdictView(state.verdict, live));
@@ -742,10 +764,7 @@ async function renderRun() {
       ["expects", `${EXPECTS[c.expects ?? "diff"]}${c.output ? `: ${c.output}` : ""}`],
       ["checks", c.checks?.length ? c.checks : "none: nothing proves it is done", Boolean(c.checks?.length)],
       ["scope", c.scope?.length ? c.scope : "anywhere in the repo", Boolean(c.scope?.length)],
-      ["deadline", `${spec.deadline_secs} s`],
-      ["budget", money(spec.budget_usd)],
-      ["flag if quiet", spec.limits ? `${spec.limits.stall_secs} s` : null],
-      ["flag if repeating", spec.limits ? `${spec.limits.repeat} identical calls` : null],
+      ["deadline", `${spec.deadline_secs} s: its stop key, then its terminal ends`],
       ["model", spec.model ?? "harness default"],
       ["base commit", spec.base ? spec.base.slice(0, 12) : null, true],
     ]),
@@ -758,115 +777,152 @@ async function renderRun() {
       ["source", spec.source],
       ["seeded", (state.seeded ?? []).join(", ") || "nothing"],
       ["build slot", (state.shimmed ?? []).join(", ") || "no build tools shimmed"],
+      ["Herdr terminal", spec.terminal ? `${spec.terminal}${h?.address ? ` (${h.address})` : ""}` : "none: it ran before Herdr", true],
+      ["Herdr says", h ? (h.live ? (h.word ?? "no status yet") : `ended (${h.reason ?? "exited"})`) : null],
+      ["judged on", state.judged_on],
       ["started", state.started ?? "waiting"],
       ["ended", state.ended],
-      ["tool calls", String(state.tool_calls)],
-      ["cost", money(state.cost_usd)],
-      ["tokens", state.tokens != null ? state.tokens.toLocaleString() : null],
+      ["cost", spec.terminal ? "not measured in Herdr" : money(state.cost_usd)],
       ["exit", state.exit != null ? String(state.exit) : null],
-      ["session", state.session, true],
-      ["resume", state.session ? `cd ${spec.workdir} && ${spec.harness === "codex" ? "codex resume" : "claude --resume"} ${state.session}` : null, true],
     ]),
   );
   $("d-summary-box").hidden = !state.summary;
   $("d-summary").textContent = state.summary ?? "";
+  $("d-screen-box").hidden = !spec.terminal;
   renderRecorded(state);
-  await feed.pull(spec.id, live);
+  await runPage.seed(spec.id);
+  if ($("d-screen-box").open) runPage.screen(spec.id);
 }
 
-// ---- activity feed
-//
-// One pull at a time per run: renderRun runs on every refresh, and two pulls
-// from the same offset would show every line twice. Entries are keyed by
-// their place in events.jsonl, so a range read again adds nothing.
-
-const ENTRY = {
-  start: ["start", "muted"],
-  call: ["call", "info"],
-  say: ["says", "muted"],
-  denied: ["denied", "bad"],
-  failed: ["failed", "bad"],
-  end: ["ended", "ok"],
-};
-
-const feed = {
+// What the run page reads besides the list: its seed log, and its screen
+// in Herdr while the Details fold is open. One read of each at a time.
+const runPage = {
   run: null,
-  from: 0,
-  entries: new Map(),
-  calls: new Map(),
-  pulling: null,
-  pulled: false,
+  seeding: null,
+  reading: null,
   reset(id) {
     this.run = id;
-    this.from = 0;
-    this.entries = new Map();
-    this.calls = new Map();
-    this.pulled = false;
-    fill($("d-feed"), el("li", { className: "feed-note" }, stateView("reading", { title: "Reading its activity…", line: true })));
+    $("d-seed").hidden = true;
+    $("d-seed-log").textContent = "";
+    $("d-screen").textContent = "";
   },
-  async pull(id, live) {
-    if (this.pulling) return this.pulling;
-    this.pulling = (async () => {
+  async seed(id) {
+    if (this.seeding) return this.seeding;
+    this.seeding = (async () => {
       try {
-        const t = await invoke("agents_tail", { id, from: this.from });
+        const t = await invoke("agents_seed", { id });
         if (this.run !== id) return;
-        this.from = t.next;
-        for (const e of t.entries) this.add(e);
-        this.pulled = true;
         $("d-seed").hidden = !t.seedLog;
         $("d-seed-log").textContent = t.seedLog ?? "";
       } catch (e) {
-        logDev("agents_tail", e);
+        logDev("agents_seed", e);
       } finally {
-        this.pulling = null;
+        this.seeding = null;
       }
-      this.empty(live);
     })();
-    return this.pulling;
+    return this.seeding;
   },
-  add(e) {
-    if (this.entries.has(e.key)) return;
-    $("d-feed").querySelector(".feed-note")?.remove();
-    if (e.kind === "result") {
-      const row = this.calls.get(e.call);
-      if (row) {
-        const mark = row.querySelector(".result");
-        mark.replaceChildren(badge(e.ok === false ? "error" : "ok", e.ok === false ? "bad" : "ok"));
-        if (e.detail) mark.append(el("span", { className: "muted", textContent: e.detail }));
-        this.entries.set(e.key, row);
-        return;
+  async screen(id) {
+    if (this.reading) return this.reading;
+    this.reading = (async () => {
+      try {
+        const text = await invoke("agents_screen", { id, lines: 80 });
+        if (this.run === id) $("d-screen").textContent = text || "Nothing on its screen yet.";
+      } catch (e) {
+        logDev("agents_screen", e);
+        $("d-screen").textContent = `Its screen could not be read: ${e}`;
+      } finally {
+        this.reading = null;
       }
-    }
-    const [word, tone] = e.kind === "result" ? [e.ok === false ? "error" : "result", e.ok === false ? "bad" : "ok"] : (ENTRY[e.kind] ?? [e.kind, "muted"]);
-    const row = el(
-      "li",
-      { className: `entry ${e.kind}` },
-      badge(word, tone),
-      e.tool ? el("code", { className: "tool", textContent: e.tool }) : null,
-      el("span", { className: e.kind === "call" ? "detail mono" : "detail", textContent: e.detail || (e.kind === "call" ? "(no arguments)" : "") }),
-      el("span", { className: "result" }),
-    );
-    if (e.kind === "call" && e.call) this.calls.set(e.call, row);
-    if (e.kind === "denied" && e.call && this.calls.has(e.call)) {
-      this.calls.get(e.call).querySelector(".result").replaceChildren(badge("denied", "bad"), el("span", { className: "muted", textContent: e.detail }));
-      this.entries.set(e.key, row);
-      return;
-    }
-    this.entries.set(e.key, row);
-    $("d-feed").append(row);
-    $("d-feed").scrollTop = $("d-feed").scrollHeight;
-  },
-  empty(live) {
-    const list = $("d-feed");
-    if (this.entries.size) {
-      list.querySelector(".feed-note")?.remove();
-      return;
-    }
-    if (!this.pulled) return;
-    const text = live ? "Nothing yet: the agent has not called a tool or said anything." : "No activity recorded.";
-    fill(list, el("li", { className: "feed-note" }, stateView("empty", { title: text, line: true })));
+    })();
+    return this.reading;
   },
 };
+
+// Where the conversation is: Herdr, waiting on you, or over.
+function herdrItem(row) {
+  const { spec, state } = row;
+  const h = state.herdr;
+  const name = spec.terminal ?? "";
+  if (!spec.terminal) {
+    return stateView("asleep", { title: "Ran before cos followed hires in Herdr", detail: "It cannot be resumed. Its verdict and record stay; hire again to carry the work on." });
+  }
+  if (!h) {
+    return stateView("starting", { title: state.status === "seeding" ? "Preparing its worktree" : "Starting", detail: `Then it starts in Herdr as the terminal ${name}.`, line: true });
+  }
+  const open = { icon: "external-link", label: "Open in Herdr", variant: "primary", onClick: () => openInHerdr(spec.id) };
+  if (h.live && h.word === "blocked") {
+    return stateView("herdr_waiting", { title: `Waiting on you in Herdr (${h.kind ?? "a question"})`, detail: `Answer it in its terminal ${name}: approvals and questions happen in Herdr.`, action: open });
+  }
+  if (h.first_message && h.first_message.sent === false) {
+    return stateView("needs_you", { title: "Its first message did not go in", detail: `Herdr said: ${h.first_message.reason ?? "no reason given"}. Read its screen in Herdr before sending it again.`, action: open });
+  }
+  if (h.live) {
+    return el("p", { className: "muted", textContent: `It runs in the Herdr terminal ${name}${h.address ? ` (${h.address})` : ""}: talk to it there, or send a message below. cos judges it once, when Herdr says it is done or it ends.` });
+  }
+  return el("p", { className: "muted", textContent: `Its Herdr terminal ${name} has ended${h.reason ? ` (${h.reason})` : ""}. Its last screen is folded below.` });
+}
+
+async function openInHerdr(id) {
+  try {
+    const said = await invoke("agents_open", { id });
+    if (ui.run === id) $("d-reply-note").textContent = said;
+  } catch (e) {
+    if (ui.run === id) {
+      $("d-error").textContent = String(e);
+      $("d-error").hidden = false;
+    } else logDev("agents_open", e);
+  }
+}
+
+$("d-screen-box").addEventListener("toggle", () => {
+  if ($("d-screen-box").open && ui.run) runPage.screen(ui.run);
+});
+$("d-open").addEventListener("click", () => ui.run && openInHerdr(ui.run));
+
+// Each of these asks Herdr through cos; the note under the box says what happened.
+async function runAction(button, doing, act, done) {
+  button.disabled = true;
+  $("d-reply-note").textContent = doing;
+  try {
+    await act();
+    $("d-reply-note").textContent = done;
+  } catch (e) {
+    $("d-reply-note").textContent = String(e);
+  }
+  button.disabled = false;
+  await refreshAgents();
+}
+
+$("d-reply").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const text = $("d-say").value.trim();
+  if (!text) return;
+  runAction($("d-send"), "Sending into its Herdr terminal…", async () => {
+    await invoke("agents_say", { business: ui.business, id: ui.run, text });
+    $("d-say").value = "";
+  }, "Sent: it is in its Herdr terminal.");
+});
+
+$("d-say").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) $("d-reply").requestSubmit();
+});
+
+$("d-pause").addEventListener("click", () =>
+  runAction($("d-pause"), "Pressing its stop key…", () => invoke("agents_pause", { business: ui.business, id: ui.run }), "Paused: its turn stopped; it waits for your next message."),
+);
+
+$("d-done").addEventListener("click", () =>
+  runAction(
+    $("d-done"),
+    "Ending its Herdr terminal, then judging it…",
+    async () => {
+      await invoke("agents_done", { business: ui.business, id: ui.run });
+      refreshStaff();
+    },
+    "Done: its terminal ended and it was judged.",
+  ),
+);
 
 // ---- your result
 
@@ -909,7 +965,7 @@ $("d-record").addEventListener("submit", async (ev) => {
 });
 
 function verdictView(v, live) {
-  if (!v) return [stateView(live ? "reading" : "refreshing", { title: live ? "Judged when it ends." : "Being judged: the checks are running.", line: true })];
+  if (!v) return [stateView(live ? "reading" : "refreshing", { title: live ? "Judged once, when Herdr says it is done or it ends." : "Being judged: the checks are running.", line: true })];
   const out = [el("div", { className: "badges" }, outcome(v), el("span", { className: "muted", textContent: `judged ${v.judged.replace("T", " ").slice(0, 19)}` }))];
   out.push(
     v.reasons.length
@@ -997,7 +1053,7 @@ function renderScores() {
         el("td", { textContent: s.harness }),
         el("td", { textContent: s.model ?? "default" }),
         el("td", { textContent: s.repo ?? "(scratch)" }),
-        ...[s.runs, s.accepted, s.needs_you, s.rejected, s.overclaimed, s.flagged, money(s.median_cost_usd), duration(s.median_secs)].map((v) => el("td", { className: "n num", textContent: String(v) })),
+        ...[s.runs, s.accepted, s.needs_you, s.rejected, s.overclaimed, cost(s), duration(s.median_secs)].map((v) => el("td", { className: "n num", textContent: String(v) })),
       ),
     ),
   );
@@ -1014,7 +1070,43 @@ function renderScores() {
 
 // ---- hire
 
-const hire = { tasks: { brief: [], goals: [] }, edited: false, seq: 0, plan: null, bead: null };
+const hire = { tasks: { brief: [], goals: [] }, edited: false, seq: 0, plan: null, bead: null, herdr: null };
+
+// Every hire runs in Herdr: without it the dialog says so, offers to start
+// it, and Hire stays off.
+async function checkHerdr() {
+  const box = $("h-herdr");
+  try {
+    const s = await invoke("herdr_status");
+    hire.herdr = s.up;
+    if (s.up) {
+      box.replaceChildren();
+    } else {
+      fill(
+        box,
+        stateView("herdr_down", {
+          title: "Herdr isn't running: start it, or open Herdr",
+          detail: `Every hire runs in a Herdr terminal, so nothing can be hired until it answers. ${s.why ?? ""}`,
+          action: { icon: "power", label: "Start Herdr", variant: "primary", onClick: startHerdr },
+        }),
+      );
+    }
+  } catch (e) {
+    hire.herdr = false;
+    fill(box, stateView("unreachable", { title: "Could not ask whether Herdr is running", detail: String(e), action: { icon: "rotate-ccw", label: "Try again", onClick: checkHerdr } }));
+  }
+  $("h-go").disabled = hire.herdr === false || Boolean(hire.plan?.refused) || !hire.plan;
+}
+
+async function startHerdr() {
+  fill($("h-herdr"), stateView("starting", { title: "Starting Herdr…", line: true }));
+  try {
+    await invoke("herdr_start");
+  } catch (e) {
+    logDev("herdr_start", e);
+  }
+  await checkHerdr();
+}
 
 async function loadRepos() {
   for (const r of await invoke("repos")) {
@@ -1059,7 +1151,6 @@ function fillRole() {
   $("h-scope").value = (terms.scope ?? []).join("\n");
   $("h-scope").placeholder = "the repo's scope";
   $("h-deadline").value = terms.deadline_secs ?? 1800;
-  $("h-budget").value = terms.budget_usd ?? 5;
   if (role.harness) $("h-harness").value = role.harness;
   $("h-model").placeholder = role.model ?? "harness default";
   $("h-worktree").checked = role.repo !== false;
@@ -1077,7 +1168,6 @@ function hireArgs() {
     model: $("h-model").value || null,
     worktree: $("h-worktree").checked,
     deadlineSecs: Number($("h-deadline").value) || 1800,
-    budgetUsd: Number($("h-budget").value) || 5,
     count: Number($("h-count").value) || 1,
     contract: hire.edited ? { checks: lines("h-checks"), scope: lines("h-scope") } : {},
   };
@@ -1185,7 +1275,7 @@ function renderFit(plan, problem) {
     $("h-checks").value = (c.checks ?? []).join("\n");
     $("h-scope").value = (c.scope ?? []).join("\n");
   }
-  $("h-go").disabled = Boolean(plan.refused);
+  $("h-go").disabled = Boolean(plan.refused) || hire.herdr === false;
 }
 
 // A role card opens this with its role picked; a brief action, a deliverable
@@ -1223,6 +1313,7 @@ async function openHire({ role, deliverable, brief, bead } = {}) {
   document.querySelector(`input[name="h-work"][value="${pick}"]`).checked = true;
   fillRole();
   $("hire-dialog").showModal();
+  checkHerdr();
   await Promise.all([loadTasks("brief"), loadTasks("goals")]);
   if (brief && hire.tasks.brief.some((t) => t.n === brief)) $("h-brief").value = String(brief);
   checkFit();
@@ -1248,9 +1339,13 @@ $("hire-form").addEventListener("submit", async (ev) => {
     fill(msg, stateView("unreachable", { title: "No cos binary found: build it (cargo build) or set COS_BIN.", line: true }));
     return;
   }
+  if (hire.herdr === false) {
+    fill(msg, stateView("herdr_down", { title: "Herdr isn't running: start it, or open Herdr.", line: true }));
+    return;
+  }
   const { args, missing } = hireArgs();
   if (!args) return void fill(msg, stateView("empty", { title: missing, line: true }));
-  fill(msg, stateView("reading", { title: "Starting the run: a worktree, then its supervisor…", line: true }));
+  fill(msg, stateView("reading", { title: "Hiring: its worktree first, then its Herdr terminal…", line: true }));
   $("h-go").disabled = true;
   try {
     const specs = await invoke("agents_spawn", { business: ui.business, args });
@@ -1263,7 +1358,7 @@ $("hire-form").addEventListener("submit", async (ev) => {
   } catch (e) {
     fill(msg, stateView("unreachable", { title: `Not started: ${e}`, line: true, action: { icon: "rotate-ccw", label: "Try again", onClick: () => $("hire-form").requestSubmit() } }));
   } finally {
-    $("h-go").disabled = Boolean(hire.plan?.refused);
+    $("h-go").disabled = Boolean(hire.plan?.refused) || hire.herdr === false;
   }
 });
 

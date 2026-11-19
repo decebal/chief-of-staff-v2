@@ -1,8 +1,6 @@
 {
   "defaults": {
-    "deadline_secs": 1800,
-    "stall_secs": 600,
-    "repeat": 5
+    "deadline_secs": 1800
   },
   "roles": [
     {
@@ -80,7 +78,6 @@
       "output": "DRAFT.md",
       "repo": false,
       "checks": ["test -s DRAFT.md"],
-      "budget_usd": 2,
       "work": ["research"]
     },
     {

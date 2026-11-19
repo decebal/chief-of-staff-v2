@@ -116,8 +116,8 @@ judges it from what it left in the worktree, never from its own summary.
 
 ```sh
 cos agents spawn --deliverable D-1 --check "task test" --scope src/   # hire against a contract
-cos agents watch                                                       # live table until all finish
-cos agents show <id>                                                   # verdict, checks, diff, cost, how to resume it
+cos agents watch                                                       # follow them in Herdr until none is live
+cos agents show <id>                                                   # verdict, checks, diff, its Herdr terminal
 cos agents scorecard                                                   # every verdict, by harness, model and repo
 ```
 
@@ -130,17 +130,22 @@ cos agents scorecard                                                   # every v
 
 - **The contract**: `--check` commands, `--scope` paths and `done_when` (from `--deliverable`).
   Whatever a spawn leaves out comes from the hiring policy in `context/agents.json`, per repo:
-  checks, scope, deadline, budget, stall and repeat limits.
-- **While it runs**: `stalled` (no output for 10 minutes) and `looping` (the same call, arguments
-  and all, five times in a row) show in the verdict column. They flag; they never stop it.
-- **Where it runs**: a detached worktree, shell commands with no network, so it cannot push,
-  comment or send; a deadline and, for Claude, a spend cap. Past `COS_AGENT_SLOTS` (default:
-  cores / 4) agents wait `queued`; each worktree is seeded first (`.cos/seed`, else a clonefile of
-  `target/` and `node_modules/`, else a lockfile install), and their `cargo` runs share one
-  machine-wide build lock.
+  checks, scope and deadline.
+- **Where it runs**: a [Herdr](https://herdr.dev) terminal named `cos-<id>`, labelled
+  `hire=<id>`, in a detached worktree, the agent interactive with the work as its first message.
+  Herdr owns its process; you talk to it, approve its prompts and take it over there. Without
+  herdr-core running a hire is refused, with the fix (`hc server start`). Shell commands have no
+  network, so it cannot push, comment or send without asking you in Herdr. Past
+  `COS_AGENT_SLOTS` (default: cores / 4) live hires, a hire is refused; each worktree is seeded
+  first (`.cos/seed`, else a clonefile of `target/` and `node_modules/`, else a lockfile install),
+  and their `cargo` runs share one machine-wide build lock.
+- **Followed, judged once**: the desktop app, `cos agents watch` and `cos mcp` read each live
+  terminal; at its deadline cos presses its stop key, then ends it. It is judged exactly once:
+  when Herdr says it is done after its first message, it ends, its deadline passes, or you mark
+  it done. Each hire is pinned to the business that hired it.
 - **The scorecard**: every verdict appends to `out/agents/ledger.jsonl`, grouped by
   `cos agents scorecard`, `/agents` and the MCP `agents` tool: runs, accepted, needs you,
-  rejected, overclaimed, median cost and time.
+  rejected, overclaimed, median time; runs in Herdr have no cost measured.
 
 Full flags: [Usage › Spin off agents](docs/usage.md#spin-off-agents).
 
@@ -225,7 +230,7 @@ cos --home /tmp/cos-demo dash
 | **History** | Fills two months per run to stay under GitHub's search rate limit; unarchived months show outlined |
 | **Tunnel** | Quick-tunnel URLs change on restart; a stable one needs your own Cloudflare domain |
 | **Markdy** | Pinned at 1.5.7: its grammar moves fast, so upgrades are deliberate ([vendor/markdy](vendor/markdy/README.md)) |
-| **Agents** | Spend is not watched live: Claude reports its cost only when it ends, so `--budget` is the cap. Codex has no spend flag. All checks for one verdict share a 300 s budget |
+| **Agents** | Hires run only in Herdr, so no Herdr, no hire. Herdr measures no spend: a run's cost is not recorded and there is no spend cap. All checks for one verdict share a 300 s budget |
 
 ## Docs
 

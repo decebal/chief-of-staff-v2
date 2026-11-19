@@ -75,6 +75,9 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         "workspace": workspace(ws),
         "delivery": crate::delivery::view(home),
         "constraints": crate::constraints::view(home),
+        "herdr_waiting": crate::agents::list(home)
+            .map(|l| crate::agents::view::waiting_in_herdr(&l.runs))
+            .unwrap_or_default(),
     }))
 }
 
