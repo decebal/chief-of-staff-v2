@@ -45,6 +45,8 @@
     }
     const counts = [`${r.live ?? 0} live`];
     if (r.lost) counts.push(`${r.lost} lost`);
+    if (r.unread) counts.push("unread brief");
+    if (r.scheduled) counts.push("schedule installed");
     for (const text of counts) {
       const count = document.createElement("span");
       count.className = "muted small";
@@ -129,6 +131,22 @@
       );
     }
   }
+
+  // The picker button's dot: another business has an unread brief or lost hires.
+  // A pushed payload wins over a first read that may predate it.
+  const attention = document.getElementById("biz-attention");
+  let pushed = false;
+  const mark = (all) => {
+    attention.hidden = !all.some((r) => !r.app && (r.unread || r.lost));
+  };
+  window.__TAURI__.event
+    .listen("businesses-changed", (ev) => {
+      pushed = true;
+      mark(ev.payload);
+    })
+    .then(() => invoke("businesses"))
+    .then((first) => pushed || mark(first))
+    .catch((e) => console.debug("[cos] business attention", e));
 
   // A rejected pick keeps the picker open with the reason shown.
   window.openSwitcher = (onPick) => {

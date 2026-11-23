@@ -3154,7 +3154,7 @@ fn the_flows_frame_runs_script_without_same_origin() {
 }
 
 #[test]
-fn the_header_holds_the_brand_the_tabs_the_business_and_settings() {
+fn the_header_holds_the_brand_the_tabs_and_one_business_picker() {
     let html = std::fs::read_to_string(format!("{ROOT}/apps/desktop/ui/index.html")).unwrap();
     let start = html
         .find(r#"<header class="app-header">"#)
@@ -3172,14 +3172,25 @@ fn the_header_holds_the_brand_the_tabs_the_business_and_settings() {
     assert!(header.contains(r#"class="app-nav""#));
     assert!(header.contains(r#"id="dash-tabs""#), "the dashboards");
     assert!(header.contains(r#"id="biz-open""#), "the business picker");
-    let settings = &header[header.find(r#"<details id="settings""#).expect("settings")..];
-    assert!(settings.contains(r#"<summary aria-label="Settings">"#));
-    assert!(settings.contains(r#"id="ws-name""#), "the business's name");
+    for gone in [r#"id="settings""#, r#"id="ws-switch""#] {
+        assert!(
+            !header.contains(gone),
+            "{gone}: the picker is the one switch"
+        );
+    }
+    assert!(!html.contains(r#"id="sidebar""#), "no business sidebar");
+    assert!(!html.contains("sidebar.js"));
+    let picker = &html[html.find(r#"<dialog id="switch-dialog""#).expect("picker")..];
+    let picker = &picker[..picker.find("</dialog>").unwrap()];
+    assert!(picker.contains(r#"id="ws-name""#), "the business's name");
     assert!(
-        settings.contains(r#"<details class="ws-where">"#),
+        picker.contains(r#"<details class="ws-where">"#),
         "its paths, folded"
     );
-    assert!(settings.contains(r#"id="ws-switch""#));
+    assert!(
+        picker.contains(r#"id="biz-pin""#),
+        "why the window is pinned"
+    );
 
     let section = |id: &str| {
         let at = html.find(&format!(r#"<section id="{id}""#)).expect(id);

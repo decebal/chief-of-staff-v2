@@ -51,7 +51,7 @@ number.
    scheme under a rendered page leaves some `light-dark()` colours stale.
 
 States: Today, Agents (staff, runs, scorecard, a run, the hire dialog), the
-business switcher, the settings gear, Flows, Docs and every dashboard the
+business switcher with its directories, Flows, Docs and every dashboard the
 window lists; Today and runs over an empty home; the report's tabs; the Flows
 page's board, a flow with a bead's drawer open, the Map and the palette; the
 docs room's bets, a topic, the reader and focus mode. The frames are opaque-origin
