@@ -54,6 +54,108 @@ pub fn project(evidence: &Value, history: &Value, coordinator: &Path) -> Result<
     }))
 }
 
+/// Verify a run against an explicit project and ownership binding.
+pub fn project_bound_run(
+    evidence: &Value,
+    history: &Value,
+    ownership: Option<&Value>,
+    coordinator: &Path,
+    run_id: &str,
+    task_id: &str,
+    epoch: u64,
+) -> Result<Value> {
+    ensure!(
+        !run_id.is_empty() && !task_id.is_empty(),
+        "Run and task bindings are required"
+    );
+    let run = &evidence["run"];
+    ensure!(run["id"].as_str() == Some(run_id), "AllStack run mismatch");
+    ensure!(
+        run["task"].as_str() == Some(task_id),
+        "AllStack task mismatch"
+    );
+    ensure!(
+        run["epoch"].as_u64() == Some(epoch),
+        "AllStack epoch mismatch"
+    );
+    let mut projection = project(evidence, history, coordinator)?;
+    projection["ownershipVerified"] = json!(false);
+    if run["pending"].is_null() {
+        let ownership = ownership.context("AllStack ownership readback required")?;
+        ensure!(
+            ownership["run"] == *run,
+            "AllStack changed during ownership readback"
+        );
+        projection["ownershipVerified"] = json!(true);
+    }
+    Ok(projection)
+}
+
+/// Read a bound run through AllStack, under one deadline for all readbacks.
+pub fn read_bound_run(
+    engine: &Path,
+    coordinator: &Path,
+    run_id: &str,
+    task_id: &str,
+    epoch: u64,
+) -> Result<Value> {
+    ensure!(
+        !run_id.is_empty() && !task_id.is_empty(),
+        "Run and task bindings are required"
+    );
+    let coordinator = coordinator.canonicalize()?;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let read = |operation: &str, ownership: bool| -> Result<Value> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        ensure!(
+            !remaining.is_zero(),
+            "AllStack evidence read deadline exceeded"
+        );
+        let mut command = Command::new(engine);
+        command
+            .arg("-C")
+            .arg(&coordinator)
+            .arg(operation)
+            .arg(run_id);
+        if ownership {
+            command.args(["--epoch", &epoch.to_string()]);
+        }
+        let output = proc::run(&mut command, remaining)?;
+        ensure!(output.status.success(), "AllStack {operation} failed");
+        serde_json::from_str(&output.stdout).context("Invalid AllStack response")
+    };
+    let evidence = read("evidence", false)?;
+    let history = read("history", false)?;
+    // `resume` reads the task store, so reject mismatched evidence first.
+    ensure!(
+        evidence["run"]["id"].as_str() == Some(run_id),
+        "AllStack run mismatch"
+    );
+    ensure!(
+        evidence["run"]["task"].as_str() == Some(task_id),
+        "AllStack task mismatch"
+    );
+    ensure!(
+        evidence["run"]["epoch"].as_u64() == Some(epoch),
+        "AllStack epoch mismatch"
+    );
+    project(&evidence, &history, &coordinator)?;
+    let ownership = if evidence["run"]["pending"].is_null() {
+        Some(read("resume", true)?)
+    } else {
+        None
+    };
+    project_bound_run(
+        &evidence,
+        &history,
+        ownership.as_ref(),
+        &coordinator,
+        run_id,
+        task_id,
+        epoch,
+    )
+}
+
 pub fn sync(workspace: &Path, coordinator: &Path, run_id: &str, role_id: &str) -> Result<Value> {
     let coordinator = coordinator.canonicalize()?;
     let mut candidate = state::read(workspace)?.context("Initialize cos state first")?;
@@ -105,16 +207,26 @@ pub fn sync(workspace: &Path, coordinator: &Path, run_id: &str, role_id: &str) -
     };
     let evidence = read("evidence", None)?;
     let history = read("history", None)?;
-    let mut projection = project(&evidence, &history, &coordinator)?;
-    projection["ownershipVerified"] = json!(false);
-    if evidence["run"]["pending"].is_null() {
-        let resumed = read("resume", evidence["run"]["epoch"].as_u64())?;
-        ensure!(
-            resumed["run"] == evidence["run"],
-            "AllStack changed during ownership readback"
-        );
-        projection["ownershipVerified"] = json!(true);
-    }
+    let task = evidence["run"]["task"]
+        .as_str()
+        .context("AllStack task binding absent")?;
+    let epoch = evidence["run"]["epoch"]
+        .as_u64()
+        .context("AllStack epoch absent")?;
+    let ownership = if evidence["run"]["pending"].is_null() {
+        Some(read("resume", Some(epoch))?)
+    } else {
+        None
+    };
+    let mut projection = project_bound_run(
+        &evidence,
+        &history,
+        ownership.as_ref(),
+        &coordinator,
+        run_id,
+        task,
+        epoch,
+    )?;
     let parked = staff["enrollment"]["status"] == "parked_by_owner"
         || staff["enrollment"]["parking"]["ownerRequested"] == true;
     if parked {

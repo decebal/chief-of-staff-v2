@@ -3,6 +3,111 @@ use serde_json::json;
 use std::path::Path;
 
 #[test]
+fn bound_projection_rejects_wrong_run_task_epoch_and_ownership() {
+    let run = json!({"id":"run-a","revision":4,"repository":"/fictional/a","task":"task-a","host":"codex","epoch":2,"stage":"planning","pending":null});
+    let evidence = json!({"run":run,"gate_receipts":[]});
+    let history = json!([{"kind":"checkpoint","run":run}]);
+    let owner = json!({"run":run});
+    let project = Path::new("/fictional/a");
+    let read = |e: &serde_json::Value,
+                h: &serde_json::Value,
+                o: Option<&serde_json::Value>,
+                p: &Path,
+                id,
+                task,
+                epoch| { staff::project_bound_run(e, h, o, p, id, task, epoch) };
+    let result = read(
+        &evidence,
+        &history,
+        Some(&owner),
+        project,
+        "run-a",
+        "task-a",
+        2,
+    )
+    .unwrap();
+    assert_eq!(result["ownershipVerified"], true);
+    assert!(
+        read(
+            &evidence,
+            &history,
+            Some(&owner),
+            project,
+            "run-b",
+            "task-a",
+            2
+        )
+        .is_err()
+    );
+    assert!(
+        read(
+            &evidence,
+            &history,
+            Some(&owner),
+            project,
+            "run-a",
+            "task-b",
+            2
+        )
+        .is_err()
+    );
+    assert!(
+        read(
+            &evidence,
+            &history,
+            Some(&owner),
+            project,
+            "run-a",
+            "task-a",
+            3
+        )
+        .is_err()
+    );
+    assert!(read(&evidence, &history, None, project, "run-a", "task-a", 2).is_err());
+    assert!(
+        read(
+            &evidence,
+            &history,
+            Some(&owner),
+            Path::new("/fictional/b"),
+            "run-a",
+            "task-a",
+            2
+        )
+        .is_err()
+    );
+    let mut changed = owner.clone();
+    changed["run"]["revision"] = json!(5);
+    assert!(
+        read(
+            &evidence,
+            &history,
+            Some(&changed),
+            project,
+            "run-a",
+            "task-a",
+            2
+        )
+        .is_err()
+    );
+    let mut pending = evidence.clone();
+    pending["run"]["pending"] = json!("handoff");
+    let pending_history = json!([{"kind":"intent","run":pending["run"]}]);
+    let result = read(
+        &pending,
+        &pending_history,
+        None,
+        project,
+        "run-a",
+        "task-a",
+        2,
+    )
+    .unwrap();
+    assert_eq!(result["status"], "needs_reconciliation");
+    assert_eq!(result["ownershipVerified"], false);
+}
+
+#[test]
 fn managed_projection_requires_matching_engine_history_and_keeps_proof_open() {
     let run = json!({"id":"fictional-run","revision":4,"repository":"/fictional/longhand","task":"fictional-task","host":"claude-code","epoch":2,"stage":"building","pending":null,"checkpoint":"fictional-digest","allow_commit":false,"allow_publish":false,"verification":null,"publication":null});
     let evidence = json!({"run":run,"gate_receipts":[]});
@@ -52,6 +157,12 @@ fn evidence_sync_preserves_owner_parking_and_customer_unknowns() {
         quote(json!({"run":run}))
     )).unwrap();
     fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).unwrap();
+    let bound =
+        staff::read_bound_run(&engine, &coordinator, "fictional-run", "fictional-task", 2).unwrap();
+    assert_eq!(bound["ownershipVerified"], true);
+    assert!(
+        staff::read_bound_run(&engine, &coordinator, "fictional-run", "another-task", 2).is_err()
+    );
     candidate["commitments"][0]["id"] = json!("C-longhand-dashboard");
     candidate["commitments"][0]["dashboard"] = json!({"staff":{
         "integration":{"coordinator":coordinator,"engineExecutable":engine},

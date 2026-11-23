@@ -127,6 +127,67 @@ enum Cmd {
         #[command(subcommand)]
         cmd: BusinessCmd,
     },
+    /// Independent design review of a commitment's draft, then your approval.
+    Review {
+        #[command(subcommand)]
+        cmd: ReviewCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReviewCmd {
+    /// Attach a design draft, inside a Git checkout, to a commitment.
+    Bind {
+        commitment: String,
+        /// The Git checkout root holding the draft.
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        draft: PathBuf,
+        /// Who implements the design once approved.
+        #[arg(long)]
+        owner: String,
+    },
+    /// Pin the reviewer program by its sha256. Asks for your login through
+    /// the OS; without --sha256 it prints the digest to pin.
+    Enroll {
+        commitment: String,
+        #[arg(long)]
+        reviewer: PathBuf,
+        #[arg(long)]
+        sha256: Option<String>,
+        /// Retry an earlier request with its action ID.
+        #[arg(long)]
+        action_id: Option<String>,
+    },
+    /// Run the pinned reviewer over the draft: five fresh networkless processes.
+    Run {
+        commitment: String,
+        #[arg(long)]
+        action_id: Option<String>,
+    },
+    /// The bound draft, its digests, each finding by index, and what blocks approval.
+    Show { commitment: String },
+    /// Record how a finding is resolved.
+    Resolve {
+        commitment: String,
+        index: usize,
+        /// The review digest `cos review show` printed.
+        #[arg(long)]
+        review: String,
+        #[arg(long)]
+        action_id: Option<String>,
+        resolution: Vec<String>,
+    },
+    /// Approve the reviewed draft. Asks for your login through the OS.
+    Approve {
+        commitment: String,
+        /// The draft digest `cos review show` printed.
+        #[arg(long)]
+        digest: String,
+        #[arg(long)]
+        action_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -352,8 +413,12 @@ enum AgentCmd {
 const DEFERRED_EXIT: i32 = 75;
 
 fn main() -> Result<()> {
-    let auth = cos::auth::load();
     let cli = Cli::parse();
+    let auth = if matches!(&cli.cmd, Cmd::Dash { .. }) {
+        cos::auth::Source::Interactive
+    } else {
+        cos::auth::load()
+    };
     let result = run(&cli, auth);
     if let Err(e) = &result
         && e.is::<cos::pipeline::Deferred>()
@@ -501,6 +566,7 @@ fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<(
         Cmd::Tunnel { port } => runtime()?.block_on(cos::tunnel::run(cfg, *port)),
         Cmd::Agents { cmd } => agents_cmd(cli, t, cmd),
         Cmd::Flows { json, cn } => flows_cmd(&ws, &t.projects, cn, *json),
+        Cmd::Review { cmd } => review_cmd(&ws, cmd),
         Cmd::Ritual { .. } => unreachable!("run dispatches ritual before a triple resolves"),
         Cmd::Business { .. } => unreachable!("run dispatches business before a triple resolves"),
     }
@@ -697,6 +763,92 @@ fn flows_cmd(
     } else {
         println!("{}", cos::flows::render(&scan));
     }
+    Ok(())
+}
+
+fn review_cmd(ws: &std::path::Path, cmd: &ReviewCmd) -> Result<()> {
+    use cos::{approval_auth, reviewer, workflow};
+    let revision = || -> Result<i64> {
+        let st = cos::state::read(ws)?.context("Workspace state is missing")?;
+        st["revision"].as_i64().context("State revision is missing")
+    };
+    let action = |given: &Option<String>| {
+        let id = given.clone().unwrap_or_else(workflow::new_action_id);
+        eprintln!("action: {id}");
+        id
+    };
+    match cmd {
+        ReviewCmd::Bind {
+            commitment,
+            repo,
+            draft,
+            owner,
+        } => workflow::bind(ws, commitment, revision()?, repo, draft, owner)?,
+        ReviewCmd::Enroll {
+            commitment,
+            reviewer,
+            sha256,
+            action_id,
+        } => {
+            let actual = reviewer::program_digest(reviewer)?;
+            let Some(pinned) = sha256 else {
+                anyhow::bail!(
+                    "check the reviewer, then pin it: cos review enroll {commitment} --reviewer {} --sha256 {actual}",
+                    reviewer.display()
+                );
+            };
+            approval_auth::enroll_reviewer(
+                ws,
+                commitment,
+                revision()?,
+                &action(action_id),
+                reviewer,
+                pinned,
+            )?;
+        }
+        ReviewCmd::Run {
+            commitment,
+            action_id,
+        } => {
+            let start = reviewer::run(ws, commitment, &action(action_id))?;
+            if start == workflow::ReviewStart::AlreadyCompleted {
+                eprintln!("this action's review is already recorded");
+            }
+        }
+        ReviewCmd::Show { .. } => {}
+        ReviewCmd::Resolve {
+            commitment,
+            index,
+            review,
+            action_id,
+            resolution,
+        } => workflow::resolve_finding(
+            ws,
+            commitment,
+            revision()?,
+            &action(action_id),
+            review,
+            *index,
+            &resolution.join(" "),
+        )?,
+        ReviewCmd::Approve {
+            commitment,
+            digest,
+            action_id,
+        } => approval_auth::approve_owner(ws, commitment, revision()?, &action(action_id), digest)?,
+    }
+    let commitment = match cmd {
+        ReviewCmd::Bind { commitment, .. }
+        | ReviewCmd::Enroll { commitment, .. }
+        | ReviewCmd::Run { commitment, .. }
+        | ReviewCmd::Show { commitment }
+        | ReviewCmd::Resolve { commitment, .. }
+        | ReviewCmd::Approve { commitment, .. } => commitment,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&workflow::status(ws, commitment)?)?
+    );
     Ok(())
 }
 

@@ -526,6 +526,7 @@ name = "cos"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2",
  "bytes",
  "clap",
  "http-body-util",
@@ -533,6 +534,8 @@ dependencies = [
  "hyper-util",
  "jiff 1.0.2",
  "libc",
+ "objc2",
+ "objc2-foundation",
  "plist",
  "rmcp",
  "schemars 1.2.3",

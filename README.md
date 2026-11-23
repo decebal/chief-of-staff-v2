@@ -104,6 +104,7 @@ scheduled jobs to one. [Usage › Customise](docs/usage.md#customise) has the st
 | **Sleep** | a brief that fires in a dark wake (a maintenance wake with no display, `pmset -g systemstate` without `Graphics`) is deferred before any model call, exit 75; otherwise `caffeinate -i` holds idle sleep off for the run (closing the lid still sleeps the Mac). The 300 s deadline counts wall-clock time, so a run cut by sleep ends on wake rather than hours later. A timeout, dropped connection or sleep mid-response gets one retry inside the same 300 s. A failed or deferred run is recorded in `out/runs/`, and the Today page says "Today's brief didn't run" above the last brief |
 | **Handoffs** | each action and each goal ships a self-contained prompt for Claude Code or Codex that stops before anything outward-facing; `cos handoff D-1` builds the kit's nine-part handoff for a tracked deliverable |
 | **Agents** | runs a handoff as Claude Code or Codex in its own worktree, then judges what it left; see [Agents, judged on evidence](#agents-judged-on-evidence) |
+| **Design reviews** | `cos review bind` attaches a draft in a Git checkout to a commitment; `enroll` pins a reviewer program by sha256; `run` feeds it the draft on stdin in five fresh networkless processes (macOS sandbox) and records its findings; `resolve` answers each; `approve` records your approval of those exact bytes. Enrolling and approving ask for your macOS login; editing the draft voids the review. Each step is a journaled commit to `state.json`, and `show` prints the digests the next step must echo back. The Plan tab's Design reviews card shows the result |
 | **Charts** | numbers from the facts `cos` collects, never from the model; hand-built SVG with a validated palette, light and dark |
 | **Diagrams** | roadmap, goals flywheel and architecture via [Markdy](https://markdy.com) 1.5.7, vendored inline, generated from data |
 | **Archives** | one row per day plus every merged PR, seeded with the last year; `cos dash` serves it live |
@@ -153,7 +154,7 @@ Full flags: [Usage › Spin off agents](docs/usage.md#spin-off-agents).
 
 | | |
 |---|---|
-| **Terminal** | `cos brief` · `cos ask "release review or bug fix today?"` · `cos state …` · `cos handoff D-1` · `cos report` · `cos agents spawn` / `watch` / `show` / `judge` / `scorecard` · `cos staff-sync` |
+| **Terminal** | `cos brief` · `cos ask "release review or bug fix today?"` · `cos state …` · `cos handoff D-1` · `cos report` · `cos agents spawn` / `watch` / `show` / `judge` / `scorecard` · `cos staff-sync` · `cos review` |
 | **Browser, live** | `cos dash` → `127.0.0.1:8790`, reloads after every run or state change; `/agents` for running agents; localhost only |
 | **Desktop** | `task desktop`: the report plus an agent launcher (any number, any repo, Claude Code or Codex) with live status, logs, stop and clean, in one Tauri window ([apps/desktop](apps/desktop/README.md)) |
 | **Claude Desktop · Codex** | `task install-mcp` registers `cos mcp`: `latest_brief` / `plan` / `handoff` / `agents` (free), `brief` / `ask` / `spin_off` (paid), `stop_agent` |
