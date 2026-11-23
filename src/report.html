@@ -899,6 +899,7 @@ const DATA = "__COS_DATA__";
       const due = (d) => d.dueDate ? `${esc(when(d.dueDate))} <span class="proposed">(${esc(d.dueBasis)})</span>` : "no date";
       const handoff = (d) => rowMenu([W.handoffs && W.handoffs[d.id] ? menuCopy(W.handoffs[d.id], "Copy handoff (draft-only, starts nothing)") : "", menuOpen(d.source)]);
       const commitments = (W.commitments || []).filter((c) => !TERM.includes(c.status));
+      const reviews = commitments.filter((c) => c.workflow);
       const incidents = (W.incidents || []).filter((i) => !i.resolvedAt);
       $("plan").innerHTML = `
         <section class="grid g4">
@@ -908,6 +909,15 @@ const DATA = "__COS_DATA__";
           ${tile(`<span data-count>${commitments.length}</span>`, "open commitments")}
         </section>
         ${savedReadiness()}
+        ${reviews.length ? `<section class="card"><h3>Design reviews</h3>${list(reviews, (c) => {
+          const f = c.workflow, review = f.review, binding = f.binding || {};
+          const status = f.pending_review ? "Review needs reconciliation" : f.last_review_failure ? "Review failed" : review ? "Review recorded" : "Review not started";
+          return `<b>${esc(c.title)}</b> · ${esc(status)}
+            <div class="sub">Repository: ${esc(binding.repository || "unassigned")} · Owner: ${esc(binding.owner || "unassigned")}</div>
+            <div class="sub">Reviewer: ${f.reviewer_binding ? "enrolled" : "not enrolled"} · Approval: ${f.approval ? "recorded; currency not checked here" : "not recorded"}</div>
+            ${review ? `<p>Findings: ${(review.findings || []).length} · unresolved: ${(review.findings || []).filter((finding) => !finding.resolution).length}</p>` : ""}
+            ${f.last_review_failure ? `<p>${esc(f.last_review_failure.kind)}</p>` : ""}`;
+        })}</section>` : ""}
         ${W.portfolio ? `<section class="card" data-portfolio><h3>Workstreams</h3><p>${esc(W.portfolio.summary)}</p><p class="sub">Reviewed ${esc(when(W.portfolio.assessedAt))}. ${esc(W.portfolio.coverage)}</p><div class="scroll"><table class="cov"><tr><th>Workstream</th><th>Evidence</th><th>Next proof</th></tr>${(W.portfolio.workstreams || []).map((x) => `<tr><td><b>${esc(x.name)}</b><p>${esc(x.status)}</p></td><td>${esc(x.evidence)}</td><td>${esc(x.nextAction)}<div class="chips">${srcChip(x.source)}</div></td></tr>`).join("")}</table></div><h3>Decisions and material risks</h3>${list(W.portfolio.decisions, (x) => `<b>${esc(x.title)}</b><p>${esc(x.nextAction)}</p><div class="chips">${srcChip(x.source)}</div>`)}<details><summary>Active work inventory · ${esc(W.portfolio.activeCount)} records</summary><p class="sub">Tracker status is bookkeeping. Rows are not new bets or accepted outcomes.</p><div class="scroll"><table class="cov"><tr><th>Work</th><th>Status</th><th>Priority</th><th>Owner</th></tr>${(W.portfolio.activeWork || []).map((x) => `<tr><td>${esc(x.title)}</td><td>${esc(x.status)}</td><td>${esc(x.priority)}</td><td>${esc(x.owner || "unassigned")}</td></tr>`).join("")}</table></div></details></section>` : ""}
         ${W.staff ? staffCard(W.staff) : ""}
         <section class="card"><h3>Goals · finish lines and KPIs</h3>

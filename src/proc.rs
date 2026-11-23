@@ -116,6 +116,50 @@ pub fn run(cmd: &mut Command, deadline: Duration) -> Result<Output> {
     })
 }
 
+/// Run with bounded input and output under one owned process deadline.
+pub fn run_input(cmd: &mut Command, input: &[u8], deadline: Duration) -> Result<Output> {
+    use std::io::Write;
+    const LIMIT: usize = 128 * 1024;
+    let until = Deadline::after(deadline);
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("spawn {:?}", cmd.get_program()))?;
+    let pgid = group_of(&child);
+    let out = Drain::start_limited(child.stdout.take(), LIMIT);
+    let err = Drain::start_limited(child.stderr.take(), LIMIT);
+    let mut stdin = child.stdin.take().context("child stdin unavailable")?;
+    let bytes = input.to_vec();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(stdin.write_all(&bytes));
+    });
+    let status = wait_until(&mut child, &until);
+    let status = status?;
+    let written = match rx.recv_timeout(PIPE_GRACE) {
+        Ok(result) => result,
+        Err(_) => {
+            kill_group(pgid);
+            rx.recv_timeout(PIPE_GRACE)
+                .context("reviewer input pipe did not close")?
+        }
+    };
+    written.context("reviewer input failed")?;
+    let stdout = out.finish(pgid);
+    let stderr = err.finish(pgid);
+    if stdout.len() > LIMIT || stderr.len() > LIMIT {
+        bail!("reviewer output exceeded limit");
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 /// Spawn with stdout delivered line by line; `on_line` returning `false` stops
 /// reading early. The child is killed and reaped on deadline, early stop, or error.
 pub fn stream_lines(
@@ -192,6 +236,24 @@ pub fn group_of(child: &Child) -> libc::pid_t {
 struct Drain(mpsc::Receiver<String>);
 
 impl Drain {
+    fn start_limited<R: Read + Send + 'static>(pipe: Option<R>, limit: usize) -> Self {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut result = Vec::new();
+            let mut chunk = [0; 8192];
+            if let Some(mut pipe) = pipe {
+                while let Ok(n) = pipe.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    let room = (limit + 1).saturating_sub(result.len());
+                    result.extend_from_slice(&chunk[..n.min(room)]);
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&result).into_owned());
+        });
+        Self(rx)
+    }
     fn start<R: Read + Send + 'static>(pipe: Option<R>) -> Self {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {

@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod approval_auth;
 pub mod auth;
 pub mod business;
 pub mod claude;
@@ -19,6 +20,7 @@ pub mod pipeline;
 pub mod proc;
 pub mod report;
 pub mod reports;
+pub mod reviewer;
 pub mod ritual;
 pub mod signals;
 pub mod staff;
@@ -28,6 +30,7 @@ pub mod today;
 pub mod track;
 pub mod tunnel;
 pub mod wake;
+pub mod workflow;
 
 /// Read-only surface. With `--permission-mode dontAsk`, any tool not listed is
 /// denied — sending mail, editing Jira, reading or writing files included.
