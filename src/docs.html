@@ -122,6 +122,7 @@ pre.tview{white-space:pre;font-family:var(--font-mono);font-size:var(--text-xs);
 .badge{display:inline-block;font-size:var(--text-xs);padding:0 0.375rem;border-radius:var(--radius-full);border:1px solid currentColor;white-space:nowrap}
 .repo{color:var(--muted-foreground)}.notion{color:var(--brand-text)}.both{color:var(--success)}.move{color:var(--warning)}.keep{color:var(--info)}
 .hint{font-size:var(--text-xs);color:var(--muted-foreground)}
+.hint.flag{color:var(--warning)}
 .link-form{display:grid;gap:0.375rem}
 .link-form select,.link-form input{width:100%}
 .empty{color:var(--muted-foreground)}
@@ -351,6 +352,15 @@ const DATA = "__DOCS_DATA__";
   const status = (d) => org.marks[d.id] === "move_to_notion" ? "move" : org.marks[d.id] === "keep_in_repo" ? "keep"
     : d.place === "notion" ? "notion" : inNotion[d.id] ? "both" : "repo";
   const LABEL = { repo: "repo only", both: "repo + Notion", notion: "Notion page", move: "move to Notion", keep: "keep in repo" };
+  const STAGE = { archived: "archived", superseded: "superseded", needs_review: "needs review", dated: "dated evidence", guidance: "guidance" };
+  // Guidance is the unflagged default, so a row says nothing for it.
+  const stageNote = (d) => {
+    const parts = [];
+    if (d.lifecycle && d.lifecycle !== "guidance") parts.push(STAGE[d.lifecycle]);
+    if (d.superseded_by) parts.push(`by ${d.superseded_by}${d.archive_eligible ? " · can archive" : " · replacement not in repo"}`);
+    if (d.broken?.length) parts.push(`${d.broken.length} broken link${d.broken.length > 1 ? "s" : ""}`);
+    return parts.join(" · ");
+  };
   const shortTopic = (t) => groupOf(t) === MINE ? t : t.split(" · ").slice(1).join(" · ") || t;
 
   // ---- saving: through the desktop app when embedded, else to cos dash
@@ -464,6 +474,9 @@ const DATA = "__DOCS_DATA__";
     const p = { title: d.title };
     if (d.repo) { p.repo = d.repo; p.path = d.path; } else if (d.url) p.url = d.url;
     p.status = LABEL[status(d)]; p.topic = topicOf(d); if (d.kind) p.kind = d.kind;
+    if (d.lifecycle) p.lifecycle = STAGE[d.lifecycle];
+    if (d.superseded_by) { p.superseded_by = d.superseded_by; p.archive = d.archive_eligible ? "eligible" : "replacement not in repo"; }
+    if (d.broken?.length) p.broken = d.broken.join(", ");
     if (d.place === "repo" && d.suggest && !org.marks[d.id]) p.suggest = d.suggest === "move_to_notion" ? "move to Notion" : "keep in repo";
     if (inNotion[d.id]) p.notion = byId[inNotion[d.id]]?.title || inNotion[d.id];
     return p;
@@ -1396,7 +1409,7 @@ const DATA = "__DOCS_DATA__";
 
   // ---- the documents in view, one line each
   const viewDocs = () => query
-    ? docs.filter((d) => `${d.title} ${d.path || ""} ${topicOf(d)}`.toLowerCase().includes(query))
+    ? docs.filter((d) => `${d.title} ${d.path || ""} ${topicOf(d)} ${stageNote(d)}`.toLowerCase().includes(query))
     : view.level === "topic" ? docsIn((d) => topicOf(d) === view.topic)
     : view.level === "group" ? docsIn((d) => groupOf(topicOf(d)) === view.group) : [];
   const allTopics = () => groups().flatMap((g) => topicsIn(g).map(([t]) => t));
@@ -1407,8 +1420,9 @@ const DATA = "__DOCS_DATA__";
     const names = allTopics();
     $("rows").innerHTML = `<div class="row head"><span>Document</span><span>Where</span><span>Mark</span><span>Topic</span><span></span></div>` + ds.map((d) => {
       const st = status(d), hint = !org.marks[d.id] && d.suggest ? `<div class="hint">suggest: ${d.suggest === "move_to_notion" ? "move" : "keep"}</div>` : "";
+      const note = stageNote(d), flagged = d.lifecycle === "needs_review" || d.broken?.length;
       return `<div class="row" draggable="true" data-id="${esc(d.id)}">
-        <div class="t"><button type="button" data-read="${esc(d.id)}" title="${esc(d.title)}">${esc(d.title)}</button><div class="p" title="${esc(d.path || d.url || "")}">${esc(d.repo ? `${d.repo} · ${d.path}` : d.url || "")}</div></div>
+        <div class="t"><button type="button" data-read="${esc(d.id)}" title="${esc(d.title)}">${esc(d.title)}</button><div class="p" title="${esc(d.path || d.url || "")}">${esc(d.repo ? `${d.repo} · ${d.path}` : d.url || "")}</div>${note ? `<div class="hint${flagged ? " flag" : ""}">${esc(note)}</div>` : ""}</div>
         <div><span class="badge ${st}">${esc(LABEL[st])}</span>${hint}</div>
         <div>${d.place === "repo" ? `<label class="sr" for="m-${esc(d.id)}">Mark</label><select id="m-${esc(d.id)}" data-mark="${esc(d.id)}">
           <option value="">unmarked</option><option value="move_to_notion" ${org.marks[d.id] === "move_to_notion" ? "selected" : ""}>move to Notion</option>
@@ -1515,6 +1529,7 @@ const DATA = "__DOCS_DATA__";
         const url = out && ghUrl(d.repo, out);
         if (url) { a.href = url; a.target = "_blank"; a.rel = "noreferrer noopener"; a.classList.add("ext"); a.title = `Not a document in the room; opens ${d.repo}/${out} on GitHub`; return; }
         if (out) { unlink(a, `${d.repo}/${out} is in the repo, not in the room, and cannot open on GitHub: ${GH[d.repo]?.why || "no GitHub remote"}`); return; }
+        if (target && (d.broken || []).includes(target)) { unlink(a, `Broken link: ${d.repo}/${target} is not in the repo`); return; }
         unlink(a, target ? `Not in the documentation room: ${d.repo}/${target}` : `Outside the repo: ${raw}`); return;
       }
       a.classList.add("doc"); a.dataset.doc = hit; if (sec) a.dataset.sec = slugify(decodeSafe(sec));

@@ -79,6 +79,18 @@ pub struct Doc {
     /// not documents in the room; the reader sends those to GitHub.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outside: Vec<String>,
+    /// From the document's own front matter and folder; `None` for a Notion page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<Lifecycle>,
+    /// The front matter's `superseded_by`, resolved to a repo path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// Superseded, and its replacement is tracked. Never set by age alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archive_eligible: bool,
+    /// Relative link targets that are no tracked file or folder in the repo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub broken: Vec<String>,
 }
 
 /// Where a checkout's files live on GitHub, read from its `origin`.
@@ -189,6 +201,20 @@ pub struct Link {
 pub enum Mark {
     MoveToNotion,
     KeepInRepo,
+}
+
+/// Where a repo document stands, first match wins: under an `archive/`
+/// folder; `status: superseded` with a `superseded_by`; a status that asks
+/// for review; under `reports/`, `audits/` or `investigations/`; otherwise
+/// guidance nobody has flagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lifecycle {
+    Archived,
+    Superseded,
+    NeedsReview,
+    Dated,
+    Guidance,
 }
 
 /// The user's organisation, `context/docs.json`.
@@ -361,6 +387,11 @@ pub fn scan(repos: &[(String, PathBuf)]) -> Vec<Doc> {
         for f in &files {
             let text = std::fs::read_to_string(dir.join(f)).unwrap_or_default();
             let kind = kind(f);
+            let status = front_matter(&text, "status");
+            let superseded_by = front_matter(&text, "superseded_by").and_then(|r| {
+                normalize_inside(&Path::new(f).parent().unwrap_or(Path::new("")).join(r))
+            });
+            let lifecycle = lifecycle(f, status.as_deref(), superseded_by.is_some());
             docs.push(Doc {
                 id: format!("{name}:{f}"),
                 title: title(&text, f),
@@ -377,6 +408,11 @@ pub fn scan(repos: &[(String, PathBuf)]) -> Vec<Doc> {
                 kind,
                 group: name.clone(),
                 outside: outside(&text, f, &tracked, &files),
+                lifecycle: Some(lifecycle),
+                archive_eligible: lifecycle == Lifecycle::Superseded
+                    && superseded_by.as_ref().is_some_and(|r| tracked.contains(r)),
+                superseded_by,
+                broken: broken(&text, f, &tracked),
             });
         }
     }
@@ -444,6 +480,72 @@ fn outside(
         }
     }
     out.into_iter().collect()
+}
+
+/// Link targets inside the repo that are neither a tracked file, a folder
+/// holding tracked files, nor a document reached as `x.md` or `x/README.md`.
+fn broken(text: &str, from: &str, tracked: &BTreeSet<String>) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    for t in targets(text, from) {
+        let bare = t.trim_end_matches('/');
+        if bare.is_empty() {
+            continue;
+        }
+        let file = !t.ends_with('/')
+            && [
+                bare.to_owned(),
+                format!("{bare}.md"),
+                format!("{bare}/README.md"),
+            ]
+            .iter()
+            .any(|x| tracked.contains(x));
+        let folder = tracked
+            .range(format!("{bare}/")..)
+            .next()
+            .is_some_and(|f| f.starts_with(&format!("{bare}/")));
+        if !file && !folder {
+            out.insert(t);
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// A `key: value` from a leading `---` block.
+fn front_matter(text: &str, key: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    lines
+        .take_while(|l| l.trim() != "---")
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.trim() == key)
+        .map(|(_, v)| v.trim().trim_matches(['"', '\'']).to_owned())
+        .filter(|v| !v.is_empty())
+}
+
+fn lifecycle(path: &str, status: Option<&str>, has_replacement: bool) -> Lifecycle {
+    let lower = path.to_ascii_lowercase();
+    let segs: Vec<&str> = lower.split('/').collect();
+    let dirs = &segs[..segs.len().saturating_sub(1)];
+    let status = status.map(str::to_ascii_lowercase);
+    if dirs.contains(&"archive") {
+        Lifecycle::Archived
+    } else if status.as_deref() == Some("superseded") && has_replacement {
+        Lifecycle::Superseded
+    } else if matches!(
+        status.as_deref(),
+        Some("needs-update" | "deprecated" | "obsolete" | "superseded")
+    ) {
+        Lifecycle::NeedsReview
+    } else if dirs
+        .iter()
+        .any(|d| matches!(*d, "reports" | "audits" | "investigations"))
+    {
+        Lifecycle::Dated
+    } else {
+        Lifecycle::Guidance
+    }
 }
 
 /// Like [`normalize`], but `None` once a `..` climbs above the root.
@@ -713,6 +815,10 @@ pub fn library(home: &Path, workspace: &Path, projects: &Path) -> Result<Value> 
             group,
             suggest: None,
             outside: Vec::new(),
+            lifecycle: None,
+            superseded_by: None,
+            archive_eligible: false,
+            broken: Vec::new(),
         }
     }));
     // Bets in goal order first, then any repo no goal claims.

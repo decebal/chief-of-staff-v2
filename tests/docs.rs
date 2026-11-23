@@ -350,6 +350,105 @@ fn a_notion_match_needs_three_real_words_mostly_shared() {
     );
 }
 
+fn doc<'a>(lib: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    lib["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == id)
+        .unwrap_or_else(|| panic!("no {id}"))
+}
+
+#[test]
+fn a_documents_lifecycle_comes_from_its_front_matter_and_folder_never_its_age() {
+    let (home, ws, projects) = setup("lifecycle");
+    let r = projects.join("demo");
+    write(
+        &r,
+        "docs/reports/2001-01-01-proof.md",
+        "# Historical proof\n\nOne section was superseded by a later observation.\n",
+    );
+    write(
+        &r,
+        "docs/guides/old.md",
+        "---\nstatus: superseded\nsuperseded_by: new.md\n---\n# Old\n",
+    );
+    write(
+        &r,
+        "docs/guides/gone.md",
+        "---\nstatus: superseded\nsuperseded_by: never-written.md\n---\n# Gone\n",
+    );
+    write(
+        &r,
+        "docs/guides/stale.md",
+        "---\nstatus: needs-update\n---\n# Stale\n",
+    );
+    write(&r, "docs/archive/2020-plan.md", "# Retired plan\n");
+    git(&r, &["add", "-A"]);
+    git(&r, &["commit", "-q", "-m", "lifecycle"]);
+
+    let lib = docs::library(&home, &ws, &projects).unwrap();
+    let proof = doc(&lib, "demo:docs/reports/2001-01-01-proof.md");
+    assert_eq!(proof["lifecycle"], "dated");
+    assert_eq!(
+        proof.get("archive_eligible"),
+        None,
+        "age and a word in the text never archive"
+    );
+    assert_eq!(
+        doc(&lib, "demo:docs/guides/gone.md")["lifecycle"],
+        "superseded"
+    );
+    assert_eq!(
+        doc(&lib, "demo:docs/guides/gone.md").get("archive_eligible"),
+        None,
+        "a replacement that is not in the repo"
+    );
+    assert_eq!(
+        doc(&lib, "demo:docs/guides/stale.md")["lifecycle"],
+        "needs_review"
+    );
+    assert_eq!(
+        doc(&lib, "demo:docs/archive/2020-plan.md")["lifecycle"],
+        "archived"
+    );
+    assert_eq!(doc(&lib, "demo:README.md")["lifecycle"], "guidance");
+
+    write(&r, "docs/guides/new.md", "# New\n");
+    git(&r, &["add", "-A"]);
+    git(&r, &["commit", "-q", "-m", "replacement"]);
+    let lib = docs::library(&home, &ws, &projects).unwrap();
+    let old = doc(&lib, "demo:docs/guides/old.md");
+    assert_eq!(old["superseded_by"], "docs/guides/new.md");
+    assert_eq!(old["archive_eligible"], true);
+}
+
+#[test]
+fn a_link_to_nothing_tracked_is_broken_and_a_file_folder_or_document_is_not() {
+    let (home, ws, projects) = setup("broken");
+    let r = projects.join("demo");
+    write(&r, "src/main.rs", "fn main() {}\n");
+    write(
+        &r,
+        "docs/guides/run.md",
+        "# Run\n\n[code](../../src/), [main](../../src/main.rs), [design](../concepts/design), \
+         [gone](../../missing.txt), [no dir](../../nowhere/), [up](../../../x.txt), \
+         [web](https://example.com/a.txt), [anchor](#run).\n",
+    );
+    git(&r, &["add", "-A"]);
+    git(&r, &["commit", "-q", "-m", "run"]);
+    let lib = docs::library(&home, &ws, &projects).unwrap();
+    assert_eq!(
+        doc(&lib, "demo:docs/guides/run.md")["broken"],
+        serde_json::json!(["missing.txt", "nowhere/"])
+    );
+    assert_eq!(
+        doc(&lib, "demo:README.md").get("broken"),
+        None,
+        "every link resolves"
+    );
+}
+
 #[test]
 fn a_path_says_what_kind_of_document_it_is() {
     for (path, kind) in [
