@@ -281,7 +281,7 @@ fn serve(
             Ok(mut b) if inside => {
                 if rel == "index.html" {
                     b = String::from_utf8_lossy(&b)
-                        // Before the first script: command.js, sidebar.js and dash.js
+                        // Before the first script: command.js and dash.js
                         // read window.__TAURI__ as they load, ahead of app.js.
                         .replacen(
                             r#"<script src="command.js">"#,

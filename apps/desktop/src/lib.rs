@@ -359,6 +359,29 @@ fn check_dirs(name: &str, b: &Business) -> Res<()> {
     Ok(())
 }
 
+#[tauri::command]
+fn tax_read(app: tauri::State<'_, App>) -> Res<Value> {
+    let dir = cos::state::runtime_dir(&app.get().workspace).map_err(err)?;
+    let path = dir.join("tax-planning.json");
+    if !path.exists() {
+        return Ok(Value::Null);
+    }
+    cos::state::load(&path).map_err(err)
+}
+
+#[tauri::command]
+fn tax_save(app: tauri::State<'_, App>, data: Value) -> Res<()> {
+    let dir = cos::state::runtime_dir(&app.get().workspace).map_err(err)?;
+    if !dir.is_dir() {
+        return Err("Set up the workspace before saving tax planning.".into());
+    }
+    let bytes = serde_json::to_vec(&data).map_err(err)?;
+    if !data.is_object() || bytes.len() > 32_768 {
+        return Err("Invalid tax planning data.".into());
+    }
+    cos::state::atomic_write(&dir.join("tax-planning.json"), &data).map_err(err)
+}
+
 /// Points the window at another registered business. Nothing is written to disk.
 #[tauri::command]
 fn switch_business(app: tauri::State<'_, App>, args: SwitchArgs) -> Res<Value> {
@@ -412,7 +435,7 @@ struct Live {
     unreadable: usize,
 }
 
-/// One business in the picker and the sidebar. A business whose home is missing carries
+/// One business in the picker. A business whose home is missing carries
 /// no count.
 #[derive(Serialize, Clone, PartialEq)]
 struct BusinessRow {
@@ -2054,6 +2077,8 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             flow_bead,
             dashboards,
             dashboard_open,
+            tax_read,
+            tax_save,
             agents_list,
             agents_fit,
             agents_spawn,

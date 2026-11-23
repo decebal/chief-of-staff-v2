@@ -441,13 +441,6 @@ fn states(port: u16, work: &Path) -> Vec<State> {
             None,
             "#view-agents.active",
         ),
-        state(
-            "window-settings",
-            0,
-            "/#tab=today&settings=open",
-            None,
-            "#settings[open]",
-        ),
         state("flows-board", 0, "/cosreport/flows", None, "body"),
         state(
             "flows-flow",

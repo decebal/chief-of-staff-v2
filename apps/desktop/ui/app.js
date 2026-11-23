@@ -102,7 +102,7 @@ const kv = (pairs) =>
       ),
     ]);
 
-// ---- header: the business behind the gear, views
+// ---- header: the business picker, views
 
 async function loadPaths() {
   const p = await invoke("paths");
@@ -138,16 +138,7 @@ function renderSlots() {
   $("runs-count").textContent = ui.agents.length ? String(ui.agents.length) : "";
 }
 
-$("ws-switch").addEventListener("click", () => {
-  $("settings").open = false;
-  openSwitcher(switchTo);
-});
-
-document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && $("settings").open) $("settings").open = false;
-});
-
-const VIEWS = ["today", "agents", "flows", "docs", "dash"];
+const VIEWS = ["today", "agents", "flows", "tax", "docs", "dash"];
 const SWITCH_PANES = ["staff", "runs", "scorecard"];
 
 // The docs room names the business it was opened for; its saves carry it back.
@@ -211,7 +202,6 @@ async function openFromHash() {
   } else if (VIEWS.includes(tab)) {
     openTab(tab, h.get("pane") ?? "");
   }
-  if (h.get("settings") === "open") $("settings").open = true;
   shownBrief.routed = true;
   const args = seenArgs();
   if (args) invoke("brief_seen", args).catch(seenFailed);
