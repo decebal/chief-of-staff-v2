@@ -230,8 +230,18 @@ meaningful words, three or more; short generic titles never match.
   Notion"; ADRs, Overview, Code docs, Operations and Reference suggest "keep in
   repo". Nothing is marked until you accept: one at a time, or "Accept N
   suggestions" for the bet or topic in view.
+- **Lifecycle**: each repo document is `archived` (under an `archive/`
+  folder), `superseded` (front matter `status: superseded` with
+  `superseded_by: <relative path>`), `needs review` (`status:
+  needs-update`, `deprecated`, `obsolete`, or `superseded` with no
+  replacement), `dated evidence` (under `reports/`, `audits/` or
+  `investigations/`), or `guidance`. A superseded document "can archive"
+  only when its replacement is tracked; age alone never archives anything.
+  Relative links to no tracked file or folder count as broken. The list
+  and the inspector show all three, and the reader says which links are
+  broken. Nothing is moved or rewritten.
 - **Topics of yours**: add one and drag documents in; search filters titles,
-  paths and topics.
+  paths, topics and lifecycle (`needs review`, `broken link`).
 - **Link**: your own edges (`depends on`, `supersedes`, …) beside the found ones.
 - **Read**: a repo document opens rendered (GitHub-flavoured markdown through
   the vendored marked, then DOMPurify; tables, task lists, fenced code,
@@ -502,4 +512,4 @@ choosing.
 - Every tool call and failure is logged to `out/audit/YYYY-MM-DD.jsonl`.
 - Scheduled runs log to `out/logs/`.
 
-Design and measurements: [docs/design.md](docs/design.md).
+Design and measurements: [docs/design.md](design.md).
