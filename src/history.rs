@@ -35,6 +35,9 @@ pub struct Merged {
     pub title: String,
     /// `YYYY-MM-DD`.
     pub day: String,
+    /// The PR's `closedAt` (RFC 3339); `None` for rows archived before it was kept.
+    #[serde(default)]
+    pub merged_at: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -45,6 +48,96 @@ pub struct History {
 
 fn dir(home: &Path) -> PathBuf {
     home.join("out/history")
+}
+
+/// One KPI's value at one evidence time, one line of `out/history/kpis.jsonl`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KpiPoint {
+    pub kpi: String,
+    pub value: f64,
+    #[serde(rename = "evidenceAt")]
+    pub evidence_at: String,
+    #[serde(rename = "recordedAt")]
+    pub recorded_at: String,
+}
+
+/// Every KPI point recorded so far. Lines that do not parse are skipped.
+pub fn kpi_points(home: &Path) -> Vec<KpiPoint> {
+    std::fs::read_to_string(dir(home).join("kpis.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+/// Appends a point for each workspace KPI with a finite current value and a
+/// parseable evidence time, unless (name, evidence time) is already recorded.
+/// Returns how many points were appended. Called by the brief pipeline only.
+pub fn record_kpis(home: &Path, ws: &Path) -> Result<usize> {
+    let Some(st) = crate::state::read(ws)? else {
+        return Ok(0);
+    };
+    std::fs::create_dir_all(dir(home))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir(home).join("kpis.lock"))?;
+    // SAFETY: flock on a descriptor this process owns; no memory is touched.
+    if unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } != 0 {
+        anyhow::bail!("lock kpis: {}", std::io::Error::last_os_error());
+    }
+    let fresh = new_kpi_points(&st, &kpi_points(home), &crate::state::now());
+    if !fresh.is_empty() {
+        let mut out = String::new();
+        for point in &fresh {
+            out.push_str(&serde_json::to_string(point)?);
+            out.push('\n');
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir(home).join("kpis.jsonl"))?;
+        std::io::Write::write_all(&mut file, out.as_bytes())?;
+    }
+    Ok(fresh.len())
+}
+
+/// The points `state`'s KPIs add to `recorded`: a finite current value, a
+/// parseable evidence time, and a (name, evidence time) pair not yet seen.
+pub fn new_kpi_points(
+    state: &serde_json::Value,
+    recorded: &[KpiPoint],
+    recorded_at: &str,
+) -> Vec<KpiPoint> {
+    let mut seen: std::collections::HashSet<(String, String)> = recorded
+        .iter()
+        .map(|p| (p.kpi.clone(), p.evidence_at.clone()))
+        .collect();
+    let mut out = Vec::new();
+    for k in state["kpis"].as_array().into_iter().flatten() {
+        let (Some(name), Some(value), Some(at)) = (
+            k["name"].as_str(),
+            k["current"].as_f64(),
+            k["evidenceAt"].as_str(),
+        ) else {
+            continue;
+        };
+        if name.trim().is_empty()
+            || !value.is_finite()
+            || at.parse::<jiff::Timestamp>().is_err()
+            || !seen.insert((name.to_owned(), at.to_owned()))
+        {
+            continue;
+        }
+        out.push(KpiPoint {
+            kpi: name.to_owned(),
+            value,
+            evidence_at: at.to_owned(),
+            recorded_at: recorded_at.to_owned(),
+        });
+    }
+    out
 }
 
 pub fn load(home: &Path) -> History {
@@ -213,6 +306,7 @@ pub fn merge_prs<'a>(log: &mut Vec<Merged>, prs: impl Iterator<Item = &'a Pr>) {
             number: p.number,
             title: p.title.clone(),
             day: day.to_owned(),
+            merged_at: p.closed.clone(),
         });
     }
     log.sort_by(|a, b| a.day.cmp(&b.day).then(a.number.cmp(&b.number)));

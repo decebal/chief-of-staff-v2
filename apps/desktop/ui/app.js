@@ -10,6 +10,7 @@ const REPORT = navigator.userAgent.includes("Windows")
 
 const ui = {
   pane: "staff",
+  runsAs: "fleet",
   from: "staff",
   role: null,
   run: null,
@@ -59,6 +60,8 @@ const OUTCOME = {
   needs_you: ["needs you", "warn"],
   rejected: ["rejected", "bad"],
 };
+// The run card's summary once judged: the outcome, then the first reason.
+const verdictLine = (v) => (v ? `${OUTCOME[v.outcome]?.[0] ?? v.outcome}: ${v.reasons[0] ?? "every check passed, and the work stayed inside its scope."}` : null);
 const EXPECTS = {
   diff: "a diff against its base commit",
   file: "a file it leaves",
@@ -68,7 +71,6 @@ const EXPECTS = {
 const money = (v) => (v == null ? "—" : `$${Number(v).toFixed(2)}`);
 const duration = (s) => (s == null ? "—" : s < 90 ? `${s} s` : `${Math.round(s / 60)} min`);
 const pct = (a, n) => (n ? `${Math.round((100 * a) / n)}%` : "—");
-const badge = (text, tone) => el("span", { className: "badge", textContent: text, tone });
 const status = (s) => badge(...(STATUS[s] ?? [s, "muted"]));
 const outcome = (v) => (v ? badge(...(OUTCOME[v.outcome] ?? [v.outcome, "muted"])) : null);
 const roleTitle = (id) =>
@@ -85,23 +87,6 @@ function herdrBadge(a) {
   const [text, tone] = HERDR[h.word] ?? [h.word ?? "no status yet", "muted"];
   return badge(h.word === "blocked" && h.kind ? `${text} (${h.kind})` : text, tone);
 }
-const sm = (node, variant) => {
-  node.dataset.variant = variant;
-  node.dataset.size = "sm";
-  return node;
-};
-const kv = (pairs) =>
-  pairs
-    .filter(([, v]) => v != null && v !== "" && !(Array.isArray(v) && !v.length))
-    .flatMap(([k, v, mono]) => [
-      el("dt", { textContent: k }),
-      el(
-        "dd",
-        { className: mono ? "mono" : "" },
-        ...(Array.isArray(v) ? [el("ul", { className: "codes" }, ...v.map((x) => el("li", { textContent: x })))] : [String(v)]),
-      ),
-    ]);
-
 // ---- header: the business picker, views
 
 async function loadPaths() {
@@ -201,6 +186,7 @@ async function openFromHash() {
     }
   } else if (VIEWS.includes(tab)) {
     openTab(tab, h.get("pane") ?? "");
+    if (tab === "agents" && h.get("run")) openRun(h.get("run"));
   }
   shownBrief.routed = true;
   const args = seenArgs();
@@ -294,6 +280,13 @@ function showPane(name) {
   const tab = name === "role" ? "staff" : name === "run" ? ui.from : name;
   for (const t of $("agent-panes").children) t.setAttribute("aria-selected", String(t.dataset.pane === tab));
   render();
+}
+
+for (const [id, mode] of [["runs-as-fleet", "fleet"], ["runs-as-table", "table"]]) {
+  $(id).addEventListener("click", () => {
+    ui.runsAs = mode;
+    renderRuns();
+  });
 }
 
 for (const t of $("agent-panes").children) {
@@ -636,20 +629,6 @@ function renderRole() {
   );
 }
 
-function section(title, body) {
-  return el("section", { className: "block" }, el("h3", { className: "section-title", textContent: title }), body);
-}
-
-function table(head, rows, firstNumeric) {
-  const t = el(
-    "table",
-    { className: "table" },
-    el("thead", {}, el("tr", {}, ...head.map((h, i) => el("th", { textContent: h, className: i >= firstNumeric ? "n" : "" })))),
-    el("tbody", {}, ...rows.map((r) => el("tr", {}, ...r.map((c, i) => el("td", { textContent: String(c), className: i >= firstNumeric ? "n num" : "" }))))),
-  );
-  return el("div", { className: "table-container" }, t);
-}
-
 // ---- runs
 
 function runRow(a) {
@@ -688,11 +667,27 @@ function runTable(list) {
   );
 }
 
+const fromRuns = (id, reply = false) => {
+  ui.from = "runs";
+  openRun(id);
+  if (reply) $("d-say").focus();
+};
 function renderRuns() {
+  const fleetOn = ui.runsAs === "fleet";
+  $("runs-as-fleet").setAttribute("aria-pressed", String(fleetOn));
+  $("runs-as-table").setAttribute("aria-pressed", String(!fleetOn));
   $("agents").tBodies[0].replaceChildren(...ui.agents.map(runRow));
-  $("agents").hidden = !ui.agents.length;
+  $("agents").closest(".table-container").hidden = fleetOn || !ui.agents.length;
+  $("fleet").hidden = !fleetOn || !ui.agents.length;
   $("no-agents").hidden = ui.agents.length > 0;
-  if (ui.agents.length) return;
+  if (ui.agents.length) {
+    if (fleetOn) {
+      const rows = ui.agents.map((a) => fleetRow(a, roleTitle(a.spec.role ?? null)));
+      const focused = document.activeElement?.closest?.("#fleet") ? document.activeElement.dataset.id : null;
+      fill($("fleet"), fleet(rows, { onOpen: fromRuns, onReply: (id) => fromRuns(id, true), onOpenHerdr: openInHerdr, onOpenRun: fromRuns, focusId: focused ?? null }));
+    }
+    return;
+  }
   fill(
     $("no-agents"),
     ui.loaded.agents
@@ -745,6 +740,9 @@ async function renderRun() {
   $("d-rejudge").disabled = state.status === "starting" || state.status === "seeding" || (talking && h?.word === "working");
   $("d-clean").disabled = live;
 
+  const acts = { pause: () => $("d-pause").click(), done: () => $("d-done").click(), reply: () => $("d-say").focus(), herdr: () => $("d-open").click(), screen: () => { $("d-screen-box").open = true; runPage.screen(spec.id); } };
+  const view = { phase: runPhase(row), activeMs: row.active_ms, live, paused: row.paused_now, line: h?.msg ?? "", verdict: verdictLine(state.verdict) };
+  fill($("d-card"), runPanel(view, () => invoke("agents_timeline", { business: ui.business, id: spec.id }), { onAction: (k) => acts[k]() }));
   $("d-verdict").replaceChildren(...verdictView(state.verdict, live));
   const c = spec.contract ?? {};
   $("d-contract").replaceChildren(
@@ -838,6 +836,7 @@ function herdrItem(row) {
     return stateView("asleep", { title: "Ran before cos followed hires in Herdr", detail: "It cannot be resumed. Its verdict and record stay; hire again to carry the work on." });
   }
   if (!h) {
+    if (!LIVE.includes(state.status)) return el("p", { className: "muted", textContent: `It ended before Herdr started its terminal ${name}.` });
     return stateView("starting", { title: state.status === "seeding" ? "Preparing its worktree" : "Starting", detail: `Then it starts in Herdr as the terminal ${name}.`, line: true });
   }
   const open = { icon: "external-link", label: "Open in Herdr", variant: "primary", onClick: () => openInHerdr(spec.id) };
@@ -1509,11 +1508,6 @@ window.addEventListener("message", (ev) => {
   }
 });
 
-const STEP_NAME = { think: "Think", spec: "Spec", approve: "Approve", plan: "Plan", build: "Build", review: "Review", ship: "Ship", reflect: "Reflect" };
-const sha12 = (sha) => (sha ? sha.slice(0, 12) : "—");
-const fileName = (p) => p.split("/").pop();
-const counts = (r) => `${r.blocking} blocking, ${r.should} should, ${r.nit} nit`;
-
 // The approval's refusals, in words that say what to do next.
 function approveError(e) {
   const s = String(e);
@@ -1527,6 +1521,8 @@ function approveError(e) {
 const gates = {
   list: [],
   steps: [],
+  flows: [],
+  decided: null,
   confirming: null,
   busy: null,
   done: {},
@@ -1542,6 +1538,7 @@ const gates = {
     try {
       const res = await invoke("ritual_gates");
       this.steps = res.steps ?? [];
+      this.flows = res.flows ?? [];
       this.list = res.gates;
       this.failed = null;
       this.read = true;
@@ -1564,162 +1561,49 @@ const gates = {
       return fill(box, stateView("unreachable", { title: `The approval gate could not be read: ${this.failed}`, line: true, action: { icon: "rotate-ccw", label: "Retry", onClick: () => this.refresh() } }));
     }
     if (!this.list.length) return fill(box, stateView("clear", { title: "No design is waiting for your approval.", line: true }));
-    fill(box, ...this.list.map((g) => this.card(g)));
-  },
-
-  strip(current) {
-    const at = this.steps.indexOf(current);
-    const ol = el(
-      "ol",
-      { className: "strip" },
-      ...this.steps.map((s, i) => {
-        const li = el("li", { textContent: STEP_NAME[s] ?? s, className: i < at ? "past" : "" });
-        if (i === at) li.setAttribute("aria-current", "step");
-        return li;
+    const items = this.list.map((g) => this.item(g));
+    fill(
+      box,
+      decisions(items, {
+        onOpen: (g, path) => invoke("ritual_open", { repo: g.repo, epic: g.epic, path }),
+        onAsk: (k) => this.ask(k),
+        onApprove: (k) => this.approve(k),
+        onCancel: (k) => this.cancel(k),
+        focusNext: this.decided !== null,
       }),
     );
-    ol.setAttribute("aria-label", "Ritual steps");
-    return ol;
+    this.decided = null;
   },
 
-  open(g, path, errBox) {
-    return async () => {
-      errBox.textContent = "";
-      try {
-        await invoke("ritual_open", { repo: g.repo, epic: g.epic, path });
-      } catch (e) {
-        errBox.textContent = `Could not open ${fileName(path)}: ${e}`;
-      }
-    };
-  },
-
-  link(g, label, path, errBox) {
-    const b = sm(el("button", { className: "btn", type: "button" }, icon("file-text"), el("span", { textContent: label })), "link");
-    b.addEventListener("click", this.open(g, path, errBox));
-    return b;
-  },
-
-  verdict(g) {
-    const r = g.review;
-    if (!r) return el("p", { className: "gate-verdict muted", textContent: "No review of this design yet." });
-    const stale = r.current ? "" : " · it read an earlier version of the design";
-    return el(
-      "p",
-      { className: "gate-verdict" },
-      badge(r.verdict, r.verdict === "clean" && r.current ? "ok" : "warn"),
-      ` Latest review: ${counts(r)}${stale}`,
-    );
-  },
-
-  card(g) {
+  item(g) {
     const k = this.key(g);
-    const done = this.done[k];
-    const errBox = el("p", { className: "error small", role: "status" });
-    if (this.errors[k]) errBox.textContent = this.errors[k];
-    const files = el(
-      "div",
-      { className: "gate-files" },
-      g.brief ? this.link(g, "Brief", g.brief, errBox) : null,
-      this.link(g, "Design", g.design, errBox),
-      g.review ? this.link(g, "Latest review", g.review.path, errBox) : null,
-      el("span", { className: "sha", textContent: `sha256 ${sha12(g.design_sha256)}`, title: g.design_sha256 ?? g.design_error ?? "" }),
-    );
-    const history = g.history.length
-      ? el(
-          "details",
-          { className: "small" },
-          el("summary", { textContent: `Earlier reviews (${g.history.length})` }),
-          el(
-            "ul",
-            { className: "rounds" },
-            ...g.history.map((r) =>
-              el("li", {}, this.link(g, fileName(r.path), r.path, errBox), badge(r.verdict, "muted"), el("span", { className: "muted", textContent: counts(r) })),
-            ),
-          ),
-        )
-      : null;
-    const card = el(
-      "article",
-      { className: "gate" },
-      el(
-        "div",
-        { className: "gate-head" },
-        el("h3", { textContent: g.title, title: g.title }),
-        el("span", { className: "id", textContent: g.epic }),
-        el("span", { className: "repo", textContent: g.repo }),
-      ),
-      this.strip(done ? "plan" : g.step),
-      files,
-      this.verdict(g),
-      done ? this.approved(done) : this.actions(g, k),
-      errBox,
-      history,
-    );
-    card.dataset.key = k;
-    if (done) card.dataset.state = "approved";
-    return card;
-  },
-
-  approved(done) {
-    return el("p", { className: "gate-verdict" }, badge("approved", "ok"), ` ${done.check}`);
-  },
-
-  actions(g, k) {
-    if (g.design_error) return el("p", { className: "error small", textContent: g.design_error });
-    if (!g.by) return el("p", { className: "muted small", textContent: `No approver name: set "owner" in the workspace profile, or git user.name in ${g.repo}.` });
-    if (this.confirming === k) return this.confirm(g, k);
-    const errBox = el("p", { className: "error small", role: "status" });
-    const ask = (label, variant) => {
-      const b = sm(el("button", { className: "btn", type: "button" }, icon("badge-check"), el("span", { textContent: label })), variant);
-      b.addEventListener("click", () => {
-        this.confirming = k;
-        delete this.errors[k];
-        this.render();
-      });
-      return b;
+    const flow = this.flows.find((f) => f.repo === g.repo && f.epic === g.epic);
+    return {
+      ...g,
+      key: k,
+      names: this.steps,
+      flow: flow ?? { step: "spec", beads: [] },
+      done: this.done[k] ?? null,
+      confirming: this.confirming === k,
+      busy: this.busy === k,
+      error: this.errors[k] ?? "",
     };
-    const r = g.review;
-    if (r && r.current && r.blocking > 0) {
-      const n = r.blocking;
-      const read = sm(el("button", { className: "btn", type: "button" }, icon("file-search"), el("span", { textContent: `Read ${n} blocking finding${n === 1 ? "" : "s"}` })), "primary");
-      read.addEventListener("click", this.open(g, r.path, errBox));
-      return el("div", { className: "gate-actions" }, read, ask("Approve anyway", "outline"), errBox);
-    }
-    if (g.clean) return el("div", { className: "gate-actions" }, ask("Approve and start Plan", "primary"));
-    if (r && r.current) {
-      const carried = [r.should && `${r.should} should`, r.nit && `${r.nit} nit`].filter(Boolean).join(", ");
-      return el("div", { className: "gate-actions" }, ask(`Approve: ${carried} go to Plan`, "primary"));
-    }
-    return el("div", { className: "gate-actions" }, ask("Approve without a current review", "outline"));
   },
 
-  confirm(g, k) {
-    const busy = this.busy === k;
-    const yes = sm(el("button", { className: "btn", type: "button", disabled: busy }, icon(busy ? "loader-circle" : "badge-check", { className: busy ? "spin" : "" }), el("span", { textContent: busy ? "Approving…" : "Approve and start Plan" })), "primary");
-    const no = sm(el("button", { className: "btn", type: "button", disabled: busy }, icon("x"), el("span", { textContent: "Cancel" })), "ghost");
-    no.addEventListener("click", () => {
-      this.confirming = null;
-      this.render();
-    });
-    yes.addEventListener("click", () => this.approve(g, k));
-    const box = el(
-      "div",
-      { className: "gate-confirm" },
-      el("p", {}, "Approve ", el("code", { textContent: g.design }), " at sha256 ", el("code", { textContent: sha12(g.design_sha256) }), ` as ${g.by}?`),
-      el("p", {
-        className: "muted small",
-        textContent: g.clean
-          ? `Records the digest on ${g.epic} with the clean review, then approves the epic in its task store.`
-          : `There is no clean review of this version: ${g.epic} records that it was approved without review.`,
-      }),
-      el("div", { className: "gate-actions" }, yes, no),
-    );
-    box.setAttribute("role", "group");
-    box.setAttribute("aria-label", "Confirm approval");
-    return box;
+  ask(k) {
+    delete this.errors[k];
+    this.confirming = k;
+    this.render();
   },
 
-  async approve(g, k) {
+  cancel(k) {
+    this.confirming = null;
+    this.render();
+  },
+
+
+  async approve(k) {
+    const g = this.list.find((x) => this.key(x) === k);
     this.busy = k;
     this.render();
     try {
@@ -1732,6 +1616,7 @@ const gates = {
         without_review: !g.clean,
       });
       this.done[k] = res;
+      this.decided = k;
       this.confirming = null;
       flowsHost.load(true);
     } catch (e) {

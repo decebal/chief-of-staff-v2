@@ -153,6 +153,31 @@
   --icon-sm: 1rem;
   --icon-md: 1.25rem;
   --icon-lg: 1.5rem;
+
+  /* identity: one colour per person or agent, text-capable on both surfaces.
+     No orange or red: those mean warn and fault. */
+  --identity-1: light-dark(#0062d1, #52a8ff);
+  --identity-2: light-dark(#00737a, #4fd1d9);
+  --identity-3: light-dark(#1a7f37, #3fb950);
+  --identity-4: light-dark(#8e4ec6, #bf7af0);
+  --identity-5: light-dark(#4f46c8, #8b93ff);
+  --identity-6: light-dark(#a0306e, #f080c8);
+  --identity-1-soft: color-mix(in srgb, var(--identity-1) 14%, var(--background));
+  --identity-2-soft: color-mix(in srgb, var(--identity-2) 14%, var(--background));
+  --identity-3-soft: color-mix(in srgb, var(--identity-3) 14%, var(--background));
+  --identity-4-soft: color-mix(in srgb, var(--identity-4) 14%, var(--background));
+  --identity-5-soft: color-mix(in srgb, var(--identity-5) 14%, var(--background));
+  --identity-6-soft: color-mix(in srgb, var(--identity-6) 14%, var(--background));
+
+  /* reasoning spans: quieter than body text */
+  --think: light-dark(#4d4d4d, #a1a1a1);
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
 }
 
 :root[data-theme="light"],

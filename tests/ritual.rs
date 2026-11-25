@@ -180,6 +180,34 @@ fn the_button_refuses_a_review_with_findings_then_approves_a_clean_one() {
 }
 
 #[test]
+fn the_steps_carry_the_beads_under_each_flow() {
+    let (d, r, _sha) = waiting("steps");
+    let path = r.join(".chronis/tasks.json");
+    let mut tasks: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    tasks
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "t-s101", "title": "Index the brief",
+        "status": "done", "task_type": "task", "parent": "t-s100", "blocked_by": [],
+        "approved": null, "archived": false, "description": "" }));
+    std::fs::write(&path, tasks.to_string()).unwrap();
+    let (gates, _gaps, flows) = ritual::board(&d.0, &store_cn(), Duration::from_secs(60));
+    assert_eq!(gates.len(), 1);
+    let f = flows
+        .iter()
+        .find(|f| f.epic == "t-s100")
+        .expect("the flow's steps");
+    assert_eq!((f.repo.as_str(), f.step), ("web", "spec"));
+    let beads: Vec<(&str, &str)> = f
+        .beads
+        .iter()
+        .map(|b| (b.id.as_str(), b.status.as_str()))
+        .collect();
+    assert_eq!(beads, vec![("t-s101", "done")]);
+}
+
+#[test]
 fn findings_count_each_severity_below_the_front_matter() {
     let text = "---\ndesign: d.md\nverdict: findings\n---\n\n1. blocking A.\n2. should B.\n  3. nit C.\n10. nit D.\nnot 4. should\n5.should no space\n";
     assert_eq!(ritual::findings(text), (1, 1, 2));

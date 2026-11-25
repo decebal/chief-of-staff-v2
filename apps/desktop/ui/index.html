@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="vendor/basecoat/basecoat-1.1.0.min.css">
   <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="kit.css">
 </head>
 <body>
   <div class="shell-main">
@@ -246,6 +247,11 @@
         <div id="pane-role" class="pane" hidden></div>
 
         <div id="pane-runs" class="pane" hidden>
+          <div class="kit-view-toggle" role="group" aria-label="Runs as">
+            <button id="runs-as-fleet" class="btn" data-variant="outline" data-size="sm" type="button" aria-pressed="true">Fleet</button>
+            <button id="runs-as-table" class="btn" data-variant="outline" data-size="sm" type="button" aria-pressed="false">Table</button>
+          </div>
+          <div id="fleet" class="kit-host" hidden></div>
           <div class="table-container">
             <table class="table runs" id="agents">
               <thead>
@@ -279,6 +285,7 @@
             <p id="d-reply-note" class="muted small" role="status"></p>
             <div><button id="d-send" class="btn" data-variant="primary" data-size="sm" type="submit"><i data-icon="send"></i><span>Send</span></button></div>
           </form>
+          <div id="d-card" class="kit-host"></div>
           <div class="run-grid">
             <article class="card" data-size="sm" id="d-verdict-card">
               <header><h3>Verdict</h3><p>From the diff, the checks cos re-ran and the scope; never the agent's own words.</p></header>
@@ -348,6 +355,7 @@
   <script src="vendor/lucide/icons-0.556.0.js"></script>
   <script src="art/art.js"></script>
   <script src="states.js"></script>
+  <script src="kit.js"></script>
   <script src="command.js"></script>
   <script src="dash.js"></script>
   <script src="app.js"></script>

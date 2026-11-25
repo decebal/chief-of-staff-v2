@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rv2-kit in the desktop app: evidence</title>
+<style>
+  :root { color-scheme: light dark; --fg: #171717; --bg: #ffffff; --muted: #4d4d4d; --rule: #e6e6e6; --code: #f2f2f2; --accent: #0062d1; --ok: #1a7f37; --warn: #aa4d00; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #ededed; --bg: #0a0a0a; --muted: #a1a1a1; --rule: #2e2e2e; --code: #1a1a1a; --accent: #52a8ff; --ok: #3fb950; --warn: #ffb224; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
+  main { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .skip { position: absolute; left: -999px; } .skip:focus { left: 1rem; top: 1rem; background: var(--bg); padding: .5rem; }
+  h1 { font-size: 1.6rem; line-height: 1.25; } h2 { font-size: 1.2rem; margin-top: 2.5rem; border-top: 1px solid var(--rule); padding-top: 1.25rem; }
+  .claim { font-size: 1.15rem; border-left: 4px solid var(--accent); padding: .5rem 1rem; }
+  figure { margin: 1rem 0; } figure img { width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 8px; }
+  figcaption { font-size: .875rem; color: var(--muted); margin-top: .4rem; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; } @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
+  .label { font-weight: 600; } code, pre { font-family: ui-monospace, Menlo, monospace; font-size: .875rem; }
+  pre { background: var(--code); padding: .75rem; border-radius: 6px; overflow-x: auto; margin: .25rem 0; }
+  .cmd { position: relative; } .cmd button { position: absolute; top: .35rem; right: .35rem; font: inherit; font-size: .8rem; padding: .15rem .5rem; border: 1px solid var(--rule); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
+  .pass { color: var(--ok); font-weight: 600; } .gap { border: 1px dashed var(--warn); padding: 1rem; border-radius: 8px; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; } th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#claim">Skip to the claim</a>
+<main>
+<h1>rv2-kit in the desktop app: what you can now see, and what proves it</h1>
+<p>PR <a href="https://github.com/decebal/chief-of-staff-v2/pull/57">#57</a>, branch <code>feat/desktop-rv2-kit</code>, base <code>e26ad52</code>. Design: <a href="../plans/2026-11-25-rv2-kit-desktop-design.md">2026-11-25-rv2-kit-desktop-design.md</a> (approved, sha256 <code>bc7c5432…</code>). Ritual epic <code>t-cd6991</code>.</p>
+
+<h2 id="claim">The claim: you can see who needs you, what a run did and what changed since your last brief</h2>
+<p class="claim">Open the desktop app and the Agents tab shows every hire as a fleet card with its role colour, state and active time. A run opens on its phase, clock and a timeline of working, waiting and paused spans. Today opens with the decisions, errors and finished work since your previous brief, and KPI tiles show direction. Flows shows each waiting design's ritual steps and approves it through the same <code>ritual_approve</code> as before.</p>
+
+<h2>Today gains "Since your last brief"; nothing above it moved</h2>
+<div class="pair">
+  <figure>
+    <img loading="lazy" src="assets/2026-11-25-rv2-kit-desktop/today-before.png" alt="Today report before: hero, Waiting on you in Herdr, Needs you cards, then the week; no since-last-brief section.">
+    <figcaption><span class="label">Before, <code>e26ad52</code>.</span> <code>docs/assets/today.png</code> as committed on main, from <code>task screenshots</code> on the demo home <code>/tmp/cos-demo</code>.</figcaption>
+  </figure>
+  <figure>
+    <img loading="lazy" src="../assets/today.png" alt="Today report after: the same hero and Needs you cards, then Since your last brief with a cumulative chart and Decisions 8, Errors 4, Done 16 lanes, items with times in words and role chips.">
+    <figcaption><span class="label">After, taken at <code>873902c</code>.</span> <code>task screenshots</code> on the demo home, headless Chrome, 2026-11-25 UTC. Items name a role (for example "builder agent"), never a run id.</figcaption>
+  </figure>
+</div>
+
+<h2>What a person actually sees in the window</h2>
+<p>Each image below comes from <code>task screenshots</code>, which now runs <code>apps/desktop/examples/preview.rs</code> on the demo home at <code>127.0.0.1:8793</code> with the stand-in Herdr and the demo's stand-in <code>cn</code>. They were taken at <code>873902c</code>, on 2026-11-25 UTC, in headless Chrome at 2× scale.</p>
+<div class="pair">
+  <figure><img loading="lazy" src="../assets/fleet.png" alt="Agents tab, Fleet view, light: 14 hire cards with role initials in identity colours, state pills, active times, and Reply and Open in Herdr on the one that needs you."><figcaption>Fleet, light: <code>#tab=agents&amp;pane=runs</code>.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/fleet-dark.png" alt="The same fleet in dark."><figcaption>Fleet, dark.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/run.png" alt="The Writer's run page: Complete phase, clock 35:00, a coloured strip of spans, the verdict line, then a two-row timeline with a paused span on You and working and waiting spans on the hire."><figcaption>Run page, light: <code>#tab=agents&amp;pane=runs&amp;run=&lt;today&gt;-100000-c003</code>, the demo Writer that was paused then resumed.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/run-dark.png" alt="The same run page in dark."><figcaption>Run page, dark.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/flow-decisions.png" alt="Flows tab: the waiting design 'Rate limits per tenant' with steps Think and Spec finished, Approve awaiting your approval, later steps queued, its review findings and the Approve button."><figcaption>Flows, light: <code>#tab=flows</code>.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/flow-decisions-dark.png" alt="The same Flows view in dark."><figcaption>Flows, dark.</figcaption></figure>
+</div>
+<div class="gap">No "before" shot exists for the Agents and Flows tabs. <code>task screenshots</code> never captured the window before this PR, so the window's before state is visible only by checking out <code>e26ad52</code> and running the preview.</div>
+
+<h2>Prove it yourself</h2>
+<ol>
+<li>Build the demo home.
+<div class="cmd"><pre>task demo</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> it prints <code>demo home ready: /tmp/cos-demo</code>.</li>
+<li>Serve the window over the demo home.
+<div class="cmd"><pre>COS_CN=/tmp/cos-demo/bin/cn cargo run -p cos-desktop --example preview -- /tmp/cos-demo 8793</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> <code>http://127.0.0.1:8793/#tab=agents&amp;pane=runs</code> shows the fleet, and one card reads "needs you" with Reply.</li>
+<li>Run the e2e suite for the new views.
+<div class="cmd"><pre>task test-e2e</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> <code>flows_page</code> 9 passed and <code>kit_page</code> 11 passed.</li>
+<li>Run every gate.
+<div class="cmd"><pre>task test</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> exit 0, with no <code>test result: FAILED</code> line.</li>
+<li>Prove a pause is a span, not working time, on the stand-in Herdr.
+<div class="cmd"><pre>cargo test -p cos-desktop --test ipc the_fleet_row_carries_identity_and_clock_and_a_pause_is_one_span</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> 1 passed.</li>
+</ol>
+
+<h2>Traps that look like this change and are not</h2>
+<table>
+<tr><th>Symptom</th><th>Actual cause</th><th>Tell</th></tr>
+<tr><td>Flows tab says "No design is waiting for your approval" on the demo</td><td>The preview was started without <code>COS_CN</code>, so it cannot read the demo's Chronis stores</td><td>The Flows board frame is empty as well</td></tr>
+<tr><td>No "Since your last brief" section</td><td>There is no earlier ok run receipt before today, so the digest is omitted by design</td><td><code>out/runs/</code> has no ok receipt for an earlier day</td></tr>
+<tr><td>An old run shows no word spans</td><td>It was hired before the event log existed</td><td>The timeline note says word history starts at this version</td></tr>
+<tr><td><code>kit_page</code> tests all fail at <code>cdp.rs:41</code></td><td><code>COS_E2E_CHROME</code> is unset</td><td>Run through <code>task test-e2e</code>, which sets it</td></tr>
+</table>
+
+<h2>What this proves that the tests cannot</h2>
+<p>The tests prove each component's states and the history's arithmetic. The screenshots show the views render together, on one demo home, in both themes, with real data shapes. They also show where the window had nothing to show before, such as a dimmed paused span.</p>
+<p>The WCAG evaluator (axe-core 4.13.0, 24 states, light and dark) found 6 violation nodes before two fixes, and 0 after:</p>
+<ul>
+  <li>the timeline lanes needed <code>role=group</code>;</li>
+  <li>the Today ribbon's past blocks, at 35 % opacity, fell below AA. That one predates this PR and is time-of-day dependent.</li>
+</ul>
+
+<h2>What I have NOT checked</h2>
+<ul>
+<li><strong>A real brief.</strong> No brief ran on a real business. That would cost about $0.35 and touch real data. KPI points are proven only by tests and the demo.</li>
+<li><strong>A real agent hire.</strong> No real hire ran in real Herdr. Hire events come from the stand-in Herdr in tests, and from fixtures in the demo.</li>
+<li><strong>The packaged app.</strong> The window was seen only through <code>preview.rs</code> in Chrome. The installed Tauri app (<code>task desktop-app</code>) was not opened.</li>
+<li><strong>Above-AA contrast.</strong> axe left 2,227 contrast nodes undecided, against 2,223 documented on 2026-11-17. Nobody checked them by eye.</li>
+<li><strong>Load.</strong> Folding the event log for many hires, or a very long run, was not measured.</li>
+</ul>
+</main>
+<script>
+  for (const b of document.querySelectorAll("[data-copy]")) {
+    b.addEventListener("click", async () => {
+      const text = b.previousElementSibling.textContent;
+      try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; }
+      catch { const r = document.createRange(); r.selectNodeContents(b.previousElementSibling); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = "Selected"; }
+    });
+  }
+</script>
+</body>
+</html>

@@ -5,10 +5,53 @@
 // the one markup sink is the vendored state art, which carries no data.
 
 const $ = (id) => document.getElementById(id);
+// Props are an allowlist: a data-carrying prop must not become a sink.
+const EL_PROPS = new Set([
+  "className", "id", "title", "textContent", "type", "value", "checked", "disabled", "hidden",
+  "tabIndex", "role", "name", "placeholder", "htmlFor", "colSpan", "open", "target", "rel",
+]);
+const isElProp = (k) => EL_PROPS.has(k) || /^aria[A-Z]/.test(k) || /^on[A-Z]/.test(k);
+
+function safeUrl(v) {
+  try {
+    const u = new URL(String(v));
+    return ["http:", "https:", "mailto:"].includes(u.protocol) ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// Windows serves cosreport: as http://cosreport.localhost.
+function safeFrameSrc(v) {
+  try {
+    const u = new URL(String(v));
+    if (u.protocol === "cosreport:") return u.href;
+    const loopback = u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname.endsWith(".localhost");
+    return u.protocol === "http:" && loopback ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 const el = (tag, props = {}, ...kids) => {
-  const { tone, ...rest } = props;
-  const n = Object.assign(document.createElement(tag), rest);
+  const { tone, dataset, href, ...rest } = props;
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(rest)) {
+    if (!isElProp(k)) throw new TypeError(`el(${tag}): prop "${k}" is not allowed`);
+    if (/^on[A-Z]/.test(k)) {
+      if (typeof v !== "function") throw new TypeError(`el(${tag}): ${k} is not a function`);
+      n.addEventListener(k.slice(2).toLowerCase(), v);
+    } else n[k] = v;
+  }
+  if (href !== undefined) {
+    const u = safeUrl(href);
+    if (u) n.setAttribute("href", u);
+  }
   if (tone) n.dataset.tone = tone;
+  for (const [k, v] of Object.entries(dataset ?? {})) {
+    if (typeof v !== "string") throw new TypeError(`el(${tag}): dataset.${k} is not a string`);
+    n.dataset[k] = v;
+  }
   n.append(...kids.filter((k) => k != null && k !== false));
   return n;
 };
@@ -142,6 +185,10 @@ const nowSecs = () => Date.now() / 1000;
 // what it waits on and a Try again that loads it again.
 const framing = {};
 function frameLoad(id, src, { title, waiting, quiet = false } = {}) {
+  if (!safeFrameSrc(src)) {
+    logDev("frame refused", new TypeError(`${id}: ${src}`));
+    return;
+  }
   const frame = $(id);
   const box = frame.parentElement;
   const f = (framing[id] ??= { loaded: false });
@@ -169,7 +216,7 @@ function frameLoad(id, src, { title, waiting, quiet = false } = {}) {
     },
     { once: true },
   );
-  frame.src = src;
+  frame.src = safeFrameSrc(src);
 }
 
 // What a frame's state says it waits on, told again as it changes.

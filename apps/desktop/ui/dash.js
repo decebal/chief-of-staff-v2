@@ -31,7 +31,7 @@
 
   function hideDash() {
     frame.hidden = true;
-    frame.src = "about:blank";
+    frame.removeAttribute("src");
     idle(selected());
   }
 

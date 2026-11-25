@@ -464,6 +464,9 @@ impl Config {
         let markdown = brief.to_markdown(&day);
         let saved = store::save(&self.home, Kind::Briefs, &day, &brief, &markdown)?;
         crate::history::record(&self.home, &day, &facts, Some(&brief))?;
+        if let Err(e) = crate::history::record_kpis(&self.home, &self.workspace) {
+            eprintln!("cos: KPI points not recorded: {e:#}");
+        }
         let tracked = report_tracking(track::record_run(
             &self.workspace,
             "brief",

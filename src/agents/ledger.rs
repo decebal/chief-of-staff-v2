@@ -39,6 +39,9 @@ pub struct Row {
     /// The staff role; `None` for rows written before roles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// The spec's title; `None` for rows written before titles.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 pub fn path(home: &Path) -> PathBuf {
@@ -72,6 +75,7 @@ pub fn row(spec: &Spec, state: &State) -> Option<Row> {
         tool_calls: None,
         herdr: !spec.legacy(),
         role: spec.role.clone(),
+        title: Some(spec.title.clone()),
     })
 }
 

@@ -14,6 +14,7 @@
 //! it back and checks its `hire` label, so cos only ever touches the
 //! terminals it started.
 
+use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
 use std::path::Path;
@@ -21,8 +22,10 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
+use super::timeline::{self, By, Event, Kind};
 use super::{
-    Seen, Spec, State, Status, Verdict, dir, judge, ledger, list, read, read_raw, write_state,
+    Seen, Spec, State, Status, Verdict, dir, events, judge, ledger, list, read, read_raw,
+    write_state,
 };
 use crate::herdr::{self, Term};
 
@@ -87,8 +90,38 @@ pub fn tick(home: &Path) -> Result<usize> {
     Ok(n)
 }
 
+thread_local! {
+    static HELD: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` under the run's `state.lock`, so a read-modify-write of its state
+/// cannot interleave with another follower's. Re-entrant on one thread:
+/// `observe` reaches `close` and `judge` under the same lock.
+fn with_state_lock<R>(home: &Path, id: &str, f: impl FnOnce() -> Result<R>) -> Result<R> {
+    if HELD.with(|h| h.borrow().iter().any(|x| x == id)) {
+        return f();
+    }
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir(home, id).join("state.lock"))?;
+    // SAFETY: flock on a descriptor this process owns; no memory is touched.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        bail!("lock {id}'s state: {}", std::io::Error::last_os_error());
+    }
+    HELD.with(|h| h.borrow_mut().push(id.to_owned()));
+    let out = f();
+    HELD.with(|h| h.borrow_mut().pop());
+    out
+}
+
 /// Reads one run's terminal and acts on what it says.
 pub fn observe(home: &Path, id: &str) -> Result<State> {
+    with_state_lock(home, id, || observe_locked(home, id))
+}
+
+fn observe_locked(home: &Path, id: &str) -> Result<State> {
     let (spec, mut state) = read(home, id)?;
     let Some(prev) = state.herdr.clone() else {
         return Ok(state);
@@ -129,6 +162,28 @@ pub fn observe(home: &Path, id: &str) -> Result<State> {
         return Ok(read_raw(home, id)?.1);
     }
     let now = seen(&t, Some(&prev));
+    let word = now.word.as_deref().and_then(timeline::word);
+    if word.is_some() && word != prev.word.as_deref().and_then(timeline::word) {
+        events::record(
+            home,
+            id,
+            Event {
+                word,
+                turn: Some(now.turn),
+                ..Event::new(now.at.clone(), Kind::Word, By::Herdr)
+            },
+        );
+    }
+    if prev.first_message.is_none() && now.first_message.is_some() {
+        events::record(
+            home,
+            id,
+            Event {
+                turn: Some(now.turn),
+                ..Event::new(now.at.clone(), Kind::FirstMessage, By::You)
+            },
+        );
+    }
     let changed = Seen {
         at: prev.at.clone(),
         ..now.clone()
@@ -165,6 +220,15 @@ pub fn observe(home: &Path, id: &str) -> Result<State> {
                     h.interrupted = Some(jiff::Timestamp::now().to_string());
                 }
                 write_state(home, id, &s)?;
+                events::record(
+                    home,
+                    id,
+                    Event::new(
+                        jiff::Timestamp::now().to_string(),
+                        Kind::DeadlineStop,
+                        By::Cos,
+                    ),
+                );
             }
             Some(at) if super::age(at) >= grace() => {
                 finish(
@@ -244,6 +308,14 @@ pub fn say(home: &Path, id: &str, text: &str) -> Result<State> {
     }
     let (_, _, t) = live(home, id)?;
     herdr::send(&t.address, text)?;
+    events::record(
+        home,
+        id,
+        Event {
+            chars: Some(text.chars().count()),
+            ..Event::new(jiff::Timestamp::now().to_string(), Kind::Said, By::You)
+        },
+    );
     observe(home, id)
 }
 
@@ -252,6 +324,14 @@ pub fn say(home: &Path, id: &str, text: &str) -> Result<State> {
 pub fn pause(home: &Path, id: &str) -> Result<State> {
     let (_, _, t) = live(home, id)?;
     herdr::interrupt(&t.address)?;
+    events::record(
+        home,
+        id,
+        Event {
+            turn: Some(t.turn),
+            ..Event::new(jiff::Timestamp::now().to_string(), Kind::Paused, By::You)
+        },
+    );
     observe(home, id)
 }
 
@@ -265,6 +345,15 @@ pub fn mark_done(home: &Path, id: &str) -> Result<State> {
         return Ok(read_raw(home, id)?.1);
     }
     live(home, id)?;
+    events::record(
+        home,
+        id,
+        Event::new(
+            jiff::Timestamp::now().to_string(),
+            Kind::MarkedDone,
+            By::You,
+        ),
+    );
     finish(home, &spec, Status::Done, None, "marked done")?;
     Ok(read_raw(home, id)?.1)
 }
@@ -290,6 +379,18 @@ pub fn open_in_herdr(home: &Path, id: &str) -> Result<String> {
 
 /// Ends a live terminal with its last screen kept, then the run.
 pub(crate) fn finish(
+    home: &Path,
+    spec: &Spec,
+    status: Status,
+    error: Option<String>,
+    why: &str,
+) -> Result<()> {
+    with_state_lock(home, &spec.id, || {
+        finish_locked(home, spec, status, error, why)
+    })
+}
+
+fn finish_locked(
     home: &Path,
     spec: &Spec,
     status: Status,
@@ -377,6 +478,19 @@ fn close(
     error: Option<String>,
     why: &str,
 ) -> Result<()> {
+    with_state_lock(home, &spec.id, || {
+        close_locked(home, spec, state, status, error, why)
+    })
+}
+
+fn close_locked(
+    home: &Path,
+    spec: &Spec,
+    state: &mut State,
+    status: Status,
+    error: Option<String>,
+    why: &str,
+) -> Result<()> {
     state.status = status;
     state.ended = Some(jiff::Timestamp::now().to_string());
     state.launcher = None;
@@ -385,6 +499,18 @@ fn close(
         state.error = error;
     }
     write_state(home, &spec.id, state)?;
+    events::record(
+        home,
+        &spec.id,
+        Event {
+            status: Some(status),
+            ..Event::new(
+                state.ended.clone().unwrap_or_default(),
+                Kind::Ended,
+                By::Cos,
+            )
+        },
+    );
     judge(home, spec, why, false)?;
     *state = read_raw(home, &spec.id)?.1;
     Ok(())
@@ -394,6 +520,10 @@ fn close(
 /// `again`, a run already judged keeps its verdict. A live run is judged as
 /// `done`: it said so, or you did.
 pub(crate) fn judge(home: &Path, spec: &Spec, why: &str, again: bool) -> Result<Verdict> {
+    with_state_lock(home, &spec.id, || judge_locked(home, spec, why, again))
+}
+
+fn judge_locked(home: &Path, spec: &Spec, why: &str, again: bool) -> Result<Verdict> {
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -424,6 +554,15 @@ pub(crate) fn judge(home: &Path, spec: &Spec, why: &str, again: bool) -> Result<
     state.verdict = Some(v.clone());
     state.judged_on = Some(why.to_owned());
     write_state(home, &spec.id, &state)?;
+    events::record(
+        home,
+        &spec.id,
+        Event {
+            judged: Some(v.judged.clone()),
+            outcome: Some(v.outcome),
+            ..Event::new(v.judged.clone(), Kind::Judged, By::Cos)
+        },
+    );
     as_judged.verdict = Some(v.clone());
     if let Some(row) = ledger::row(spec, &as_judged) {
         ledger::append(home, &row)?;

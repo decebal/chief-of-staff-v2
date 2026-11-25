@@ -81,6 +81,8 @@ fn main() -> Result<()> {
     docs_room(&home, today, &mut rng)?;
     staff(&home, today)?;
     herdr_runs(&home, today)?;
+    fleet_history(&home, today)?;
+    kpi_points(&home, today)?;
     flows(&home)?;
 
     let report = cos::report::build(&home, &home)?;
@@ -264,7 +266,233 @@ fn herdr_runs(home: &Path, today: Date) -> Result<()> {
     };
     std::fs::write(dir.join("spec.json"), serde_json::to_vec_pretty(&spec)?)?;
     std::fs::write(dir.join("state.json"), serde_json::to_vec_pretty(&state)?)?;
+    if let Some(row) = cos::agents::ledger::row(&spec, &state) {
+        cos::agents::ledger::append(home, &row)?;
+    }
     std::fs::write(home.join(".herdr-demo/next"), "903\n")?;
+    Ok(())
+}
+
+/// The Agents fleet's history beyond the two live hires: a Writer paused then
+/// resumed, judged; a Reviewer from before Herdr, with no event log; and a
+/// Migrator whose prep failed, so its log is Hired then Ended. Each judged
+/// hire has its ledger row with its title. Also yesterday's ok brief run, so
+/// Today's digest has a boundary to count from.
+fn fleet_history(home: &Path, today: Date) -> Result<()> {
+    use cos::agents::timeline::{By, Event, Kind as Ev, Word};
+    use cos::agents::{
+        Contract, Expects, Harness, Outcome, Spec, State, Status, Verdict, events, ledger,
+    };
+
+    let root = cos::agents::root(home);
+    let now = jiff::Timestamp::now();
+    let ago = |mins: i64| (now - jiff::SignedDuration::from_mins(mins)).to_string();
+    let spec_of =
+        |id: &str, title: &str, role: &str, terminal: Option<String>, created: String| Spec {
+            id: id.into(),
+            harness: Harness::Claude,
+            program: "claude".into(),
+            model: None,
+            repo: None,
+            base: None,
+            workdir: root.join(id).join("scratch"),
+            worktree: false,
+            title: title.into(),
+            source: format!("brief {today} #2"),
+            prompt: format!("Role: {role}. {title}."),
+            deadline_secs: 1800,
+            created,
+            slots: Some(3),
+            contract: Contract {
+                done_when: Some("The file is written and its checks pass.".into()),
+                checks: vec!["test -s NOTE.md".into()],
+                expects: Expects::File,
+                output: Some("NOTE.md".into()),
+                ..Contract::default()
+            },
+            role: Some(role.into()),
+            terminal,
+            workspace: None,
+            projects: None,
+        };
+    let event = |at: String, kind: Ev, by: By| Event::new(at, kind, by);
+
+    // The Writer: paused at its second stop, resumed into turn 2, judged accepted.
+    let id = format!("{}-100000-c003", today.strftime("%Y%m%d"));
+    let spec = spec_of(
+        &id,
+        "Draft the rollout note for gateway 3.4",
+        "writer",
+        Some(cos::agents::follow::terminal_name(&id)),
+        ago(180),
+    );
+    let mut paused = event(ago(165), Ev::Paused, By::You);
+    paused.turn = Some(1);
+    let mut resumed = event(ago(140), Ev::Word, By::Herdr);
+    resumed.word = Some(Word::Working);
+    resumed.turn = Some(2);
+    let mut judged = event(ago(120), Ev::Judged, By::Cos);
+    judged.outcome = Some(Outcome::Accepted);
+    judged.judged = Some(ago(120));
+    let mut idle = event(ago(170), Ev::Word, By::Herdr);
+    idle.word = Some(Word::Idle);
+    idle.turn = Some(1);
+    let mut working = event(ago(178), Ev::Word, By::Herdr);
+    working.word = Some(Word::Working);
+    working.turn = Some(0);
+    let log = [
+        event(ago(180), Ev::Hired, By::Cos),
+        event(ago(179), Ev::Started, By::Cos),
+        working,
+        idle,
+        paused,
+        resumed,
+        judged,
+        event(ago(119), Ev::Ended, By::Cos),
+    ];
+    std::fs::create_dir_all(root.join(&id))?;
+    for ev in &log {
+        events::append(home, &id, ev)?;
+    }
+    let state = State {
+        status: Status::Done,
+        started: Some(ago(179)),
+        ended: Some(ago(119)),
+        exit: Some(0),
+        verdict: Some(Verdict {
+            outcome: Outcome::Accepted,
+            reasons: Vec::new(),
+            changed: vec!["NOTE.md".into()],
+            out_of_scope: Vec::new(),
+            checks: vec![],
+            overclaimed: false,
+            judged: ago(120),
+        }),
+        judged_on: Some("done at turn 2".into()),
+        herdr: Some(cos::agents::Seen {
+            address: "t903".into(),
+            word: Some("done".into()),
+            turn: 2,
+            live: false,
+            reason: Some("exited".into()),
+            at: ago(119),
+            ..cos::agents::Seen::default()
+        }),
+        ..State::default()
+    };
+    write_hire(&root, &id, &spec, &state)?;
+    if let Some(row) = ledger::row(&spec, &state) {
+        ledger::append(home, &row)?;
+    }
+
+    // The Reviewer: from before Herdr, judged, with no event log.
+    let id = format!("{}-080000-c004", today.strftime("%Y%m%d"));
+    let spec = spec_of(
+        &id,
+        "Summarise the 2.9 incident review",
+        "reviewer",
+        None,
+        ago(1500),
+    );
+    let state = State {
+        status: Status::Done,
+        started: Some(ago(1499)),
+        ended: Some(ago(1480)),
+        exit: Some(0),
+        verdict: Some(Verdict {
+            outcome: Outcome::Accepted,
+            reasons: Vec::new(),
+            changed: vec!["NOTE.md".into()],
+            out_of_scope: Vec::new(),
+            checks: vec![],
+            overclaimed: false,
+            judged: ago(1480),
+        }),
+        judged_on: Some("it ended".into()),
+        ..State::default()
+    };
+    write_hire(&root, &id, &spec, &state)?;
+    if let Some(row) = ledger::row(&spec, &state) {
+        ledger::append(home, &row)?;
+    }
+
+    // The Migrator: its worktree could not be seeded. Hired, then Ended.
+    let id = format!("{}-111500-c005", today.strftime("%Y%m%d"));
+    let spec = spec_of(
+        &id,
+        "Run the migration dry run",
+        "migrator",
+        Some(cos::agents::follow::terminal_name(&id)),
+        ago(40),
+    );
+    let hired = event(ago(40), Ev::Hired, By::Cos);
+    let mut ended = event(ago(39), Ev::Ended, By::Cos);
+    ended.status = Some(Status::Failed);
+    std::fs::create_dir_all(root.join(&id))?;
+    for ev in [&hired, &ended] {
+        events::append(home, &id, ev)?;
+    }
+    let state = State {
+        status: Status::Failed,
+        ended: Some(ago(39)),
+        error: Some("The worktree could not be seeded: the base commit is not in the repo.".into()),
+        ..State::default()
+    };
+    write_hire(&root, &id, &spec, &state)?;
+
+    // Yesterday's brief run, ok: the digest counts items after it.
+    let yesterday = today.checked_sub(Span::new().days(1))?;
+    let receipt = cos::pipeline::RunReceipt {
+        day: yesterday.to_string(),
+        at: (now - jiff::SignedDuration::from_hours(26)).to_string(),
+        status: cos::pipeline::RunStatus::Ok,
+        reason: String::new(),
+        attempts: 1,
+        cost_usd: 0.41,
+    };
+    store::save_json(home, Kind::Runs, &yesterday.to_string(), &receipt)?;
+    Ok(())
+}
+
+/// Two evidence points per KPI, so each tile draws a sparkline.
+fn kpi_points(home: &Path, today: Date) -> Result<()> {
+    let at = |d: i64| {
+        format!(
+            "{}T08:00:00+00:00",
+            today.checked_add(Span::new().days(d)).unwrap()
+        )
+    };
+    let recorded = jiff::Timestamp::now().to_string();
+    let rows = [
+        (
+            "Beta testers enrolled",
+            [(-14, 40.0), (-7, 95.0), (0, 140.0)],
+        ),
+        ("Median review wait", [(-21, 52.0), (-14, 47.0), (-7, 44.0)]),
+    ];
+    let mut out = String::new();
+    for (kpi, points) in rows {
+        for (d, value) in points {
+            out.push_str(&format!(
+                "{}\n",
+                json!({ "kpi": kpi, "value": value, "evidenceAt": at(d), "recordedAt": recorded })
+            ));
+        }
+    }
+    std::fs::write(home.join("out/history/kpis.jsonl"), out)?;
+    Ok(())
+}
+
+fn write_hire(
+    root: &Path,
+    id: &str,
+    spec: &cos::agents::Spec,
+    state: &cos::agents::State,
+) -> Result<()> {
+    let dir = root.join(id);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("spec.json"), serde_json::to_vec_pretty(spec)?)?;
+    std::fs::write(dir.join("state.json"), serde_json::to_vec_pretty(state)?)?;
     Ok(())
 }
 
@@ -920,7 +1148,7 @@ fn week_json(today: Date) -> serde_json::Value {
     json!({
         "summary": "Mobile 2.0 moved and review wait time did not; the beta now depends on one review.",
         "goals": [
-            { "goal_id": "G-1", "goal": "Mobile 2.0 on the new gateway", "confidence": "rock", "kpi": "Beta testers: unknown (enrolment opens with the beta)",
+            { "goal_id": "G-1", "goal": "Mobile 2.0 on the new gateway", "confidence": "rock", "kpi": "Beta testers enrolled: 140 of 500 (enrolment list, today)",
               "evidence": "Auth rewrite merged; 3.4 in review.", "bottleneck": "One reviewer for api-gateway#412.",
               "recommendation": "maintain", "next": "Ship 3.4, then cut the beta branch (D-2).", "would_change": "A blocking finding in #412.",
               "agent_prompt": format!("Work in ~/Projects/mobile. List what the 2.0 beta still needs from the gateway 3.4 API and draft the beta checklist. {stop}") },
@@ -991,7 +1219,7 @@ fn workspace(home: &Path, today: Date) -> Result<()> {
               "docs": ["design-system"] }
         ],
         "kpis": [
-            { "id": "K-1", "goalId": "G-1", "name": "Beta testers enrolled", "unit": "testers", "baseline": 0, "target": 500, "current": null, "evidenceAt": null, "source": null, "reportingWindow": "beta" },
+            { "id": "K-1", "goalId": "G-1", "name": "Beta testers enrolled", "unit": "testers", "baseline": 0, "target": 500, "current": 140, "evidenceAt": at(0, 8), "source": "beta enrolment list", "reportingWindow": "beta" },
             { "id": "K-2", "goalId": "G-2", "name": "Median review wait", "unit": "hours", "baseline": 52, "target": 24, "current": 41, "evidenceAt": at(0, 8), "source": "gh search, review-requested", "reportingWindow": "last 7 days" }
         ],
         "deliverables": [
@@ -1080,6 +1308,7 @@ fn history(home: &Path, today: Date, facts: &Facts, rng: &mut Rng) -> Result<()>
                 number: 10_000 + (back as u64) * 10 + k,
                 title: "Shipped change".into(),
                 day: d.to_string(),
+                merged_at: Some(format!("{d}T12:00:00Z")),
             });
         }
     }
@@ -1762,6 +1991,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
                 tool_calls: Some(40),
                 herdr: false,
                 role: role.map(Into::into),
+                title: Some(format!("Archived run {}", k + 1)),
             },
         )?;
     }
