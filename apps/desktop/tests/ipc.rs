@@ -647,6 +647,64 @@ fn a_run_waiting_in_herdr_needs_you_and_the_window_replies_pauses_opens_and_mark
 }
 
 #[test]
+fn the_fleet_row_carries_identity_and_clock_and_a_pause_is_one_span() {
+    let cos = cos_bin();
+    let root = scratch("timeline");
+    let herdr = fake_herdr::fake(&root);
+    let d = dirs(&root, "default");
+    seed(&d.workspace, None);
+    let repo = repo_in(&d.projects, "demo-repo");
+    let start = start(&root, cos, 2, Sources::default());
+    register(&start, "default", &d, true);
+    let (_app, w) = open(start);
+
+    let id = hire(
+        &w,
+        "default",
+        hire_args(&repo, json!({ "prompt": "edit", "role": "builder" })),
+    );
+    let t = address(&w, &id);
+    cos::agents::tick(&d.home).unwrap();
+
+    let row = row_of(&w, &id);
+    let identity = row["identity"].as_u64().unwrap();
+    assert!((1..=6).contains(&identity), "{row}");
+    assert!(row["active_ms"].as_u64().is_some(), "{row}");
+    assert_eq!(row["paused_now"], false, "{row}");
+
+    call(
+        &w,
+        "agents_pause",
+        json!({ "business": "default", "id": id }),
+    )
+    .unwrap();
+    assert!(herdr.calls().contains(&format!("interrupt | {t}")));
+    assert_eq!(row_of(&w, &id)["paused_now"], true);
+    call(
+        &w,
+        "agents_say",
+        json!({ "business": "default", "id": id, "text": "go on" }),
+    )
+    .unwrap();
+    assert_eq!(row_of(&w, &id)["paused_now"], false);
+
+    let tl = call(
+        &w,
+        "agents_timeline",
+        json!({ "business": "default", "id": id }),
+    )
+    .unwrap();
+    let paused = tl["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["mode"] == "paused")
+        .count();
+    assert_eq!(paused, 1, "{tl}");
+    assert_eq!(tl["summary"]["paused_now"], false, "{tl}");
+}
+
+#[test]
 fn the_dialog_checks_fit_before_hiring_and_a_tester_run_takes_your_result() {
     let cos = cos_bin();
     let root = scratch("fit");

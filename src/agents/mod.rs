@@ -13,6 +13,7 @@
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -25,6 +26,7 @@ use crate::proc;
 use crate::reports::Brief;
 use crate::store::{self, Kind};
 
+pub mod events;
 pub mod fit;
 pub mod follow;
 pub mod harness;
@@ -35,6 +37,7 @@ pub mod osc;
 pub mod policy;
 pub mod seed;
 pub mod slots;
+pub mod timeline;
 pub mod view;
 
 pub use follow::{mark_done, open_in_herdr, pause, say, screen, tick};
@@ -335,6 +338,15 @@ pub fn dir(home: &Path, id: &str) -> PathBuf {
     root(home).join(id)
 }
 
+/// The colour a run's role shows in the window: 1..=6, the same everywhere.
+pub fn identity(role: Option<&str>) -> u8 {
+    let key = role.unwrap_or("unassigned");
+    let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    1 + (hash % 6) as u8
+}
+
 /// A run directory checked by `run_dir`: the only way from a run id to a path.
 pub struct RunDir {
     path: PathBuf,
@@ -566,6 +578,15 @@ fn record_run(triple: &Triple, mut req: Request, herdr_up: bool) -> Result<Spec>
         projects: Some(std::path::absolute(&triple.projects)?),
     };
     write_json(&d.join("spec.json"), &spec)?;
+    events::record(
+        &home,
+        &id,
+        timeline::Event::new(
+            jiff::Timestamp::now().to_string(),
+            timeline::Kind::Hired,
+            timeline::By::Cos,
+        ),
+    );
     let me = std::process::id() as i32;
     let state = State {
         launcher: Some(me),
@@ -620,7 +641,8 @@ pub fn launch(home: &Path, id: &str, cos: &Path) -> Result<()> {
         Ok(t) => {
             state.herdr = Some(follow::seen(&t, None));
             state.status = Status::Running;
-            state.started = Some(jiff::Timestamp::now().to_string());
+            let at = jiff::Timestamp::now().to_string();
+            state.started = Some(at.clone());
             state.launcher = None;
             state.launcher_started = None;
             if let Some(why) = state.herdr.as_ref().and_then(Seen::unsent) {
@@ -628,7 +650,26 @@ pub fn launch(home: &Path, id: &str, cos: &Path) -> Result<()> {
                     "Herdr did not send it the work ({why}): read its screen in Herdr before sending it again"
                 ));
             }
-            write_state(home, id, &state)
+            write_state(home, id, &state)?;
+            events::record(
+                home,
+                id,
+                timeline::Event::new(at.clone(), timeline::Kind::Started, timeline::By::Cos),
+            );
+            if let Some(h) = state.herdr.as_ref()
+                && let Some(word) = h.word.as_deref().and_then(timeline::word)
+            {
+                events::record(
+                    home,
+                    id,
+                    timeline::Event {
+                        word: Some(word),
+                        turn: Some(h.turn),
+                        ..timeline::Event::new(at, timeline::Kind::Word, timeline::By::Herdr)
+                    },
+                );
+            }
+            Ok(())
         }
         Err(e) => {
             let why = format!("Herdr did not start it: {e:#}");
@@ -1059,12 +1100,21 @@ pub(crate) fn write_state(home: &Path, id: &str, state: &State) -> Result<()> {
     write_json(&dir(home, id).join("state.json"), state)
 }
 
-/// Write-then-rename, so a reader never sees half a file.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Write-then-rename, so a reader never sees half a file. The temp name is
+/// unique per process and write, so writers never share one.
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    let n = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.{n}.tmp", std::process::id()));
+    let tmp = PathBuf::from(name);
+    let written = std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Ok(written?)
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {

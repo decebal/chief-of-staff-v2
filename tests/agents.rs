@@ -171,6 +171,28 @@ fn outcome() -> agents::Recorded {
 }
 
 #[test]
+fn a_ledger_row_carries_the_spec_title_and_a_row_without_one_still_reads() {
+    let (_, home, _, _) = setup("ledger-title");
+    let spec =
+        agents::prepare_spec(&at(&home), request(Harness::Claude, "claude", None, "x")).unwrap();
+    let st = State {
+        status: Status::Failed,
+        error: Some("exited with code 1".into()),
+        ..State::default()
+    };
+    let judged = State {
+        verdict: Some(agents::judge::judge(&spec, &st, None)),
+        ..st
+    };
+    let row = agents::ledger::row(&spec, &judged).unwrap();
+    assert_eq!(row.title.as_deref(), Some("test task"));
+    let mut legacy = serde_json::to_value(&row).unwrap();
+    legacy.as_object_mut().unwrap().remove("title");
+    let old: agents::ledger::Row = serde_json::from_value(legacy).unwrap();
+    assert_eq!(old.title, None);
+}
+
+#[test]
 fn a_hire_becomes_a_herdr_terminal_named_labelled_in_its_worktree_with_the_prompt_first() {
     let (_, home, repo, f) = setup("launch");
     let spec = hire(&home, &repo, "Fix the parser in src/lib.rs");
@@ -1061,4 +1083,37 @@ fn count_refuses_a_symlinked_run() {
         before,
         "count wrote a record"
     );
+}
+
+#[test]
+fn two_followers_keep_ended_and_verdict() {
+    let (_, home, repo, f) = setup("lost-update");
+    let spec = hire(&home, &repo, "edit");
+    let t = address(&state(&home, &spec.id));
+    let id = spec.id.clone();
+
+    let observer = {
+        let (home, id, state_dir) = (home.clone(), id.clone(), f.state.clone());
+        std::thread::spawn(move || {
+            for turn in 1..=300 {
+                std::fs::write(
+                    state_dir.join("terms").join(&t).join("turn"),
+                    turn.to_string(),
+                )
+                .unwrap();
+                agents::follow::observe(&home, &id).unwrap();
+            }
+        })
+    };
+    let closer = {
+        let (home, id) = (home.clone(), id.clone());
+        std::thread::spawn(move || agents::mark_done(&home, &id).map(|_| ()))
+    };
+    observer.join().unwrap();
+    closer.join().unwrap().unwrap();
+
+    let st = state(&home, &id);
+    assert_eq!(st.status, Status::Done, "{st:?}");
+    assert!(st.verdict.is_some(), "verdict lost: {st:?}");
+    assert_eq!(ledger_lines(&home), 1, "judged exactly once");
 }

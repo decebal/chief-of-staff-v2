@@ -540,11 +540,57 @@ pub fn gate(repo: &Path, flow: &Flow, budget: Duration) -> Option<Gate> {
     })
 }
 
+/// One bead of a flow, as the steps view lists it under Build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StepBead {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+}
+
+/// A flow's place on the ritual strip and its beads, for every flow the scan
+/// read. `step` is `drift` when an approved design changed under the flow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FlowSteps {
+    pub repo: String,
+    pub epic: String,
+    pub step: &'static str,
+    pub beads: Vec<StepBead>,
+}
+
 /// Every flow under `projects` waiting at the gate, and what could not be read.
 pub fn gates(projects: &Path, cn: &Path, budget: Duration) -> (Vec<Gate>, Vec<String>) {
+    let (found, gaps, _) = board(projects, cn, budget);
+    (found, gaps)
+}
+
+/// [`gates`], plus the steps of every flow the scan read.
+pub fn board(
+    projects: &Path,
+    cn: &Path,
+    budget: Duration,
+) -> (Vec<Gate>, Vec<String>, Vec<FlowSteps>) {
     let until = Deadline::after(budget);
     let scan = flows::scan(projects, cn, budget);
     let mut gaps = scan.gaps;
+    let steps = scan
+        .flows
+        .iter()
+        .map(|f| FlowSteps {
+            repo: f.repo.clone(),
+            epic: f.id.clone(),
+            step: f.step.as_str(),
+            beads: f
+                .beads
+                .iter()
+                .map(|b| StepBead {
+                    id: b.id.clone(),
+                    title: b.title.clone(),
+                    status: b.status.clone(),
+                })
+                .collect(),
+        })
+        .collect();
     let mut found = Vec::new();
     for flow in &scan.flows {
         if flow.approved || flow.step != Step::Spec {
@@ -556,7 +602,7 @@ pub fn gates(projects: &Path, cn: &Path, budget: Duration) -> (Vec<Gate>, Vec<St
         }
         found.extend(gate(&projects.join(&flow.repo), flow, until.left()));
     }
-    (found, gaps)
+    (found, gaps, steps)
 }
 
 /// Where [`locate`] found a file, and the directory it resolved it under: the

@@ -29,7 +29,7 @@ pub fn esc(s: &str) -> String {
 }
 
 /// What the view needs from `report::data`, read once.
-struct Ctx<'a> {
+pub(crate) struct Ctx<'a> {
     data: &'a Value,
     tz: TimeZone,
     now: ZonedDateTime,
@@ -38,7 +38,7 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    fn new(data: &'a Value) -> Self {
+    pub(crate) fn new(data: &'a Value) -> Self {
         let tz = data["workspace"]["timezone"]
             .as_str()
             .and_then(|n| TimeZone::get(n).ok())
@@ -77,7 +77,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// `Thu 29 Oct, 16:00` in the profile's timezone; the time alone today.
-    fn stamp(&self, iso: &str) -> String {
+    pub(crate) fn stamp(&self, iso: &str) -> String {
         let Some(z) = parse_instant(iso).map(|t| t.to_zoned_datetime(self.tz.clone())) else {
             return self.date(iso);
         };
@@ -244,6 +244,7 @@ pub fn body(data: &Value) -> String {
     let cx = Ctx::new(data);
     let Some(b) = &cx.brief else {
         let mut s = herdr_waiting(&cx);
+        s.push_str(&crate::digest::section(data));
         s.push_str(FALLBACK);
         s.push_str(&crate::constraints::section(data));
         s.push_str(&crate::delivery::section(data));
@@ -251,9 +252,11 @@ pub fn body(data: &Value) -> String {
     };
     let mut s = String::from(r#"<div class="today" data-ssr>"#);
     actions(&mut s, &cx, b);
+    s.push_str(&crate::digest::section(data));
     s.push_str(&crate::constraints::section(data));
     s.push_str(&crate::delivery::section(data));
     week(&mut s, &cx, b);
+    s.push_str(&crate::kpis::section(data));
     ribbon(&mut s, &cx, b);
     changes(&mut s, b);
     coverage(&mut s, &cx, b);

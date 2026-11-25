@@ -48,11 +48,21 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         "architecture": architecture(),
     });
 
+    let herdr_waiting = crate::agents::list(home)
+        .map(|l| crate::agents::view::waiting_in_herdr(&l.runs))
+        .unwrap_or_default();
+    let digest = crate::digest::build(
+        home,
+        ws,
+        now.timestamp(),
+        brief.as_ref().map(|s| &s.value),
+        &herdr_waiting,
+    );
     let run = brief.as_ref().and_then(|b| brief_run(home, &b.day));
     let brief_ref = brief
         .as_ref()
         .map(|b| json!({ "file": format!("{}.json", b.day), "mtime": b.mtime_ms }));
-    Ok(json!({
+    let mut out = json!({
         "generated_at": now.strftime("%Y-%m-%d %H:%M %Z").to_string(),
         "today": today,
         "now": now.strftime("%H:%M").to_string(),
@@ -75,10 +85,15 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         "workspace": workspace(ws),
         "delivery": crate::delivery::view(home),
         "constraints": crate::constraints::view(home),
-        "herdr_waiting": crate::agents::list(home)
-            .map(|l| crate::agents::view::waiting_in_herdr(&l.runs))
-            .unwrap_or_default(),
-    }))
+        "herdr_waiting": herdr_waiting,
+        "digest": digest,
+        "kpi_points": history::kpi_points(home),
+    });
+    if out["workspace"].is_object() {
+        let tiles = crate::kpis::by_goal(&out);
+        out["workspace"]["kpiTiles"] = tiles;
+    }
+    Ok(out)
 }
 
 /// The plan view: the state's records and a ready handoff per open

@@ -1087,20 +1087,58 @@ struct Row {
     state: State,
     /// Why it needs you now, in words; `None` when it does not.
     needs: Option<String>,
+    identity: u8,
+    /// Active time at the moment of the call; the window ticks it on.
+    active_ms: u64,
+    paused_now: bool,
 }
 
 #[tauri::command]
 async fn agents_list(app: tauri::State<'_, App>) -> Res<Vec<Row>> {
     let home = app.get().home;
     blocking(move || {
+        let now = jiff::Timestamp::now();
         Ok(agents::list(&home)?
             .runs
             .into_iter()
             .map(|(spec, state)| {
                 let needs = agents::needs(&spec, &state);
-                Row { spec, state, needs }
+                let clock = agents::events::tail_summary(&home, &spec.id, now, &state)
+                    .unwrap_or_else(|_| agents::timeline::stored_summary(&state, now));
+                Row {
+                    identity: agents::identity(spec.role.as_deref()),
+                    active_ms: clock.active_ms,
+                    paused_now: clock.paused_now,
+                    spec,
+                    state,
+                    needs,
+                }
             })
             .collect())
+    })
+    .await
+}
+
+/// A run's timeline at now: spans, hand-offs and marks, read from its
+/// event log (`agents::timeline::fold`).
+#[tauri::command]
+async fn agents_timeline(
+    app: tauri::State<'_, App>,
+    business: String,
+    id: String,
+) -> Res<agents::timeline::Timeline> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let home = cur.home;
+    blocking(move || {
+        let (spec, state) = agents::read(&home, &id)?;
+        let events = agents::events::read(&home, &id);
+        Ok(agents::timeline::fold(
+            &spec,
+            &state,
+            &events,
+            jiff::Timestamp::now(),
+        ))
     })
     .await
 }
@@ -1584,9 +1622,10 @@ async fn ritual_gates(app: tauri::State<'_, App>) -> Res<Value> {
                 "gates": [],
                 "gaps": ["the profile does not approve a tasks source, so no task store was read"],
                 "steps": cos::ritual::STRIP,
+                "flows": [],
             }));
         }
-        let (gates, gaps) = cos::ritual::gates(
+        let (gates, gaps, flows) = cos::ritual::board(
             &s.projects,
             &cos::flows::cn_program(),
             cos::flows::SCAN_BUDGET,
@@ -1604,7 +1643,7 @@ async fn ritual_gates(app: tauri::State<'_, App>) -> Res<Value> {
                 v
             })
             .collect();
-        Ok(json!({ "gates": gates, "gaps": gaps, "steps": cos::ritual::STRIP }))
+        Ok(json!({ "gates": gates, "gaps": gaps, "steps": cos::ritual::STRIP, "flows": flows }))
     })
     .await
 }
@@ -2090,6 +2129,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             agents_pause,
             agents_done,
             agents_open,
+            agents_timeline,
             agents_screen,
             herdr_status,
             herdr_start,

@@ -43,6 +43,8 @@ tasks:
       # Compile outside the run, so a cold build cannot eat the tests' time.
       - timeout 300 cargo test --test flows_page --no-run
       - timeout 300 cargo test --test flows_page -- --include-ignored --test-threads=1
+      - timeout 300 cargo test --test kit_page --no-run
+      - timeout 300 cargo test --test kit_page -- --include-ignored --test-threads=1
 
   install:
     desc: cos → ~/.cargo/bin; agents → ~/.claude/agents (for interactive Claude Code)
@@ -183,6 +185,17 @@ tasks:
       - '{{.SHOT}} --window-size=1440,900 --screenshot=docs/assets/docs-focus.png "http://127.0.0.1:8792/docs#doc={{.GUIDE}}&mode=focus"'
       # Every ritual flow over the demo's fictional Chronis stores, through its stand-in cn.
       - '{{.SHOT}} --window-size=1280,1100 --screenshot=docs/assets/flows.png http://127.0.0.1:8792/flows'
+      # The desktop window through its browser preview, on the same demo home: the fleet, the Writer's run page, and Flows with its steps and decision stack.
+      - timeout 300 cargo build
+      - timeout 300 cargo build -p cos-desktop --example preview
+      - defer: pkill -f "examples/preview /tmp/cos-demo 8793" || true
+      - (COS_CN=/tmp/cos-demo/bin/cn target/debug/examples/preview /tmp/cos-demo 8793 &) ; sleep 2
+      - '{{.SHOT}} --window-size=1280,1000 --screenshot=docs/assets/fleet.png "http://127.0.0.1:8793/#tab=agents&pane=runs"'
+      - '{{.SHOT}} --window-size=1280,1000 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/fleet-dark.png "http://127.0.0.1:8793/#tab=agents&pane=runs"'
+      - '{{.SHOT}} --window-size=1280,1300 --screenshot=docs/assets/run.png "http://127.0.0.1:8793/#tab=agents&pane=runs&run=$(date -u +%Y%m%d)-100000-c003"'
+      - '{{.SHOT}} --window-size=1280,1300 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/run-dark.png "http://127.0.0.1:8793/#tab=agents&pane=runs&run=$(date -u +%Y%m%d)-100000-c003"'
+      - '{{.SHOT}} --window-size=1280,1300 --screenshot=docs/assets/flow-decisions.png "http://127.0.0.1:8793/#tab=flows"'
+      - '{{.SHOT}} --window-size=1280,1300 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/flow-decisions-dark.png "http://127.0.0.1:8793/#tab=flows"'
 
   tunnel:
     desc: Read-only MCP behind a Cloudflare quick tunnel for claude.ai; prints the connector URL

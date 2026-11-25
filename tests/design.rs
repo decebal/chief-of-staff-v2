@@ -528,6 +528,25 @@ fn every_colour_token_has_a_light_and_a_dark_value() {
         "radius-lg",
         "radius-xl",
         "radius-full",
+        "identity-1",
+        "identity-2",
+        "identity-3",
+        "identity-4",
+        "identity-5",
+        "identity-6",
+        "identity-1-soft",
+        "identity-2-soft",
+        "identity-3-soft",
+        "identity-4-soft",
+        "identity-5-soft",
+        "identity-6-soft",
+        "think",
+        "space-1",
+        "space-2",
+        "space-3",
+        "space-4",
+        "space-5",
+        "space-6",
     ];
     let missing: Vec<&str> = required
         .into_iter()
@@ -618,6 +637,19 @@ fn text_tokens_meet_aa_contrast_in_light_and_dark() {
         ("verb-do-foreground", "verb-do"),
         ("brand-ink", "brand-amber"),
         ("brand-ink", "brand-blue"),
+        // identity colours are text-capable: each names a person or agent in words
+        ("identity-1", "background"),
+        ("identity-1", "card"),
+        ("identity-2", "background"),
+        ("identity-2", "card"),
+        ("identity-3", "background"),
+        ("identity-3", "card"),
+        ("identity-4", "background"),
+        ("identity-4", "card"),
+        ("identity-5", "background"),
+        ("identity-5", "card"),
+        ("identity-6", "background"),
+        ("identity-6", "card"),
     ];
     let mut low = Vec::new();
     for (text, surface) in pairs {
@@ -696,6 +728,36 @@ fn base64_matches_the_rfc_4648_vectors() {
     }
 }
 
+/// `raw` uses a `kit-` class (not inside a comment or a longer name) without
+/// `design::KIT_SLOT`, so its page would render without the kit sheet.
+fn kit_class_without_sheet(rel: &str, raw: &str) -> Option<String> {
+    let text = strip_comments(raw);
+    let b = text.as_bytes();
+    let uses = text
+        .match_indices("kit-")
+        .any(|(at, _)| at == 0 || !(word(b[at - 1]) || b[at - 1] == b'-'));
+    (uses && !raw.contains(cos::design::KIT_SLOT))
+        .then(|| format!("{rel}: kit- class without {}", cos::design::KIT_SLOT))
+}
+
+#[test]
+fn every_page_that_uses_kit_classes_includes_the_kit_sheet() {
+    let missing: Vec<String> = SERVED
+        .iter()
+        .filter_map(|rel| kit_class_without_sheet(rel, &read(rel)))
+        .collect();
+    assert!(missing.is_empty(), "{missing:#?}");
+    assert!(
+        kit_class_without_sheet("sample.html", r#"<p class="kit-card">x</p>"#).is_some(),
+        "a kit- class without the slot was not flagged"
+    );
+    let with_slot = format!(
+        "<style>{}</style><p class=\"kit-card\">x</p>",
+        cos::design::KIT_SLOT
+    );
+    assert!(kit_class_without_sheet("sample.html", &with_slot).is_none());
+}
+
 /// Each rule fires on a sample, so a gate that silently matches nothing fails here.
 #[test]
 fn each_rule_catches_its_violation() {
@@ -736,6 +798,27 @@ fn each_rule_catches_its_violation() {
     }
     let clean = ".a { color: var(--foreground); border: 1px solid var(--border); font-size: var(--text-sm); border-radius: var(--radius-md); padding: 0.5rem; }\n/* #fff 13px */\n<b>&#39;</b>";
     assert_eq!(violations("sample.css", clean), Vec::<String>::new());
+
+    for (sample, rule) in [
+        ("x.innerHTML = d;", "markup sink"),
+        ("el(\"a\", {[k]: v});", "computed key"),
+        ("n.setAttribute(\"onclick\", d);", "on* handler"),
+        ("n.setAttribute(k, v);", "not a literal"),
+        ("img.src = d;", "URL property .src"),
+    ] {
+        let found = window_js_violations("sample.js", sample);
+        assert!(
+            found.iter().any(|v| v.contains(rule)),
+            "{rule} missed in {sample:?}: {found:?}"
+        );
+    }
+    assert_eq!(
+        window_js_violations(
+            "sample.js",
+            "el(\"a\", {href: u, textContent: d});\nn.setAttribute(\"role\", \"img\");\nif (a == b) x.src == y;"
+        ),
+        Vec::<String>::new()
+    );
 }
 
 /// The served pages' icons come from the window's set: every icon in it
@@ -771,6 +854,148 @@ fn flows_page_never_writes_html_from_data() {
     ] {
         assert!(!page.contains(sink), "src/flows.html uses {sink}");
     }
+}
+
+const WINDOW_MARKUP_SINKS: &[&str] = &[
+    "innerHTML",
+    "outerHTML",
+    "insertAdjacentHTML",
+    "document.write",
+    "createContextualFragment",
+    "DOMParser",
+];
+const WINDOW_URL_PROPS: &[&str] = &[
+    "src",
+    "href",
+    "srcset",
+    "action",
+    "formAction",
+    "poster",
+    "data",
+];
+
+/// The window's sinks that take no data, each named with its reason. A hit
+/// must match its snippet, and each must be hit exactly once.
+const WINDOW_EXCEPTIONS: &[(&str, &str, &str)] = &[
+    (
+        "states.js",
+        "t.innerHTML = window.ART",
+        "static art from art/art.js, no data",
+    ),
+    (
+        "states.js",
+        "n.setAttribute(k, v)",
+        "static Lucide geometry from window.LUCIDE, no data",
+    ),
+    (
+        "states.js",
+        "frame.src = safeFrameSrc(src)",
+        "the app's cosreport: page or a loopback dashboard, through safeFrameSrc",
+    ),
+];
+
+/// The window-script sinks in `raw`: markup writes, `setAttribute` with a
+/// name that is not a literal or an `on*` literal, URL property assignments,
+/// and computed keys in an `el(` props object. Returns `file:line: what`.
+fn window_js_violations(rel: &str, raw: &str) -> Vec<String> {
+    let text = strip_comments(raw);
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let at = |what: &str| format!("{rel}:{}: {what}: {}", n + 1, line.trim());
+        for sink in WINDOW_MARKUP_SINKS {
+            if line.contains(sink) {
+                out.push(at(&format!("markup sink {sink}")));
+            }
+        }
+        for (i, _) in line.match_indices("setAttribute(") {
+            let arg = line[i + "setAttribute(".len()..].trim_start();
+            match arg.strip_prefix('"') {
+                None => out.push(at("setAttribute with a name that is not a literal")),
+                Some(name) if name.to_ascii_lowercase().starts_with("on") => {
+                    out.push(at("setAttribute of an on* handler"))
+                }
+                Some(_) => {}
+            }
+        }
+        for prop in WINDOW_URL_PROPS {
+            let hit = line.match_indices(&format!(".{prop}")).any(|(i, _)| {
+                let rest = line[i + prop.len() + 1..].trim_start();
+                rest.starts_with('=') && !rest.starts_with("==")
+            });
+            if hit {
+                out.push(at(&format!("URL property .{prop} assigned")));
+            }
+        }
+    }
+    let b = text.as_bytes();
+    for (at, _) in text.match_indices("el(") {
+        if at > 0 && (word(b[at - 1]) || b[at - 1] == b'.' || b[at - 1] == b'$') {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = text.len();
+        for (j, &c) in b.iter().enumerate().skip(at + 2) {
+            match c {
+                b'(' => depth += 1,
+                b')' if depth == 0 => {
+                    end = j;
+                    break;
+                }
+                b')' => depth -= 1,
+                _ => {}
+            }
+        }
+        let span = &text[at..end];
+        for (k, _) in span.match_indices('[') {
+            let before = span[..k].trim_end().bytes().last();
+            let key_close = span[k..].find(']').map(|c| k + c);
+            let is_key = matches!(before, Some(b'{' | b','))
+                && key_close.is_some_and(|c| span[c + 1..].trim_start().starts_with(':'));
+            if is_key {
+                let line_no = text[..at + k].matches('\n').count() + 1;
+                out.push(format!("{rel}:{line_no}: computed key in el() props"));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn window_never_writes_html_from_data() {
+    let dir = Path::new(ROOT).join(UI);
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "js"))
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    assert!(
+        files.contains(&"kit.js".to_string()),
+        "kit.js is not in {UI}"
+    );
+    let mut hits = vec![0usize; WINDOW_EXCEPTIONS.len()];
+    let mut found = Vec::new();
+    for file in &files {
+        for v in window_js_violations(&format!("{UI}/{file}"), &read(&format!("{UI}/{file}"))) {
+            match WINDOW_EXCEPTIONS
+                .iter()
+                .position(|(f, snip, _)| file == f && v.contains(snip))
+            {
+                Some(i) => hits[i] += 1,
+                None => found.push(v),
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "window writes markup or a URL from data:\n{found:#?}"
+    );
+    for ((file, snip, why), n) in WINDOW_EXCEPTIONS.iter().zip(&hits) {
+        assert_eq!(*n, 1, "exception {file}: `{snip}` ({why}) hit {n} times");
+    }
+    assert_eq!(WINDOW_EXCEPTIONS.len(), 3);
 }
 
 /// A `title` on an iframe is a native tooltip that floats over the page it
@@ -1082,7 +1307,7 @@ const ICON_FILE: &str = "apps/desktop/ui/vendor/lucide/icons-0.556.0.js";
 /// Each picture's share of art/art.js: the README's "under ~6 KB each".
 const ART_PER_KIND: usize = 6 * 1024;
 /// The window's scripts, each of which may show a state.
-const WINDOW_JS: &[&str] = &["states.js", "command.js", "dash.js", "app.js"];
+const WINDOW_JS: &[&str] = &["states.js", "kit.js", "command.js", "dash.js", "app.js"];
 
 /// From `head` to the first brace closing a top-level function or a method.
 fn body<'a>(js: &'a str, head: &str) -> &'a str {

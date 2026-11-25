@@ -1,0 +1,51 @@
+---
+design: docs/plans/2026-11-25-rv2-kit-desktop-design.md
+design-sha256: superseded (read 951469c8fe4fe3afd7bd32ca435bfa00fe269a2e6f920e71114ad7785b393e3f)
+verdict: findings
+---
+
+1. blocking Semantic ISA / Side-effect inventory (design:370-376): Herdr calls missing from the inventory. The table lists only `hc send`, `interrupt`, `kill`, `get`. Code also calls `herdr::focus` (open_in_herdr), `herdr::rm` (remove_terminal), `herdr::read` (screen, save_screen), `herdr::run` (launch) and a deadline `herdr::interrupt`. Evidence: src/agents/follow.rs:279, :288, :340, :162; src/agents/mod.rs:613. Fix: add a row per call with reversibility (`run`, `rm`, `kill` are not reversible) and what each misfire does to the hire.
+
+2. blocking Semantic ISA / Scope harm 4 and Side-effect inventory (design:366, :460): the existing `save_screen` persists up to 200 lines of the hire's terminal to `out/agents/<id>/screen.txt`. That terminal includes text the user sent with `hc send`, so replies reach disk. The inventory omits it, and the design's "Said stores chars, never the reply" claim does not cover it. Evidence: src/agents/follow.rs:343-347 (write), called at follow.rs:138, :152, :303; follow.rs:281 reads it back. Fix: inventory the sink and decide it explicitly: stop storing reply lines, or amend harm 4 and the VERIFY so this path is named and accepted.
+
+3. blocking Semantic ISA / Side-effect inventory and Design §1 (design:275, :385-386): `history::record` is the call the design extends with `kpis`. It already performs network reads: `backfill` calls `gather::merged_between` (gh, per month) and writes `backfilled.json`. None of this is in the inventory. The `STORE(kpi_point)` row claims "deterministic append" for a function that makes external calls. Evidence: src/history.rs:64-85, :117-156. Fix: list the gh reads and `backfilled.json` writes as their own rows. Put the KPI append in its own function, called from pipeline.rs:466 and main.rs:1082, and keep it out of `record`.
+
+4. should Design §0 / Alternatives (design:322-326 vs :175-176): Alternatives says a separate events log "keeps reads of current state fixed-size". Yet `agents_list` rows gain `active_ms` and `paused`, which needs the full `events.jsonl` read for every run on every list call. `refreshAgents` runs on each `agents-changed` event. Evidence: apps/desktop/src/lib.rs:1070-1083 (agents_list); apps/desktop/ui/app.js:349. Fix: state the per-call cost, or cache the fold per run keyed by events file mtime, or keep a small summary file that `observe` updates.
+
+5. should Today / Since-last-brief boundary (design:246-247): "previous brief's `finishedAt` from `state.json` `runs[]`" is ambiguous at render time. `history::record` (pipeline.rs:466) and `track::record_run` (pipeline.rs:467, track.rs:100) run before Today renders, so once today's brief has run, the last `runs[]` entry is today's. `runs[]` also holds failed and deferred runs (`RunStatus` at pipeline.rs:73-77). Evidence: src/pipeline.rs:466-467; src/track.rs:100; src/pipeline.rs:73-77. Fix: define the boundary as the last run with status ok and day before today. Say what happens when none exists.
+
+6. should Today / Digest fields (design:263-262): `history.merged` entries carry only `day` (`YYYY-MM-DD`), with no timestamp (`Merged` struct). Comparing them to a `finishedAt` timestamp gives day granularity, so same-day PRs are wrongly in or out. Evidence: src/history.rs:31-38. Fix: compare by date and state that limit, or add `merged_at` to `Merged` and say so in the design.
+
+7. should Today / Digest item fields (design:263): each digest item must carry a title. The ledger `Row` has `id`, `kind`, `repo`, `status`, `outcome`, but no title. Evidence: src/agents/ledger.rs:18-42. Fix: name where the title comes from (spec `source`, or a title field copied into `Judged`), and add it to the `Judged` event or the ledger row.
+
+8. should Security and privacy (design:344-345): "the digest adds only items already in the brief and ledger" is false. The digest also reads incidents, a failed last run, merged PRs and `herdr_waiting`. The remote MCP does not serve report data: it returns brief and saved-report objects (src/mcp.rs:105-140). The localhost dashboard does serve `report::data` (src/dash.rs:140). Evidence: src/mcp.rs:105-140; src/dash.rs:140; src/report.rs:36-82. Fix: correct the claim, list each source, and name each surface that serves the digest (window, dash `/`, report HTML).
+
+9. should Semantic ISA / Taint (design:460): `VERIFY(event_shape)` requires an unknown word to be dropped. `Seen.word` is a free string (src/agents/mod.rs:184-186), so every mapping must be exhaustive. Fix: state that the mapping is a `match` with a `_ => drop` arm, and add a test that an unknown word from Herdr is not written.
+
+10. should Design §1 `Judged` writer (design:147): `judge` returns early when a verdict already exists (src/agents/follow.rs:411-413). The `Judged` event must be appended only when a new verdict is written, or re-judges duplicate it. Dedup is specified only for `Word`. Evidence: src/agents/follow.rs:396-432. Fix: state the condition, or dedup `Judged` by verdict `judged` timestamp.
+
+11. should Design §1 / VERIFY(kpi_point) (design:389-390, :461): the "not already in the file" check is read-then-append with no lock. The brief (pipeline.rs:466) and `fold_latest_run` (main.rs:1082) can both record the same day. Evidence: src/pipeline.rs:466; src/main.rs:1082-1087; src/history.rs:64-85. Fix: take a `flock` on `kpis.jsonl` (as `judge.lock` does, follow.rs:397-409) around read-dedup-append, and add a two-thread test.
+
+12. should Design §3 KPI signature (design:275): "`history::record` gains `kpis(ws)`". `record` takes `(home, day, facts, brief)` and has no workspace. `fold_latest_run` has only `home`. Evidence: src/history.rs:64; src/main.rs:1076-1087. Fix: state the new signature and how `fold_latest_run` gets `ws`, or read `state.json` from a path the caller passes.
+
+13. should Design §1 `events.rs` (design:115-131): the module holds the pure `fold` and file `append`/`read` together, while §1 calls `fold` "pure" (design:384). Layer rule: domain has no I/O, and adapters sit below application. Evidence: design:115 ("domain plus a file adapter"), :131. Fix: put `Kind`, `Event`, `fold` in a domain module with no I/O, and the file adapter in a separate module that depends on it. Name both paths.
+
+14. should Today / no-brief path (design:244-249, :270): `today.rs` `body` has a no-brief branch that returns `herdr_waiting`, `FALLBACK`, constraints and delivery, with no actions (src/today.rs:245-251). The design only says "renders after the actions". Fix: say where the digest goes when no brief exists, and whether it renders at all.
+
+15. should Design §1 `Word` writer (design:140): the word check runs on every `observe`, which `tick` calls every 2 s per live run (src/agents/follow.rs:69-86). Each call reads `events.jsonl` under the lock. No spawn is added, but the cost is unstated. Fix: compare against the previous word in `state.herdr` (`Seen.word`, src/agents/mod.rs:186) and read the log only on a change, or state the cost.
+
+16. should Design §1 / clean: `cos agents clean` removes the whole `out/agents/<id>/` directory (src/agents/mod.rs:1054, `run_dir` at mod.rs:351, `dir` at mod.rs:334). `events.jsonl` lives there, so it is deleted with the run. The ledger survives (ledger.rs:44-46). The design says nothing about this. Fix: state that events die with the run, and that the digest and scorecard read only the ledger, which survives.
+
+17. should Design §2/§3 DeadlineStop vs Paused (design:143-145, :164): `observe` interrupts at the deadline (follow.rs:159-168) without a pause. The fold must not count the ~10 s grace as paused time, and `paused_ms` is defined only by `Paused`. This is consistent, but not stated. Fix: say that `DeadlineStop` does not open a paused interval, and add a fold test for it.
+
+18. nit Context (design:39, :55-56, :68): `lib.rs:1061` for `agents_list` is `struct Row`. The fn is at `apps/desktop/src/lib.rs:1070`. `ritual_approve` is at lib.rs:1592, not 1591.
+
+19. nit Context (design:60): `track.rs:97` for `finishedAt`. The key is at `src/track.rs:100`.
+
+20. nit Testing / Context (design:500, :500-501): `examples/preview.rs` is `apps/desktop/examples/preview.rs`. The root `examples/` holds `demo.rs` and `wcag.rs` only.
+
+21. nit Design §0 (design:106): "`tests/design.rs` `sources()` gains `kit.css`". `sources()` already globs every `.css`/`.js`/`.html` in `ui/` (tests/design.rs:23-30), so nothing needs adding. Fix: say the file is picked up automatically, and add a `KIT_SLOT` gate analogous to `every_page_includes_the_shared_tokens` (tests/design.rs:367).
+
+Checked and correct: `follow.rs` observe :91, say :240, pause :252, mark_done :259, close :372, judge :396, judge.lock; `agents/mod.rs` State :225-266, write_state :1058, spec.json :568, Running :622; `report.rs` data :36, history::load :70, herdr_waiting :78; `history.rs` record :64; `today.rs` body :243, esc :16, prose :962, chips :1055; `report.html` kpiLine :888; `flows.rs` step fn :646; app.js refreshAgents :349, runRow :665, renderRuns :701, renderRun :720, renderScores :1045, `gates` :1537, `stateView` in use, innerHTML only in a comment at app.js:2; `tests/design.rs` `every_colour_token_has_a_light_and_a_dark_value`, `text_tokens_meet_aa_contrast_in_light_and_dark`, `every_state_renders_through_state_view_with_an_icon_and_art`, `every_animation_respects_reduced_motion`, `flows_page_never_writes_html_from_data`, px rule (1px/2px only); `tests/today.rs` `the_actions_come_before_every_other_section`, `view_text_cannot_inject_markup`; `apps/desktop/tests/ipc.rs` `the_flows_tab_approves_a_waiting_design_only_on_a_clean_review_or_by_choice` at :2938; `Status` and `Seen.word` values match the schema enums; `Outcome` serialises as accepted/needs_you/rejected; `state.json` kpis carry `current` and `evidenceAt` (state.rs:41, :355); `tests/history.rs` exists; `SLOT` exists at design.rs:19; `KIT_SLOT`, `kit.css`, `agents/events.rs`, `tests/agent_events.rs`, `agents::identity` are new (expected).
+
+Not verified: the stand-in Herdr fixtures in `tests/fixtures/fake-hc.sh`, and the Flows step inference detail at flows.rs:646 beyond its signature.

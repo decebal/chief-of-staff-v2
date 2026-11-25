@@ -18,6 +18,10 @@ const MONO_URL: &str = "url(\"vendor/geist/GeistMono-Variable.woff2\")";
 /// Where a page's first `<style>` takes the tokens.
 pub const SLOT: &str = "/*__COS_TOKENS__*/";
 
+/// Where a page that uses `kit-` classes takes `kit.css`.
+pub const KIT_SLOT: &str = "/*__COS_KIT__*/";
+const KIT: &str = include_str!("../apps/desktop/ui/kit.css");
+
 /// The cos mark on its ink tile, as the window's header shows it; a
 /// page puts `<!--__COS_MARK__-->` where it wants it.
 pub const MARK: &str = include_str!("../apps/desktop/ui/mark.svg");
@@ -37,6 +41,7 @@ pub fn inline(template: &str) -> Result<String> {
     ensure!(template.contains(SLOT), "page template lost its token slot");
     Ok(template
         .replacen(SLOT, css(), 1)
+        .replace(KIT_SLOT, KIT)
         .replace("<!--__COS_MARK__-->", MARK.trim()))
 }
 

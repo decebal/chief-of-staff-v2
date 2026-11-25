@@ -1,8 +1,405 @@
 //! What a reader sees on the Today view, rendered from report data: the three
 //! actions first, no raw URL as text, every date and time in words.
 
+use std::path::{Path, PathBuf};
+
+use cos::agents::ledger::{self, Row};
+use cos::agents::{Harness, Outcome, Status};
 use cos::report::render;
+use jiff::Timestamp;
 use serde_json::{Value, json};
+
+fn scratch(name: &str) -> (PathBuf, PathBuf) {
+    let root = std::env::temp_dir().join(format!("cos-digest-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let ws = root.join("ws");
+    std::fs::create_dir_all(ws.join(".chief-of-staff")).unwrap();
+    std::fs::write(
+        ws.join(".chief-of-staff/profile.json"),
+        r#"{"timezone":"America/Chicago"}"#,
+    )
+    .unwrap();
+    (root.join("home"), ws.canonicalize().unwrap())
+}
+
+/// A valid workspace state with no runs or incidents; `cos` reads only a
+/// validated `state.json`.
+fn demo_state() -> Value {
+    serde_json::from_str(cos::state::DEMO_STATE).unwrap()
+}
+
+fn write(path: &Path, value: &Value) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+}
+
+fn receipt(home: &Path, day: &str, at: &str, status: &str) {
+    write(
+        &home.join("out/runs").join(format!("{day}.json")),
+        &json!({ "day": day, "at": at, "status": status, "attempts": 1, "cost_usd": 0.4 }),
+    );
+}
+
+fn ts(s: &str) -> Timestamp {
+    s.parse().unwrap()
+}
+
+#[test]
+fn the_boundary_is_the_newest_ok_receipt_before_today() {
+    let (home, ws) = scratch("boundary");
+    receipt(
+        &home,
+        "2026-10-26",
+        "2026-10-26T13:00:00.000000+00:00",
+        "ok",
+    );
+    receipt(
+        &home,
+        "2026-10-27",
+        "2026-10-27T13:00:00.000000+00:00",
+        "ok",
+    );
+    receipt(
+        &home,
+        "2026-10-28",
+        "2026-10-28T13:00:00.000000+00:00",
+        "failed",
+    );
+    receipt(
+        &home,
+        "2026-10-29",
+        "2026-10-29T13:00:00.000000+00:00",
+        "ok",
+    );
+    assert_eq!(
+        cos::digest::boundary(&home, &ws, ts("2026-10-29T14:30:00Z")),
+        Some(ts("2026-10-27T13:00:00Z"))
+    );
+}
+
+#[test]
+fn the_boundary_day_is_in_the_profile_timezone() {
+    let (home, ws) = scratch("tz");
+    receipt(
+        &home,
+        "2026-10-27",
+        "2026-10-27T13:00:00.000000+00:00",
+        "ok",
+    );
+    receipt(
+        &home,
+        "2026-10-28",
+        "2026-10-28T13:00:00.000000+00:00",
+        "ok",
+    );
+    // 04:00Z on the 29th is still the 28th in Chicago, so the 28th is today.
+    assert_eq!(
+        cos::digest::boundary(&home, &ws, ts("2026-10-29T04:00:00Z")),
+        Some(ts("2026-10-27T13:00:00Z"))
+    );
+}
+
+#[test]
+fn without_an_ok_receipt_the_last_complete_run_is_the_boundary() {
+    let (home, ws) = scratch("fallback");
+    receipt(
+        &home,
+        "2026-10-28",
+        "2026-10-28T13:00:00.000000+00:00",
+        "failed",
+    );
+    let mut st = demo_state();
+    st["runs"] = json!([
+        { "id": "r1", "status": "complete", "invokedAt": "2026-10-26T12:00:00+00:00",
+          "finishedAt": "2026-10-26T12:30:00+00:00", "coverage": [] },
+        { "id": "r2", "status": "partial", "invokedAt": "2026-10-27T12:00:00+00:00",
+          "finishedAt": "2026-10-27T12:30:00+00:00", "coverage": [] }
+    ]);
+    write(&ws.join(".chief-of-staff/state.json"), &st);
+    assert_eq!(
+        cos::digest::boundary(&home, &ws, ts("2026-10-29T14:30:00Z")),
+        Some(ts("2026-10-26T12:30:00Z"))
+    );
+}
+
+#[test]
+fn no_boundary_means_no_digest() {
+    let (home, ws) = scratch("none");
+    assert_eq!(
+        cos::digest::boundary(&home, &ws, ts("2026-10-29T14:30:00Z")),
+        None
+    );
+    assert!(cos::digest::build(&home, &ws, ts("2026-10-29T14:30:00Z"), None, &[]).is_none());
+}
+
+fn row(id: &str, judged: &str, outcome: Outcome, status: Status, title: &str) -> Row {
+    Row {
+        id: id.into(),
+        judged: judged.into(),
+        harness: Harness::Claude,
+        model: None,
+        repo: None,
+        kind: "prompt".into(),
+        status,
+        outcome,
+        overclaimed: false,
+        checks: 1,
+        cost_usd: None,
+        secs: None,
+        tool_calls: None,
+        herdr: true,
+        role: None,
+        title: Some(title.into()),
+    }
+}
+
+#[test]
+fn the_lanes_hold_what_arrived_after_the_boundary() {
+    let (home, ws) = scratch("lanes");
+    receipt(
+        &home,
+        "2026-10-27",
+        "2026-10-27T13:00:00.000000+00:00",
+        "ok",
+    );
+    let rows = [
+        row(
+            "a",
+            "2026-10-28T10:00:00Z",
+            Outcome::NeedsYou,
+            Status::Done,
+            "Decide rotation",
+        ),
+        row(
+            "b",
+            "2026-10-27T10:00:00Z",
+            Outcome::Rejected,
+            Status::Failed,
+            "Before the boundary",
+        ),
+        row(
+            "c",
+            "2026-10-28T11:00:00Z",
+            Outcome::Rejected,
+            Status::Done,
+            "Check failed",
+        ),
+        row(
+            "d",
+            "2026-10-28T12:00:00Z",
+            Outcome::Accepted,
+            Status::Done,
+            "Ship parser",
+        ),
+        row(
+            "e",
+            "2026-10-28T09:00:00Z",
+            Outcome::Rejected,
+            Status::Lost,
+            "Vanished",
+        ),
+        row(
+            "f",
+            "not a time",
+            Outcome::Accepted,
+            Status::Done,
+            "Unreadable",
+        ),
+    ];
+    for r in &rows {
+        ledger::append(&home, r).unwrap();
+    }
+    write(
+        &home.join("out/history/merged.json"),
+        &json!([
+            { "repo": "org/api", "number": 1, "title": "old", "day": "2026-10-27", "merged_at": "2026-10-27T12:00:00Z" },
+            { "repo": "org/api", "number": 2, "title": "shipped", "day": "2026-10-28", "merged_at": "2026-10-28T15:00:00Z" },
+            { "repo": "org/api", "number": 3, "title": "no stamp, later day", "day": "2026-10-28" },
+            { "repo": "org/api", "number": 4, "title": "no stamp, boundary day", "day": "2026-10-27" }
+        ]),
+    );
+    let mut st = demo_state();
+    st["incidents"] = json!([
+        { "id": "I-1", "sourceId": "email", "kind": "rate_limit", "observedAt": "2026-10-28T08:00:00+00:00" },
+        { "id": "I-0", "sourceId": "email", "kind": "rate_limit", "observedAt": "2026-10-27T08:00:00+00:00" }
+    ]);
+    write(&ws.join(".chief-of-staff/state.json"), &st);
+    let d = cos::digest::build(&home, &ws, ts("2026-10-29T14:30:00Z"), None, &[]).unwrap();
+    let lane = |k: &str| {
+        d["lanes"][k]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["title"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(lane("decisions"), ["Decide rotation"]);
+    let mut errors = lane("errors");
+    errors.sort();
+    assert_eq!(errors, ["Check failed", "Vanished", "rate_limit on email"]);
+    let mut done = lane("done");
+    done.sort();
+    assert_eq!(done, ["Ship parser", "no stamp, later day", "shipped"]);
+}
+
+#[test]
+fn a_ledger_item_takes_its_spec_title_while_the_run_exists() {
+    let (home, ws) = scratch("title");
+    receipt(
+        &home,
+        "2026-10-27",
+        "2026-10-27T13:00:00.000000+00:00",
+        "ok",
+    );
+    ledger::append(
+        &home,
+        &row(
+            "gone",
+            "2026-10-28T10:00:00Z",
+            Outcome::Accepted,
+            Status::Done,
+            "Row title",
+        ),
+    )
+    .unwrap();
+    let d = cos::digest::build(&home, &ws, ts("2026-10-29T14:30:00Z"), None, &[]).unwrap();
+    assert_eq!(d["lanes"]["done"][0]["title"], "Row title");
+}
+
+#[test]
+fn a_ledger_item_names_its_role_never_its_run_id() {
+    let (home, ws) = scratch("no-id");
+    receipt(
+        &home,
+        "2026-10-27",
+        "2026-10-27T13:00:00.000000+00:00",
+        "ok",
+    );
+    let mut staffed = row(
+        "20261028-100000-a001",
+        "2026-10-28T10:00:00Z",
+        Outcome::Accepted,
+        Status::Done,
+        "Ship parser",
+    );
+    staffed.role = Some("builder".into());
+    let mut untitled = row(
+        "20261028-110000-a002",
+        "2026-10-28T11:00:00Z",
+        Outcome::Accepted,
+        Status::Done,
+        "",
+    );
+    untitled.title = None;
+    ledger::append(&home, &staffed).unwrap();
+    ledger::append(&home, &untitled).unwrap();
+    let d = cos::digest::build(&home, &ws, ts("2026-10-29T14:30:00Z"), None, &[]).unwrap();
+    let text = d.to_string();
+    assert!(!text.contains("20261028-100000-a001"), "{text}");
+    assert!(!text.contains("20261028-110000-a002"), "{text}");
+    let done = d["lanes"]["done"].as_array().unwrap();
+    assert!(
+        done.iter().any(|i| i["source"] == "builder agent"),
+        "{text}"
+    );
+    assert!(done.iter().any(|i| i["title"] == "An agent run"), "{text}");
+}
+
+#[test]
+fn a_digest_item_shows_its_time_in_words_and_escapes_its_title() {
+    let mut d = data(full_brief());
+    d["digest"] = sample_digest();
+    let m = markup(&d);
+    let text = visible(&m);
+    assert!(text.contains("Wed 28 Oct, 08:00"), "{text}");
+    assert!(!text.contains("2026-10-28T"), "{text}");
+    assert!(m.contains("&lt;img src=x onerror=1&gt;"), "{m}");
+    assert!(!m.contains("<img src=x"), "{m}");
+}
+
+fn kpi_data(points: Vec<(&str, f64, &str)>) -> Value {
+    let mut d = data(full_brief());
+    d["workspace"]["kpis"] = json!([{
+        "id": "K-2", "goalId": "G-1", "name": "<b>Signed</b> pilots", "unit": "agreements",
+        "baseline": 0, "target": 5, "current": 3, "evidenceAt": "2026-11-20T09:00:00Z",
+        "source": "email", "reportingWindow": "2030-04"
+    }]);
+    d["kpi_points"] = points
+        .into_iter()
+        .map(|(kpi, value, at)| json!({ "kpi": kpi, "value": value, "evidenceAt": at, "recordedAt": at }))
+        .collect();
+    d
+}
+
+#[test]
+fn a_kpi_tile_with_two_points_shows_direction_and_a_sparkline() {
+    let d = kpi_data(vec![
+        ("<b>Signed</b> pilots", 1.0, "2026-11-13T09:00:00Z"),
+        ("<b>Signed</b> pilots", 3.0, "2026-11-20T09:00:00Z"),
+    ]);
+    let m = markup(&d);
+    assert!(m.contains("kit-tile__spark"), "no sparkline: {m}");
+    assert!(
+        m.contains("data-tone=\"ok\""),
+        "a rise toward a higher target is favourable"
+    );
+    assert!(visible(&m).contains("+2"), "{}", visible(&m));
+}
+
+#[test]
+fn a_kpi_tile_with_one_point_has_no_sparkline() {
+    let d = kpi_data(vec![("<b>Signed</b> pilots", 3.0, "2026-11-20T09:00:00Z")]);
+    let m = markup(&d);
+    assert!(m.contains("kit-tile"), "{m}");
+    assert!(!m.contains("kit-tile__spark"), "{m}");
+}
+
+#[test]
+fn a_kpi_name_with_markup_renders_escaped() {
+    let d = kpi_data(vec![("<b>Signed</b> pilots", 3.0, "2026-11-20T09:00:00Z")]);
+    let m = markup(&d);
+    assert!(m.contains("&lt;b&gt;Signed&lt;/b&gt; pilots"), "{m}");
+    assert!(!m.contains("<b>Signed</b>"), "{m}");
+}
+
+fn sample_digest() -> Value {
+    json!({
+        "since": "2026-10-27T13:00:00Z",
+        "lanes": {
+            "decisions": [{ "title": "Rotation or SLA", "source": "jira:API-77", "at": null }],
+            "errors": [{ "title": "<img src=x onerror=1>", "source": "", "at": "2026-10-28T13:00:00Z" }],
+            "done": [{ "title": "Merged 7", "source": "gh:northwind/api-gateway#7", "at": "2026-10-28T15:00:00Z" }]
+        }
+    })
+}
+
+#[test]
+fn the_digest_sits_after_the_actions_with_a_brief() {
+    let mut d = data(full_brief());
+    d["digest"] = sample_digest();
+    let m = markup(&d);
+    let actions = m.find("data-section=\"actions\"").unwrap();
+    let digest = m.find("data-section=\"digest\"").expect("a digest section");
+    assert!(actions < digest, "the digest sits before the actions");
+    assert!(digest < m.find("data-section=\"week\"").unwrap());
+}
+
+#[test]
+fn without_a_brief_the_digest_sits_after_herdr_waiting() {
+    let d = json!({
+        "now_ts": "2026-10-29T14:30:00Z",
+        "today": "2026-10-29",
+        "herdr_waiting": [{ "id": "h1", "title": "Hire", "kind": "blocked", "terminal": "cos-h1", "address": "1" }],
+        "digest": sample_digest()
+    });
+    let m = markup(&d);
+    let herdr = m.find("data-section=\"herdr\"").unwrap();
+    let digest = m.find("data-section=\"digest\"").unwrap();
+    assert!(
+        herdr < digest && digest < m.find("class=\"celebrate\"").unwrap(),
+        "{m}"
+    );
+}
 
 fn data(brief: Value) -> Value {
     json!({
