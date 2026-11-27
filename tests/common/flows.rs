@@ -1,6 +1,6 @@
 //! A fictional machine's flows for the Flows page's browser tests: four repos,
-//! a design at the gate, a flow being built with every bead state and an
-//! external blocker, a review with findings, a done legacy flow, and as many
+//! a design at the gate, a drifted design, a flow being built with every bead state and an
+//! external blocker and a hire at work on one bead, a review with findings, a done legacy flow, and as many
 //! generated flows as the bead count asks for. Reads no home.
 
 use std::path::{Path, PathBuf};
@@ -154,6 +154,17 @@ fn alpha() -> Vec<Value> {
             "done",
             Some("t-c000"),
         ),
+        with(
+            with(
+                t("t-f000", "Retry budget", "epic", "open", None),
+                "approved",
+                json!(true),
+            ),
+            "description",
+            json!(
+                "ritual-design: docs/plans/f-design.md\nritual-plan: docs/plans/f-plan.md\nritual-approved: docs/plans/f-design.md sha256:00 by Alex"
+            ),
+        ),
         t("t-d000", "Old cleanup", "epic", "done", None),
         t("t-d001", "Remove the cron", "task", "done", Some("t-d000")),
     ]
@@ -200,6 +211,25 @@ fn generated(i: usize) -> Vec<Value> {
     out
 }
 
+fn hire(id: &str, title: &str, phase: cos::agents::Phase, bead: &str) -> cos::agents::HireView {
+    cos::agents::HireView {
+        id: id.into(),
+        title: title.into(),
+        role: Some("builder".into()),
+        identity: 1,
+        phase,
+        active_ms: 600_000,
+        paused_now: false,
+        started: Some("2026-11-20T09:00:00Z".into()),
+        ended: None,
+        done_today: false,
+        deadline_secs: 3600,
+        word: Some("working".into()),
+        msg: None,
+        source: format!("bead:alpha-api/{bead}"),
+    }
+}
+
 /// Writes the page for about `beads` beads into `dir`.
 pub fn write(dir: &Path, beads: usize) -> FlowsPage {
     let bulk = beads.saturating_sub(10) / PER_FLOW;
@@ -215,6 +245,22 @@ pub fn write(dir: &Path, beads: usize) -> FlowsPage {
         let tasks: Vec<cos::flows::Task> =
             serde_json::from_value(Value::Array(list.clone())).unwrap();
         flows.extend(cos::flows::flows_in(repo, None, &tasks));
+    }
+    // No design file exists to hash, so the drift is set rather than found.
+    for f in flows.iter_mut().filter(|f| f.id == "t-f000") {
+        f.step = cos::flows::Step::Drift;
+        f.needs_you = Some(cos::flows::NeedsYou::Drift);
+    }
+    for f in flows.iter_mut().filter(|f| f.id == "t-b000") {
+        f.hires = vec![
+            hire(
+                "run-read",
+                "Read path",
+                cos::agents::Phase::Working,
+                "t-b003",
+            ),
+            hire("run-table", "Table", cos::agents::Phase::Done, "t-b001"),
+        ];
     }
     let scan = cos::flows::Scan {
         flows,

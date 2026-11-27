@@ -83,6 +83,33 @@
     border: 1px solid var(--brand-amber); border-radius: var(--radius-md); color: var(--hero-foreground); font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
   .run-alert b { color: var(--brand-amber); font-weight: var(--font-weight-semibold); }
   .run-alert .dot { color: var(--hero-muted); }
+  /* the living hero: a glow floor, the headline revealed word by word, the
+     lead phrase in gradient type, a pill per hire at work, the brief loader */
+  .hero-floor { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+  .hero-floor__layer { position: absolute; left: -10%; top: 35%; width: 120%; height: 90%; filter: blur(3rem); opacity: 0.35; }
+  .display .w { display: inline-block; }
+  .display .lead-phrase { background-image: linear-gradient(90deg, var(--gradient-from) 0%, var(--gradient-to) 25%, var(--gradient-from) 50%, var(--gradient-to) 75%, var(--gradient-from) 100%);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero-pills { list-style: none; margin: 1rem 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .hero-pill { display: inline-flex; align-items: center; gap: 0.5rem; max-width: 100%; min-width: 0; padding: 0.375rem 0.875rem 0.375rem 0.375rem;
+    border: 1px solid var(--hero-border); border-radius: var(--radius-full); color: var(--hero-foreground); font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+  .hero-pill[data-phase="needs-you"] { border-color: var(--brand-amber); }
+  .hero-pill__mark { flex: none; display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: var(--radius-full); color: var(--foreground); font-weight: var(--font-weight-semibold); }
+  .hero-pill__main { display: grid; gap: 0.125rem; min-width: 0; }
+  .hero-pill__title { font-weight: var(--font-weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hero-pill__word { color: var(--hero-muted); }
+  .hero-pill__bar { display: block; height: 0.1875rem; margin-top: 0.125rem; border-radius: var(--radius-full); background: var(--hero-border); overflow: hidden; }
+  .hero-pill__bar i { display: block; height: 100%; border-radius: var(--radius-full); background: var(--brand-blue); }
+  .brief-loader { position: relative; display: inline-flex; align-items: center; gap: 0.5rem; margin: 1rem 0 0 0.5rem; padding: 0.3125rem 0.875rem;
+    border: 1px solid var(--hero-border); border-radius: var(--radius-full); color: var(--hero-foreground); font-size: var(--text-xs); }
+  .brief-loader[hidden] { display: none; }
+  .brief-loader__icon svg { display: block; width: var(--icon-sm); height: var(--icon-sm); }
+  .brief-loader__rays line { stroke: var(--hero-foreground); stroke-width: 1.5; stroke-linecap: round; }
+  .brief-loader__icon .brief-loader__check { display: none; }
+  .brief-loader__check path { fill: none; stroke: var(--hero-foreground); stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+  .brief-loader[data-state="done"] .brief-loader__rays, .brief-loader[data-state="failed"] .brief-loader__rays { display: none; }
+  .brief-loader[data-state="done"] .brief-loader__check { display: block; }
+  .brief-loader__band { position: absolute; left: 0.875rem; right: 0.875rem; bottom: 0.1875rem; height: 0.125rem; border-radius: var(--radius-full); }
   @media (max-width: 56.25rem) { .display { font-size: var(--text-3xl); line-height: var(--text-3xl--line-height); } }
   @media (max-width: 32.5rem) { .display { font-size: var(--text-2xl); line-height: var(--text-2xl--line-height); } .hero-in { padding: 0.75rem 1rem 1.25rem; } }
 
@@ -148,6 +175,32 @@
     border-radius: var(--radius-md); font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
   .peek[open] { flex-basis: 100%; }
 
+  /* the hires inbox: three columns, one filtered list on a narrow screen */
+  .inbox-stale, .hero-hires__stale { font-size: var(--text-xs); color: var(--muted-foreground); font-weight: var(--font-weight-normal); }
+  .inbox-stale[hidden], .hero-hires__stale[hidden] { display: none; }
+  .hero-hires__stale { color: var(--hero-muted); margin: 0.375rem 0 0; }
+  .inbox-filter { display: none; gap: 0.375rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .inbox-tab { font-size: var(--text-xs); border-radius: var(--radius-full); padding: 0.25rem 0.75rem; min-height: 2rem; box-shadow: none; }
+  .inbox-tab[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+  .inbox-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+  .inbox-col { margin: 0; padding: 0.875rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--card); color: var(--card-foreground); box-shadow: var(--shadow-sm); min-width: 0; }
+  .inbox-col[data-col="needs-you"] { border-top: 0.25rem solid var(--brand-amber); }
+  .inbox-col__h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.375rem; }
+  .inbox-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+  .inbox-card { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0.25rem 0.625rem; padding: 0.625rem 0; border-top: 1px solid var(--border); }
+  .inbox-card:first-child { border-top: 0; padding-top: 0; }
+  .inbox-mark { display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: var(--radius-full); color: var(--foreground); font-size: var(--text-xs); font-weight: var(--font-weight-semibold); }
+  .inbox-main { min-width: 0; }
+  .inbox-title { margin: 0; font-weight: var(--font-weight-semibold); overflow-wrap: anywhere; }
+  .inbox-meta { margin: 0.125rem 0 0; font-size: var(--text-xs); color: var(--muted-foreground); }
+  .inbox-open { grid-column: 2; justify-self: start; font-size: var(--text-xs); padding: 0.25rem 0.625rem; }
+  .inbox-empty { color: var(--muted-foreground); font-size: var(--text-sm); }
+  @media (max-width: 45rem) {
+    .inbox-filter { display: flex; }
+    .inbox-cols { grid-template-columns: minmax(0, 1fr); }
+    .inbox-cols[data-show="needs-you"] .inbox-col:not([data-col="needs-you"]), .inbox-cols[data-show="running"] .inbox-col:not([data-col="running"]),
+    .inbox-cols[data-show="done"] .inbox-col:not([data-col="done"]) { display: none; }
+  }
   .spaced-top { margin-top: 1rem; }
   #roadmap-card .diagram svg { max-height: 15rem; }
   .week, .ribbon, .changed { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 1.125rem 1.25rem; box-shadow: var(--shadow-sm); }
@@ -233,12 +286,16 @@
 
   /* motion: staggered entrance, nothing under reduced motion */
   @keyframes rise { from { opacity: 0; transform: translateY(0.5rem); } to { opacity: 1; transform: none; } }
-  .act, .today > section, .today > p { animation: rise var(--motion-enter) var(--ease-out) both; }
-  .act:nth-child(2) { animation-delay: var(--motion-step); }
-  .act:nth-child(3) { animation-delay: calc(var(--motion-step) * 2); }
-  .today > section:nth-child(n + 2) { animation-delay: calc(var(--motion-step) * 3); }
-  @media (prefers-reduced-motion: reduce) {
-    .act, .today > section, .today > p { animation: none; }
+  @media (prefers-reduced-motion: no-preference) {
+    .act, .today > section, .today > p { animation: rise var(--motion-enter) var(--ease-out) both; }
+    .act:nth-child(2) { animation-delay: var(--motion-step); }
+    .act:nth-child(3) { animation-delay: calc(var(--motion-step) * 2); }
+    .today > section:nth-child(n + 2) { animation-delay: calc(var(--motion-step) * 3); }
+    .hero-floor__slow { animation-duration: calc(var(--motion-loop) * 13); }
+    .display .w { animation: kit-settle var(--motion-slow) var(--ease-spring) both; animation-delay: calc(var(--i) * var(--motion-stagger)); }
+    .display .lead-phrase { animation: kit-settle var(--motion-slow) var(--ease-spring) both, kit-shimmer calc(var(--motion-loop) * 1.5) var(--ease-spring) 1 both;
+      animation-delay: calc(var(--i) * var(--motion-stagger)), calc(var(--i) * var(--motion-stagger) + var(--motion-slow)); }
+    .hero-pill:not(.kit-is-waiting) { animation: kit-settle var(--motion-slow) var(--ease-spring) both; }
   }
 
   /* tiles */
@@ -374,6 +431,10 @@
     </defs>
     <rect width="100%" height="100%" fill="url(#rings)" mask="url(#rings-mask)" opacity="0.09"/>
   </svg>
+  <div class="hero-floor" aria-hidden="true">
+    <svg class="hero-floor__layer kit-is-drifting" viewBox="0 0 100 40" preserveAspectRatio="none" focusable="false"><ellipse cx="28" cy="30" rx="30" ry="12" fill="var(--glow-1)"/></svg>
+    <svg class="hero-floor__layer hero-floor__slow kit-is-drifting" viewBox="0 0 100 40" preserveAspectRatio="none" focusable="false"><ellipse cx="74" cy="34" rx="26" ry="10" fill="var(--glow-2)"/></svg>
+  </div>
   <div class="hero-in">
     <div class="hero-top">
       <!--__COS_MARK__-->
@@ -414,8 +475,60 @@
 const DATA = "__COS_DATA__";
 
 (() => {
+  // ---- motion: every scripted animation asks motionOk() first. The window,
+  // the report and the Flows page each carry this block; tests/design.rs keeps
+  // the copies identical.
+
+  const motionOk = () => !matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // FLIP: children marked data-glide="<key>" move from where they were before
+  // render() to where they are after it.
+  function glide(container, render) {
+    const keyed = () => new Map([...container.querySelectorAll("[data-glide]")].map((n) => [n.dataset.glide, n]));
+    const before = new Map([...keyed()].map(([k, n]) => [k, n.getBoundingClientRect()]));
+    render();
+    if (!motionOk()) return;
+    const root = getComputedStyle(document.documentElement);
+    const duration = parseFloat(root.getPropertyValue("--motion-slow")) || 0;
+    const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+    for (const [k, n] of keyed()) {
+      const was = before.get(k);
+      if (!was) continue;
+      const now = n.getBoundingClientRect();
+      const dx = was.left - now.left;
+      const dy = was.top - now.top;
+      if (dx || dy) n.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration, easing });
+    }
+  }
+
+  // Crossfade: `next` (an element) replaces the container's children, which
+  // fade out with a small blur in an inert layer while the height glides.
+  function swap(container, next) {
+    const old = [...container.childNodes];
+    if (!motionOk() || !old.length) {
+      container.replaceChildren(next);
+      return;
+    }
+    const root = getComputedStyle(document.documentElement);
+    const duration = parseFloat(root.getPropertyValue("--motion-slow")) || 0;
+    const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+    const from = container.offsetHeight;
+    const out = document.createElement("div");
+    out.inert = true;
+    out.setAttribute("aria-hidden", "true");
+    Object.assign(out.style, { position: "absolute", inset: "0", pointerEvents: "none" });
+    out.append(...old);
+    if (getComputedStyle(container).position === "static") container.style.position = "relative";
+    container.replaceChildren(next, out);
+    const to = container.offsetHeight;
+    const fade = out.animate([{ opacity: 1, filter: "blur(0)" }, { opacity: 0, filter: "blur(0.25rem)" }], { duration, easing });
+    fade.finished.then(() => out.remove(), () => out.remove());
+    next.animate([{ opacity: 0, filter: "blur(0.25rem)" }, { opacity: 1, filter: "blur(0)" }], { duration, easing });
+    if (from !== to) container.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration, easing });
+  }
+
   const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const esc =(s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const human = (value) => String(value ?? "unknown").replaceAll("_", " ");
   const brief = DATA.brief && DATA.brief.report;
   const week = brief && brief.week && (brief.week.summary || (brief.week.goals || []).length || (brief.week.proposed || []).length) ? brief.week : null;
@@ -536,6 +649,282 @@ const DATA = "__COS_DATA__";
     runBtn.disabled = true;
     tellHost({ type: "cos-run-brief" });
   };
+
+  /* kit */
+  // Today's live parts. They build every node with DOM methods and text,
+  // never markup (tests/design.rs report_kit_block_never_writes_html_from_data),
+  // and read the cos-host state without changing it.
+  const loader = $("brief-loader");
+  const loaderState = (s) => (s === "running" || s === "done" ? s : s === "error" || s === "failed" ? "failed" : "idle");
+  addEventListener("message", (e) => {
+    if (e.source !== window.parent || !loader) return;
+    const d = e.data ?? {};
+    if (d.type !== "cos-brief-state") return;
+    const state = loaderState(d.state);
+    const said = typeof d.text === "string" ? d.text : "";
+    loader.dataset.state = state;
+    loader.hidden = state === "idle";
+    loader.querySelector(".brief-loader__text").textContent = state === "done" ? "Brief ready" : state === "running" ? said || "brief running…" : said;
+    loader.querySelector(".brief-loader__band").classList.toggle("kit-is-running", state === "running");
+    loader.querySelector(".brief-loader__check path").classList.toggle("kit-is-done", state === "done");
+  });
+
+  // The hires: the window posts its read-only snapshot as `cos-hires` on each
+  // agents-changed; the inbox and the hero pills re-render in place and glide.
+  // The same markup as src/today.rs renders.
+  const node = (tag, props = {}, ...kids) => {
+    const n = document.createElement(tag);
+    const { dataset, ...rest } = props;
+    Object.assign(n, rest);
+    Object.assign(n.dataset, dataset ?? {});
+    n.append(...kids.filter((k) => k != null));
+    return n;
+  };
+  const hidden = (n) => { n.setAttribute("aria-hidden", "true"); return n; };
+  const COLS = [["needs-you", "Needs you"], ["running", "Running"], ["done", "Done today"]];
+  const colOf = (h) => h.phase === "needs-you" ? "needs-you"
+    : ["working", "starting", "paused"].includes(h.phase) ? "running"
+    : h.phase === "done" && h.done_today === true ? "done" : null;
+  const PHASE_WORD = { paused: "paused", "needs-you": "waiting on you", starting: "starting", done: "done", failed: "failed", lost: "lost", "timed-out": "ran out of time", stopped: "stopped" };
+  const hireWord = (h) => PHASE_WORD[h.phase] ?? (h.word === "idle" ? "idle" : "working");
+  const spanWords = (ms) => {
+    const s = Math.floor((Number(ms) || 0) / 1000);
+    if (s < 90) return `${s} s`;
+    if (s < 3600) return `${Math.floor(s / 60)} min`;
+    const m = Math.floor((s % 3600) / 60);
+    return m ? `${Math.floor(s / 3600)} h ${m} min` : `${Math.floor(s / 3600)} h`;
+  };
+  const meta = (h) => `${typeof h.role === "string" ? `${h.role} · ` : ""}${hireWord(h)} · ${spanWords(h.active_ms)}`;
+  const mark = (h, cls) => {
+    const id = Math.min(6, Math.max(1, Number(h.identity) || 1));
+    const initial = typeof h.role === "string" && h.role ? h.role[0].toUpperCase() : "·";
+    return hidden(node("span", { className: `${cls} kit-id-${id}`, textContent: initial }));
+  };
+  const staleLabel = (cls) => node("span", { className: cls, textContent: "as last read", hidden: !stale, dataset: { stale: "" } });
+  let stale = false;
+
+  const pill = (h) => {
+    const li = node("li", { className: `hero-pill${h.phase === "needs-you" ? " kit-is-waiting" : ""}`, dataset: { phase: String(h.phase), glide: String(h.id) } },
+      mark(h, "hero-pill__mark"));
+    const word = node("span", { className: "hero-pill__word", textContent: meta(h) });
+    word.setAttribute("aria-live", "polite");
+    const main = node("span", { className: "hero-pill__main" }, node("span", { className: "hero-pill__title", textContent: String(h.title ?? "") }), word);
+    const deadline = (Number(h.deadline_secs) || 0) * 1000;
+    if (deadline) {
+      const pct = Math.round(Math.min(100, Math.max(0, ((Number(h.active_ms) || 0) * 100) / deadline)));
+      const bar = node("span", { className: `hero-pill__bar${h.phase === "working" ? " kit-is-running" : ""}` });
+      bar.setAttribute("role", "img");
+      bar.setAttribute("aria-label", `${pct}% of its deadline`);
+      const fillBar = node("i");
+      fillBar.style.width = `${pct}%`;
+      bar.append(fillBar);
+      main.append(bar);
+    }
+    li.append(main);
+    return li;
+  };
+  const renderPills = (hires) => {
+    const box = $("hero-hires");
+    if (!box) return;
+    const at = hires.filter((h) => ["working", "needs-you", "paused"].includes(h.phase));
+    glide(box, () => {
+      const list = at.length ? node("ul", { className: "hero-pills" }, ...at.map(pill)) : null;
+      list?.setAttribute("aria-label", "Hires at work");
+      const note = node("p", { className: "hero-hires__stale", textContent: "as last read", hidden: !stale, dataset: { stale: "" } });
+      box.replaceChildren(...[list, note].filter(Boolean));
+    });
+  };
+
+  const card = (h, col) => {
+    const li = node("li", { className: "inbox-card", dataset: { glide: String(h.id), phase: String(h.phase) } },
+      mark(h, "inbox-mark"),
+      node("div", { className: "inbox-main" },
+        node("p", { className: "inbox-title", textContent: String(h.title ?? "") }),
+        node("p", { className: "inbox-meta", textContent: meta(h) })));
+    if (col !== "done") {
+      li.append(node("button", { type: "button", className: "inbox-open", textContent: canHire ? "Open in Herdr" : "Copy hc attach",
+        dataset: { herdrOpen: String(h.id), terminal: `cos-${h.id}` } }));
+    }
+    return li;
+  };
+  const inbox = (hires, show) => {
+    const placed = hires.map((h) => [h, colOf(h)]).filter(([, c]) => c);
+    if (!placed.length) return node("div", { id: "hires-slot", hidden: true });
+    const head = node("div", { className: "sec-head" },
+      node("h2", { id: "hires-h" }, "Hires ", node("span", { className: "count num", textContent: String(placed.length) })),
+      Object.assign(staleLabel("inbox-stale"), { id: "hires-stale" }));
+    const filter = node("div", { className: "inbox-filter" },
+      ...[["all", "All"], ...COLS].map(([key, label]) => {
+        const b = node("button", { type: "button", className: "inbox-tab", textContent: label, dataset: { show: key } });
+        b.setAttribute("aria-pressed", String(key === show));
+        return b;
+      }));
+    filter.setAttribute("role", "group");
+    filter.setAttribute("aria-label", "Show hires");
+    const cols = node("div", { className: "inbox-cols", dataset: { show } }, ...COLS.map(([key, label]) => {
+      const cards = placed.filter(([, c]) => c === key).map(([h]) => card(h, key));
+      const h3 = node("h3", { className: "inbox-col__h", id: `hires-${key}-h` }, `${label} `, node("span", { className: "num", textContent: String(cards.length) }),
+        key === "running" ? staleLabel("inbox-stale") : null);
+      const col = node("section", { className: "inbox-col", dataset: { col: key } }, h3,
+        node("ul", { className: "inbox-list" }, ...(cards.length ? cards : [node("li", { className: "inbox-empty", textContent: "None right now." })])));
+      col.setAttribute("aria-labelledby", `hires-${key}-h`);
+      return col;
+    }));
+    const section = node("section", { className: "inbox", id: "hires", dataset: { section: "hires" } }, head, filter, cols);
+    section.setAttribute("aria-labelledby", "hires-h");
+    return section;
+  };
+  const renderInbox = (hires) => {
+    const at = $("hires") ?? $("hires-slot");
+    if (!at) return;
+    const show = at.querySelector(".inbox-cols")?.dataset.show ?? "all";
+    glide($("left"), () => at.replaceWith(inbox(hires, show)));
+  };
+  const markStale = (on) => {
+    stale = on;
+    for (const s of document.querySelectorAll("[data-stale]")) s.hidden = !on;
+  };
+  let live = false;
+  setTimeout(() => { if (!live) markStale(true); }, 10000);
+  addEventListener("message", (e) => {
+    if (e.source !== window.parent) return;
+    const d = e.data ?? {};
+    if (d.type !== "cos-hires" || !Array.isArray(d.hires)) return;
+    live = true;
+    markStale(false);
+    const hires = d.hires.filter((h) => h && typeof h === "object" && typeof h.id === "string");
+    renderInbox(hires);
+    renderPills(hires);
+  });
+  document.addEventListener("click", (e) => {
+    const tab = e.target.closest?.(".inbox-tab");
+    if (!tab) return;
+    const cols = tab.closest(".inbox")?.querySelector(".inbox-cols");
+    if (!cols) return;
+    cols.dataset.show = tab.dataset.show;
+    for (const b of tab.parentElement.querySelectorAll(".inbox-tab")) b.setAttribute("aria-pressed", String(b === tab));
+  });
+
+  // The KPI ticker: once per load, a tile with a previous point rolls its
+  // digits from that point to the recorded value. The value itself stays in
+  // the tree as the polite live region; the rolling digits are aria-hidden.
+  function roll(value) {
+    if (!motionOk()) return;
+    const to = value.textContent;
+    const from = String(value.dataset.from ?? "").replace(/\D/g, "").padStart(to.replace(/\D/g, "").length, "0");
+    const root = getComputedStyle(document.documentElement);
+    const duration = (parseFloat(root.getPropertyValue("--motion-slow")) || 0) * 3;
+    const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+    const ticker = hidden(node("span", { className: "kit-ticker", dataset: { from: String(value.dataset.from) } }));
+    const runs = [];
+    let k = from.length - to.replace(/\D/g, "").length;
+    for (const ch of to) {
+      if (!/\d/.test(ch)) { ticker.append(node("span", { textContent: ch })); continue; }
+      const strip = node("span", {}, ...[..."0123456789"].map((d) => node("span", { textContent: d })));
+      ticker.append(node("span", { className: "kit-ticker__col" }, strip));
+      const a = Number(from[k] ?? 0), b = Number(ch);
+      k += 1;
+      runs.push(strip.animate([{ transform: `translateY(${-1.25 * a}em)` }, { transform: `translateY(${-1.25 * b}em)` }], { duration, easing, fill: "forwards" }));
+    }
+    value.classList.add("kit-tile__v--rolling");
+    value.after(ticker);
+    const done = () => { ticker.remove(); value.classList.remove("kit-tile__v--rolling"); };
+    Promise.all(runs.map((r) => r.finished)).then(done, done);
+    // Frames can stop (a hidden tab, a headless capture); the value must not stay hidden.
+    setTimeout(done, duration + 200);
+  }
+  for (const v of document.querySelectorAll('[data-section="kpis"] .kit-tile__v[data-from]')) roll(v);
+
+  // The schedule board (src/today.rs, rv2-kit AgentScheduleBoard): the axis
+  // stays centred on now, so once a minute the markers, ticks and trace move
+  // left under the now line. Selecting a row or a marker shows its detail.
+  const board = $("schedule");
+  if (board?.querySelector(".kit-asb__axis")) {
+    const WINDOW = 5 * 3600000;
+    const served = Number(board.dataset.now) || Date.now();
+    const loaded = Date.now();
+    const pos = (at, now) => Math.min(100, Math.max(0, 50 + ((at - now) / WINDOW) * 50));
+    const hourOf = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: board.dataset.tz || undefined });
+    const axis = board.querySelector(".kit-asb__axis");
+    const markers = [...board.querySelectorAll(".kit-asb__marker")];
+    const trace = (now) => {
+      const runs = markers.map((m) => [pos(Number(m.dataset.at), now), m.dataset.state, Number(m.dataset.percent) || 0]);
+      const pts = [];
+      for (let step = 0; step <= 50; step++) {
+        const x = step * 2;
+        let level = 0;
+        for (const [start, state, progress] of runs) {
+          if (state === "running" && start <= 50 && x >= start) level = Math.max(level, Math.min(1, Math.max(0, (x - start) / Math.max(1, 50 - start))) * (0.3 + (0.7 * progress) / 100));
+          else if (["done", "failed", "needs-you"].includes(state) && Math.abs(x - start) < 3) level = Math.max(level, 0.6 * (1 - Math.abs(x - start) / 3));
+        }
+        pts.push(`${x.toFixed(1)},${(23 - level * 21).toFixed(1)}`);
+      }
+      return pts.join(" ");
+    };
+    // A marker within one hit area of another takes the next free row (centre,
+    // above, below), so no button covers another's 1.5rem target.
+    // A hidden tab lays nothing out (every offset reads 0), so stacking waits
+    // for the axis to be shown; the observer below fires when it is.
+    const stack = () => {
+      if (!axis.getClientRects().length) return;
+      const ends = [];
+      for (const m of markers) {
+        if (m.hidden) { delete m.dataset.row; continue; }
+        const x = m.offsetLeft, size = m.offsetWidth;
+        let row = ends.findIndex((end) => x - end >= size);
+        if (row < 0) row = Math.min(ends.length, 2);
+        ends[row] = x;
+        if (row) m.dataset.row = String(row);
+        else delete m.dataset.row;
+      }
+    };
+    const place = () => {
+      const now = served + (Date.now() - loaded);
+      for (const m of markers) {
+        const at = Number(m.dataset.at);
+        m.style.left = `${pos(at, now).toFixed(2)}%`;
+        m.hidden = Math.abs(at - now) >= WINDOW;
+      }
+      stack();
+      const ticks = [];
+      for (let t = Math.ceil((now - WINDOW) / 3600000) * 3600000; t < now + WINDOW; t += 3600000) {
+        const h = Number(hourOf.format(t));
+        if (h % 2 === 0 && Math.abs(t - now) < WINDOW) {
+          const tick = node("span", { className: "kit-asb__tick", textContent: `${String(h).padStart(2, "0")}:00` });
+          tick.style.left = `${pos(t, now).toFixed(2)}%`;
+          ticks.push(tick);
+        }
+      }
+      for (const old of axis.querySelectorAll(".kit-asb__tick")) old.remove();
+      axis.append(...ticks);
+      board.querySelector(".kit-asb__trace-line").setAttribute("points", trace(now));
+    };
+    setInterval(place, 60000);
+    stack();
+    new ResizeObserver(stack).observe(axis);
+    const rows = [...board.querySelectorAll(".kit-asb__row-hit")];
+    const pick = (i, focus) => {
+      for (const r of rows) {
+        if (r.dataset.pick === i) r.setAttribute("aria-current", "true");
+        else r.removeAttribute("aria-current");
+      }
+      for (const p of board.querySelectorAll(".kit-asb__panel")) p.hidden = p.dataset.panel !== i;
+      if (focus) rows.find((r) => r.dataset.pick === i)?.focus();
+    };
+    board.addEventListener("click", (e) => {
+      const hit = e.target.closest?.("[data-pick]");
+      if (hit) pick(hit.dataset.pick, false);
+    });
+    board.addEventListener("keydown", (e) => {
+      const delta = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
+      if (!delta || !rows.length) return;
+      const at = rows.findIndex((r) => r.getAttribute("aria-current") === "true");
+      const next = rows[at < 0 ? 0 : Math.min(rows.length - 1, Math.max(0, at + delta))];
+      e.preventDefault();
+      pick(next.dataset.pick, true);
+    });
+  }
+  /* end kit */
   // Only the desktop's live `/` sets hostBrief: an archived or browser page names no brief to mark seen.
   const hostRef = DATA.hostBrief === true && DATA.briefRef;
   tellHost(hostRef ? { type: "cos-report-ready", brief: hostRef.file, mtime: hostRef.mtime } : { type: "cos-report-ready" });
@@ -1096,9 +1485,8 @@ const DATA = "__COS_DATA__";
   }
 
   // KPI count-up, once per number, when its panel is first shown.
-  const still = matchMedia("(prefers-reduced-motion: reduce)");
   const countUp = (root) => {
-    if (still.matches) return;
+    if (!motionOk()) return;
     for (const el of root.querySelectorAll("[data-count]:not([data-counted]), .spark b:not([data-counted])")) {
       el.dataset.counted = "";
       const end = Number(el.textContent);

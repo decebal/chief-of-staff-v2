@@ -6,6 +6,9 @@
 #[path = "common/cdp.rs"]
 mod cdp;
 
+#[path = "../apps/desktop/examples/support/report_base.rs"]
+mod report_base;
+
 use cdp::Chrome;
 use serde_json::{Value, json};
 
@@ -26,9 +29,13 @@ fn open(name: &str) -> Chrome {
     .iter()
     .map(|s| format!(r#"<script src="file://{UI}/{s}"></script>"#))
     .collect();
+    let sheets: String = ["tokens.css", "style.css", "kit.css"]
+        .iter()
+        .map(|s| format!(r#"<link rel="stylesheet" href="file://{UI}/{s}">"#))
+        .collect();
     std::fs::write(
         &html,
-        format!(r#"<!doctype html><meta charset="utf-8"><body>{scripts}</body>"#),
+        format!(r#"<!doctype html><meta charset="utf-8">{sheets}<body>{scripts}</body>"#),
     )
     .unwrap();
     let mut c = Chrome::start(&dir, &["--disable-gpu"]);
@@ -90,6 +97,19 @@ fn el_door_refuses_what_is_not_on_the_allowlist() {
     assert_eq!(v["frameWeb"], Value::Null, "{v}");
     assert!(v["frameReport"].is_string(), "{v}");
     assert!(v["frameLoopback"].is_string(), "{v}");
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_previews_report_and_flows_frames_pass_safe_frame_src() {
+    let mut c = open("kit-preview-frames");
+    let base = report_base::report_base(8793);
+    let v: Value = c.eval(&format!(
+        "[safeFrameSrc({b:?}), safeFrameSrc({b:?} + 'flows')]",
+        b = base
+    ));
+    assert!(v[0].is_string(), "report frame refused: {base} {v}");
+    assert!(v[1].is_string(), "flows frame refused: {base} {v}");
 }
 
 /// One real key press on the focused element, as a person's keyboard sends it.
@@ -263,7 +283,9 @@ fn run_panel(c: &mut Chrome, view: &str, tl: &str) {
           return true;
         }})()"#
     ));
-    c.wait_for("document.querySelector('#panel .kit-tl') !== null");
+    c.wait_for(
+        "document.querySelector('#panel .kit-tl') !== null && document.querySelector('#panel [inert]') === null",
+    );
 }
 
 #[test]
@@ -380,39 +402,74 @@ fn steps_list_the_beads_under_build_and_fold_past_six() {
         r#"(() => {
           const names = ["think", "spec", "approve", "plan", "build", "review"];
           const bead = (i, status) => ({ id: "t-" + i, title: "Bead " + i, status });
-          const seven = [1, 2, 3, 4, 5, 6, 7].map((i) => bead(i, i === 1 ? "done" : "open"));
+          const seven = [1, 2, 3, 4, 5, 6, 7].map((i) => bead(i, i === 1 ? "done" : i === 4 ? "in_progress" : "open"));
           const six = seven.slice(0, 6);
           document.body.append(steps(names, "build", { beads: seven }));
           document.body.append(steps(names, "build", { beads: six }));
           return true;
         })()"#,
     );
+    let first = "document.querySelectorAll('section.kit-steps')[0]";
     assert_eq!(
-        c.eval("document.querySelectorAll('ol.kit-steps')[0].querySelectorAll('.kit-steps__beads > li:not(.kit-steps__more)').length"),
+        c.eval(&format!(
+            "{first}.querySelectorAll('li[data-key=build] .kit-steps__sub').length"
+        )),
         json!(5),
         "more than six beads fold to five"
     );
     assert_eq!(
-        c.eval("document.querySelectorAll('ol.kit-steps')[0].querySelector('.kit-steps__more').textContent"),
-        json!("2 more beads"),
+        c.eval(&format!(
+            "[...{first}.querySelectorAll('.kit-steps__fold')].map((b) => b.textContent)"
+        )),
+        json!(["1 earlier", "1 later"]),
+        "the window centres on the bead in progress"
     );
     assert_eq!(
-        c.eval("document.querySelectorAll('ol.kit-steps')[1].querySelectorAll('.kit-steps__beads > li:not(.kit-steps__more)').length"),
+        c.eval(&format!("[...{first}.querySelectorAll('.kit-steps__sub')].map((s) => [s.querySelector('.kit-steps__sub-text').textContent, s.dataset.state, s.getAttribute('aria-current')])")),
+        json!([
+            ["Bead 2", "queued", null],
+            ["Bead 3", "queued", null],
+            ["Bead 4", "in_progress", "step"],
+            ["Bead 5", "queued", null],
+            ["Bead 6", "queued", null]
+        ])
+    );
+    assert_eq!(
+        c.eval("document.querySelectorAll('section.kit-steps')[1].querySelectorAll('.kit-steps__sub').length"),
         json!(6),
         "six beads all show"
     );
     assert_eq!(
-        c.eval("document.querySelectorAll('ol.kit-steps')[1].querySelectorAll('.kit-steps__more').length"),
+        c.eval("document.querySelectorAll('section.kit-steps')[1].querySelectorAll('.kit-steps__fold').length"),
         json!(0),
     );
     assert_eq!(
-        c.eval("document.querySelector('ol.kit-steps li[aria-current=step]').textContent.includes('Build')"),
-        json!(true),
-        "the beads sit under Build, the current step"
+        c.eval("document.querySelectorAll('section.kit-steps')[1].querySelector('.kit-steps__sub').dataset.state"),
+        json!("finished"),
     );
     assert_eq!(
-        c.eval("document.querySelector('ol.kit-steps .kit-steps__beads li').dataset.beadState"),
-        json!("finished"),
+        c.eval(&format!("(() => {{ const li = {first}.querySelector('li[aria-current=step]'); const b = li.querySelector(':scope > button.kit-steps__row'); return [li.dataset.key, b.getAttribute('aria-expanded'), b.getAttribute('aria-controls') === li.querySelector('.kit-steps__subs').id]; }})()")),
+        json!(["build", "true", true]),
+        "the beads sit under Build, the step in progress, open"
+    );
+    c.eval(&format!("{first}.querySelectorAll('.kit-steps__fold')[1].focus(); {first}.querySelectorAll('.kit-steps__fold')[1].click(); true"));
+    assert_eq!(
+        c.eval(&format!("[{first}.querySelectorAll('.kit-steps__sub').length, [...{first}.querySelectorAll('.kit-steps__fold')].map((b) => b.textContent), document.activeElement.textContent]")),
+        json!([7, ["Show fewer"], "Show fewer"]),
+        "a fold unfolds every bead and keeps focus on the fold"
+    );
+    c.eval(&format!(
+        "{first}.querySelector('li[data-key=build] > button.kit-steps__row').click(); true"
+    ));
+    assert_eq!(
+        c.eval(&format!("[{first}.querySelectorAll('.kit-steps__sub').length, {first}.querySelector('li[data-key=build] > button').getAttribute('aria-expanded')]")),
+        json!([0, "false"]),
+        "the row closes its beads"
+    );
+    assert_eq!(
+        c.eval(&format!("[...{first}.querySelectorAll('[role=status][aria-live=polite]')].map((n) => n.textContent)")),
+        json!(["4 of 6 steps finished"]),
+        "one polite live region with the count"
     );
 }
 
@@ -428,39 +485,75 @@ fn steps_mark_before_at_and_after_the_current_step_and_a_drift() {
           return true;
         })()"#,
     );
-    let states =
-        "[...document.querySelectorAll('ol.kit-steps')[0].children].map(li => li.dataset.state)";
+    let first = "document.querySelectorAll('section.kit-steps')[0]";
     assert_eq!(
-        c.eval(states),
+        c.eval(&format!("[...{first}.querySelectorAll('li.kit-steps__item')].map((li) => [li.dataset.state, li.querySelector('.kit-steps__mark').textContent, li.querySelector('.kit-steps__state')?.textContent ?? null, !!li.querySelector('.kit-steps__gate')])")),
         json!([
-            "finished",
-            "finished",
-            "awaiting_approval",
-            "queued",
-            "queued"
+            ["finished", "✓", null, false],
+            ["finished", "✓", null, false],
+            ["awaiting_approval", "◇", "Needs you", true],
+            ["queued", "○", "Queued", false],
+            ["queued", "○", "Queued", false]
         ]),
-        "before the gate finished, the gate awaiting, after queued"
+        "marks and pills as StepProgressList draws them"
     );
     assert_eq!(
-        c.eval("document.querySelectorAll('ol.kit-steps')[0].querySelector('[aria-current=step]').textContent.includes('Approve')"),
-        json!(true)
+        c.eval(&format!("[...{first}.querySelectorAll('.kit-steps__row')].map((r) => r.getAttribute('aria-label'))")),
+        json!(["Think", "Spec", "Approve, Needs you", "Plan, Queued", "Build, Queued"]),
+        "a finished step's name drops the empty state word, as item_name does"
+    );
+    assert_eq!(
+        c.eval(&format!("[...{first}.querySelectorAll('[role=status][aria-live=polite]')].map((n) => n.textContent)")),
+        json!(["Approve: Needs you"]),
+        "the live region names the step that waits on the user"
+    );
+    assert_eq!(
+        c.eval("document.querySelectorAll('section.kit-steps')[1].querySelector('[role=status]').textContent"),
+        json!("1 of 5 steps finished"),
+        "a drift waits on nothing, so the count"
+    );
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('section.kit-steps li.kit-is-failed')].map((li) => li.dataset.state)"),
+        json!(["errored"]),
+        "the drifted step flashes, and only it"
+    );
+    assert_eq!(
+        c.eval(&format!("[{first}.querySelector('.kit-steps__heading').textContent, {first}.querySelector('.kit-steps__count').textContent]")),
+        json!(["Steps", "2 of 5 steps finished"])
     );
     assert_eq!(
         c.eval(
-            "[...document.querySelectorAll('ol.kit-steps')[1].children].map(li => li.dataset.state)"
+            "[...document.querySelectorAll('section.kit-steps')[1].querySelectorAll('li.kit-steps__item')].map(li => li.dataset.state)"
         ),
         json!(["finished", "errored", "queued", "queued", "queued"]),
         "the drifted step is errored"
     );
     assert_eq!(
-        c.eval("document.querySelector('li[data-state=errored] .kit-steps__state').textContent"),
-        json!("the design changed under it"),
+        c.eval("(() => { const li = document.querySelector('li[data-state=errored]'); return [li.querySelector('.kit-steps__mark').textContent, li.querySelector('.kit-steps__state').textContent]; })()"),
+        json!(["✕", "the design changed under it"]),
         "the reason replaces the state"
     );
     assert_eq!(
-        c.eval("document.querySelectorAll('ol.kit-steps time').length"),
+        c.eval("document.querySelectorAll('section.kit-steps time, section.kit-steps .kit-steps__time').length"),
         json!(0),
         "steps carry no times"
+    );
+    assert_eq!(
+        c.eval(&format!("[...{first}.querySelectorAll('li.kit-steps__item')].map((li) => !!li.querySelector(':scope > .kit-steps__branch[aria-hidden=true]') && !!li.querySelector(':scope > .kit-steps__row > .kit-steps__mark[aria-hidden=true]'))")),
+        json!([true, true, true, true, true]),
+        "every step has a branch and a mark"
+    );
+    assert_eq!(
+        c.eval(&format!("(() => {{ const px = (n, p) => getComputedStyle(n)[p]; const li = {first}.querySelector('li.kit-steps__item'); const m = li.querySelector('.kit-steps__mark'), r = li.querySelector('.kit-steps__row'), b = li.querySelector('.kit-steps__branch'), pill = {first}.querySelector('.kit-steps__state'); return [px(m, 'width'), px(m, 'height'), px(r, 'minHeight'), px(b, 'left'), px(b, 'top'), px(b, 'width'), px(pill, 'height'), px({first}, 'paddingTop')]; }})()")),
+        json!(["24px", "24px", "40px", "17px", "38px", "2px", "20px", "16px"]),
+        "the rhythm of StepProgressList: 24 px marks, 40 px rows, the branch at 17 px"
+    );
+    assert_eq!(
+        c.eval(&format!(
+            "{first}.querySelectorAll('[aria-current]').length"
+        )),
+        json!(0),
+        "only a step in progress is current"
     );
 }
 
@@ -560,13 +653,545 @@ fn decision_cards_read_their_steps_and_their_beads_under_build() {
         }})()"#
     ));
     assert_eq!(
-        c.eval("document.querySelectorAll('.kit-stack__card ol.kit-steps > li[data-state=awaiting_approval]').length"),
+        c.eval("document.querySelectorAll('.kit-stack__card section.kit-steps li.kit-steps__item[data-state=awaiting_approval]').length"),
         json!(1),
         "the gate step awaits the approval"
     );
     assert_eq!(
-        c.eval("document.querySelectorAll('.kit-stack__card .kit-steps__beads li').length"),
+        c.eval("document.querySelector('.kit-stack__card li[data-key=build] > button.kit-steps__row').getAttribute('aria-expanded')"),
+        json!("false"),
+        "Build, queued, starts closed"
+    );
+    c.eval("document.querySelector('.kit-stack__card li[data-key=build] > button.kit-steps__row').click(); true");
+    assert_eq!(
+        c.eval("document.querySelectorAll('.kit-stack__card li[data-key=build] .kit-steps__sub').length"),
         json!(1),
         "the bead sits under Build"
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn a_pane_change_crossfades_with_the_outgoing_pane_inert() {
+    let mut c = open("kit-swap-pane");
+    let v = c.eval(
+        r#"(() => {
+          const a = el("section", { id: "a" }, "staff");
+          const b = el("section", { id: "b", hidden: true }, "runs");
+          document.body.append(el("div", { id: "panes" }, a, b));
+          swapPane(a, b);
+          return { aInert: a.inert, aHidden: a.hidden, aLabel: a.getAttribute("aria-hidden"), bHidden: b.hidden, running: document.getAnimations().length > 0 };
+        })()"#,
+    );
+    assert_eq!(
+        v,
+        json!({ "aInert": true, "aHidden": false, "aLabel": "true", "bHidden": false, "running": true }),
+        "while it fades the outgoing pane is inert"
+    );
+    c.wait_for("document.getElementById('a').hidden");
+    assert_eq!(
+        c.eval("[document.getElementById('a').inert, document.getElementById('a').getAttribute('aria-hidden'), document.getElementById('a').style.position]"),
+        json!([false, null, ""]),
+        "a settled pane is plain again"
+    );
+    c.eval("swapPane(document.getElementById('b'), document.getElementById('a')); swapPane(document.getElementById('a'), document.getElementById('b')); true");
+    assert_eq!(
+        c.eval("[document.getElementById('a').hidden || document.getElementById('a').inert, document.getElementById('b').hidden, document.getElementById('b').inert]"),
+        json!([true, false, false]),
+        "a pane brought back mid-fade is live at once"
+    );
+
+    let mut c = open("kit-swap-pane-reduce");
+    c.call(
+        "Emulation.setEmulatedMedia",
+        json!({ "features": [{ "name": "prefers-reduced-motion", "value": "reduce" }] }),
+    );
+    let v = c.eval(
+        r#"(() => {
+          const a = el("section", {}, "staff");
+          const b = el("section", { hidden: true }, "runs");
+          document.body.append(a, b);
+          swapPane(a, b);
+          return [a.hidden, b.hidden, document.getAnimations().length];
+        })()"#,
+    );
+    assert_eq!(
+        v,
+        json!([true, false, 0]),
+        "under reduce the change is instant"
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_run_page_crossfades_from_reading_to_ready() {
+    let mut c = open("kit-run-swap");
+    c.eval(&format!(
+        r#"(() => {{
+          window.__tl = new Promise((r) => {{ window.__ready = () => r({RUN_TL}); }});
+          document.body.append(el("div", {{ id: "panel" }}, runPanel({{ phase: "active", activeMs: 60000, live: true, paused: false, line: "" }}, () => window.__tl, {{ onAction() {{}} }})));
+          return true;
+        }})()"#
+    ));
+    assert_eq!(
+        c.eval("document.querySelectorAll('#panel [data-kind=reading]').length"),
+        json!(1),
+        "reading first"
+    );
+    let v = c.eval(
+        r##"(async () => {
+          window.__ready();
+          await window.__tl;
+          await new Promise((r) => setTimeout(r, 0));
+          const out = document.querySelector("#panel [inert]");
+          return { out: !!out, reading: !!out?.querySelector("[data-kind=reading]"), ready: !!document.querySelector("#panel .kit-tl:not([inert] *)") };
+        })()"##,
+    );
+    assert_eq!(
+        v,
+        json!({ "out": true, "reading": true, "ready": true }),
+        "the reading state fades out inert while the timeline comes in"
+    );
+    c.wait_for("document.querySelector('#panel [inert]') === null");
+    assert_eq!(
+        c.eval("document.querySelectorAll('#panel .kit-tl').length"),
+        json!(1)
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn reading_states_carry_shimmer_rows_and_settle_under_reduce() {
+    let mut c = open("kit-shimmer");
+    let v = c.eval(
+        r#"(() => {
+          const rows = (s) => { const box = s.querySelector(".state-shimmer"); return box ? [box.getAttribute("aria-hidden"), box.children.length, [...box.children].every((r) => r.classList.contains("kit-is-running"))] : null; };
+          return {
+            reading: rows(stateView("reading", { title: "Reading" })),
+            refreshing: rows(stateView("refreshing", { title: "Refreshing" })),
+            starting: rows(stateView("starting", { title: "Starting" })),
+            empty: rows(stateView("empty", { title: "Nothing" })),
+            line: rows(stateView("reading", { title: "Reading", line: true })),
+          };
+        })()"#,
+    );
+    assert_eq!(
+        v,
+        json!({ "reading": ["true", 3, true], "refreshing": ["true", 3, true], "starting": ["true", 3, true], "empty": null, "line": null })
+    );
+    c.eval("document.body.append(stateView('reading', { title: 'Reading' })); true");
+    assert_eq!(
+        c.eval("new Promise((r) => requestAnimationFrame(() => r(document.getAnimations().length > 0)))"),
+        json!(true),
+        "the rows shimmer"
+    );
+    c.call(
+        "Emulation.setEmulatedMedia",
+        json!({ "features": [{ "name": "prefers-reduced-motion", "value": "reduce" }] }),
+    );
+    assert_eq!(
+        c.eval(
+            "new Promise((r) => requestAnimationFrame(() => r(document.getAnimations().length)))"
+        ),
+        json!(0),
+        "no shimmer runs under reduce"
+    );
+}
+
+// ---- the Today report, rendered by `cos::report::render` and opened as a page
+
+/// Today's data with a brief and two hires at work.
+fn today_data() -> Value {
+    json!({
+        "now_ts": "2026-10-29T14:30:00Z",
+        "today": "2026-10-29",
+        "name": "Alex Rivera",
+        "brief": { "day": "2026-10-29", "report": {
+            "headline": "Release 3.4 ships in three days; the board meets Friday.",
+            "needs_you": [{ "verb": "do", "owner": "Alex", "recommendation": "Review api-gateway#412", "why": "", "next_step": "",
+              "source": "", "deadline": "", "deadline_basis": "none", "goal_id": "", "deliverable_id": "", "agent_prompt": "Review it." }],
+            "coverage": [], "gaps": []
+        } },
+        "workspace": { "timezone": "America/Chicago", "goals": [] },
+        "hires": [
+            { "id": "20261029-100000-a001", "title": "Ship the parser", "role": "builder", "identity": 2, "phase": "working",
+              "active_ms": 720000, "paused_now": false, "started": "2026-10-29T15:00:00Z", "ended": null, "done_today": false,
+              "deadline_secs": 3600, "word": "working", "msg": null, "source": "brief:1" },
+            { "id": "20261029-100100-a002", "title": "Review the gateway", "role": "reviewer", "identity": 4, "phase": "needs-you",
+              "active_ms": 60000, "paused_now": false, "started": "2026-10-29T15:10:00Z", "ended": null, "done_today": false,
+              "deadline_secs": 3600, "word": "blocked", "msg": null, "source": "brief:1" }
+        ]
+    })
+}
+
+/// The report for `data`, written to a file and opened; `init` runs before
+/// any of the page's scripts.
+fn report(name: &str, data: &Value, init: &str) -> Chrome {
+    cdp::chrome_path();
+    let dir = cdp::profile(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let html = dir.join("report.html");
+    std::fs::write(&html, cos::report::render(data).unwrap()).unwrap();
+    let mut c = Chrome::start(&dir, &["--disable-gpu"]);
+    if !init.is_empty() {
+        c.call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": init }),
+        );
+    }
+    c.open(&format!("file://{}", html.display()));
+    c.wait_for("document.getElementById('headline') !== null");
+    c
+}
+
+/// Captures the report's 10-second live-update timer so a test can fire it.
+const FIXED_CLOCK: &str = r#"(() => {
+  const real = window.setTimeout;
+  window.__live = [];
+  window.setTimeout = (f, ms, ...a) => (ms === 10000 ? (window.__live.push(f), -1) : real(f, ms, ...a));
+})();"#;
+
+/// The hires as the window's `cos-hires` message carries them: the needs-you
+/// hire is now working, the working one is done today.
+const MOVED: &str = r#"[
+  { id: "20261029-100000-a001", title: "Ship the parser", role: "builder", identity: 2, phase: "done",
+    active_ms: 900000, paused_now: false, started: "2026-10-29T15:00:00Z", ended: "2026-10-29T15:20:00Z", done_today: true,
+    deadline_secs: 3600, word: "done", msg: null, source: "brief:1" },
+  { id: "20261029-100100-a002", title: "Review the gateway", role: "reviewer", identity: 4, phase: "working",
+    active_ms: 120000, paused_now: false, started: "2026-10-29T15:10:00Z", ended: null, done_today: false,
+    deadline_secs: 3600, word: "working", msg: null, source: "brief:1" }
+]"#;
+
+const COLUMN_OF: &str = "(id) => document.querySelector(`#hires [data-glide=\"${id}\"]`)?.closest('[data-col]')?.dataset.col ?? null";
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn a_hires_message_moves_cards_between_columns_and_leaves_the_host_state() {
+    let mut c = report("today-hires", &today_data(), FIXED_CLOCK);
+    c.eval(&format!("window.__col = {COLUMN_OF}; true"));
+    assert_eq!(
+        c.eval("[__col('20261029-100000-a001'), __col('20261029-100100-a002')]"),
+        json!(["running", "needs-you"])
+    );
+    let host = "[document.getElementById('host-run').hidden, document.querySelector('[data-hire]').textContent]";
+    c.eval("window.postMessage({ type: 'cos-host', hire: true, runBrief: true }, '*'); true");
+    c.wait_for("document.getElementById('host-run').hidden === false");
+    let before = c.eval(host);
+    assert_eq!(
+        before,
+        json!([false, "Hire"]),
+        "the cos-host message set the host state"
+    );
+    c.eval(
+        r#"(() => {
+          const f = document.createElement("iframe");
+          f.srcdoc = "<script>parent.postMessage({ type: 'cos-hires', hires: [] }, '*')<\/script>";
+          document.body.append(f);
+          return true;
+        })()"#,
+    );
+    c.pause(std::time::Duration::from_millis(400));
+    assert_eq!(
+        c.eval("document.querySelectorAll('#hires [data-glide]').length"),
+        json!(2),
+        "a message from another frame is ignored"
+    );
+    c.eval(&format!(
+        "window.postMessage({{ type: 'cos-hires', hires: {MOVED} }}, '*'); true"
+    ));
+    c.wait_for("__col('20261029-100000-a001') === 'done'");
+    assert_eq!(
+        c.eval("__col('20261029-100100-a002')"),
+        json!("running"),
+        "the waiting hire moved to Running"
+    );
+    assert_eq!(
+        c.eval("document.querySelectorAll('.hero-pill').length"),
+        json!(1),
+        "the pills follow the message"
+    );
+    assert_eq!(c.eval(host), before, "the cos-host state changed");
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#hires .inbox-open')].filter((b) => b.textContent !== 'Open in Herdr').length"),
+        json!(0),
+        "the redrawn inbox keeps the host's Open in Herdr"
+    );
+    assert_eq!(
+        c.eval("document.body.innerText.includes('20261029-')"),
+        json!(false),
+        "a run id in visible text"
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_inbox_says_as_last_read_when_no_live_update_comes() {
+    let mut c = report("today-stale", &today_data(), FIXED_CLOCK);
+    let stale = "[...document.querySelectorAll('[data-stale]')].filter((s) => !s.hidden).length";
+    assert_eq!(c.eval(stale), json!(0), "fresh at load");
+    assert_eq!(c.eval("window.__live.length"), json!(1), "one 10 s timer");
+    c.eval("window.__live.forEach((f) => f()); true");
+    assert_eq!(
+        c.eval(stale),
+        json!(3),
+        "the heading, the pills and Running say as last read"
+    );
+    c.eval(&format!(
+        "window.postMessage({{ type: 'cos-hires', hires: {MOVED} }}, '*'); true"
+    ));
+    c.wait_for(&format!("{stale} === 0"));
+
+    let mut c = report("today-live", &today_data(), FIXED_CLOCK);
+    c.eval(&format!(
+        "window.postMessage({{ type: 'cos-hires', hires: {MOVED} }}, '*'); true"
+    ));
+    c.wait_for("document.querySelector('#hires [data-col=done] [data-glide]') !== null");
+    c.eval("window.__live.forEach((f) => f()); true");
+    assert_eq!(
+        c.eval(stale),
+        json!(0),
+        "a live update inside 10 s keeps it fresh"
+    );
+}
+
+/// Captures the schedule board's minute timer and lets a test move the clock.
+const MINUTE_CLOCK: &str = r#"(() => {
+  const realInterval = window.setInterval, realNow = Date.now;
+  window.__minute = [];
+  window.__shift = 0;
+  Date.now = () => realNow() + window.__shift;
+  window.setInterval = (f, ms, ...a) => (ms === 60000 ? (window.__minute.push(f), -1) : realInterval(f, ms, ...a));
+})();"#;
+
+fn schedule_data() -> Value {
+    let mut d = today_data();
+    d["brief"]["report"]["calendar"] = json!([
+        { "date": "2026-10-29", "start": "09:00", "end": "10:00", "what": "Design review", "prep": "Read the RFC." },
+        { "date": "2026-10-29", "start": "10:30", "end": "11:00", "what": "Vendor call", "prep": "" },
+        { "date": "2026-10-29", "start": "10:32", "end": "10:40", "what": "Vendor follow-up", "prep": "" }
+    ]);
+    d
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_schedule_board_moves_under_the_now_line_each_minute_and_selects_a_row() {
+    let mut c = report("today-schedule", &schedule_data(), MINUTE_CLOCK);
+    let left = "(name) => document.querySelector(`#schedule .kit-asb__marker[aria-label^=\"${name},\"]`).style.left";
+    c.eval(&format!("window.__left = {left}; true"));
+    assert_eq!(
+        c.eval(
+            "[__left('Vendor call'), document.querySelector('#schedule .kit-asb__now').style.left]"
+        ),
+        json!(["60%", "50%"]),
+        "an hour ahead sits a tenth of the axis right of the centred now line"
+    );
+    assert_eq!(
+        c.eval("window.__minute.length"),
+        json!(1),
+        "one minute timer"
+    );
+    c.eval("window.__shift = 30 * 60000; window.__minute.forEach((f) => f()); true");
+    assert_eq!(
+        c.eval(
+            "[__left('Vendor call'), document.querySelector('#schedule .kit-asb__now').style.left]"
+        ),
+        json!(["55%", "50%"]),
+        "half an hour later the marker has moved left under the fixed now line"
+    );
+    assert_eq!(
+        c.eval("document.querySelectorAll('#schedule .kit-asb__tick').length > 0"),
+        json!(true)
+    );
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#schedule .kit-asb__panel')].filter((p) => !p.hidden).map((p) => p.querySelector('h3').textContent)"),
+        json!(["Design review"]),
+        "the running slot is selected at load"
+    );
+    c.eval("document.querySelector('#schedule .kit-asb__marker[aria-label^=\"Vendor call,\"]').click(); true");
+    assert_eq!(
+        c.eval("[document.querySelector('#schedule [aria-current=true] .kit-asb__name').textContent, [...document.querySelectorAll('#schedule .kit-asb__panel')].filter((p) => !p.hidden).map((p) => p.querySelector('h3').textContent)]"),
+        json!(["Vendor call", ["Vendor call"]]),
+        "a marker selects its row and shows its detail"
+    );
+    assert_eq!(
+        c.eval("(() => { const b = [...document.querySelectorAll('#schedule button:not([hidden])')].map((n) => n.className); const at = b.indexOf('kit-asb__row-hit'); return [at > 0, b.slice(0, at).every((k) => k === 'kit-asb__marker'), b.slice(at).every((k) => k === 'kit-asb__row-hit'), document.querySelectorAll('#schedule [tabindex]').length]; })()"),
+        json!([true, true, true, 0]),
+        "keyboard order as the gallery: the timeline's markers, then the rows"
+    );
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#schedule .kit-asb__marker:not([hidden])')].every((m) => { const r = m.getBoundingClientRect(); return r.width >= 24 && r.height >= 24; })"),
+        json!(true),
+        "a marker's hit area is at least 1.5rem square"
+    );
+    let overlaps = "(() => { const r = [...document.querySelectorAll('#schedule .kit-asb__marker:not([hidden])')].map((m) => m.getBoundingClientRect()); let n = 0; for (let i = 0; i < r.length; i++) for (let j = i + 1; j < r.length; j++) if (r[i].left < r[j].right && r[j].left < r[i].right && r[i].top < r[j].bottom && r[j].top < r[i].bottom) n++; return n; })()";
+    assert_eq!(
+        c.eval(overlaps),
+        json!(0),
+        "markers two minutes apart never cover each other's hit area"
+    );
+    c.eval("window.__shift = 31 * 60000; window.__minute.forEach((f) => f()); true");
+    assert_eq!(
+        c.eval(overlaps),
+        json!(0),
+        "nor after the minute moves them"
+    );
+    c.eval("(() => { const p = document.querySelector('#schedule').closest('[role=tabpanel]'); p.hidden = true; window.__shift = 33 * 60000; window.__minute.forEach((f) => f()); p.hidden = false; return true; })()");
+    assert_eq!(
+        c.eval(&format!("new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok({overlaps}))))")),
+        json!(0),
+        "nor when the minute ticked while Today was hidden behind another tab"
+    );
+    assert_eq!(
+        c.eval("(() => { const a = document.querySelector('#schedule .kit-asb__axis').getBoundingClientRect(); const labels = [...document.querySelectorAll('#schedule .kit-asb__tick')].map((t) => t.getBoundingClientRect()); return [...document.querySelectorAll('#schedule .kit-asb__marker:not([hidden])')].every((m) => { const s = getComputedStyle(m, '::before'); const r = m.getBoundingClientRect(); const d = parseFloat(s.height); const top = r.top + (r.height - d) / 2; const bottom = top + d; return top >= a.top && bottom <= a.bottom && labels.every((l) => bottom <= l.top || r.right <= l.left || r.left >= l.right); }); })()"),
+        json!(true),
+        "every marker's dot stays inside the axis band and clear of the hour labels"
+    );
+    c.eval("document.querySelector('#schedule .kit-asb__marker[aria-label^=\"Design review,\"]').focus(); true");
+    press(&mut c, "Enter", "Enter", 13, "\r");
+    assert_eq!(
+        c.eval("[document.querySelector('#schedule [aria-current=true] .kit-asb__name').textContent, [...document.querySelectorAll('#schedule .kit-asb__panel')].filter((p) => !p.hidden).map((p) => p.querySelector('h3').textContent), document.activeElement.classList.contains('kit-asb__marker')]"),
+        json!(["Design review", ["Design review"], true]),
+        "Enter on a focused marker selects its row and panel and keeps focus"
+    );
+    c.eval("document.querySelector('#schedule .kit-asb__marker[aria-label^=\"Vendor call,\"]').click(); true");
+    c.eval("document.querySelector('#schedule [aria-current=true]').focus(); true");
+    press(&mut c, "ArrowUp", "ArrowUp", 38, "");
+    assert_eq!(
+        c.eval("document.activeElement.querySelector('.kit-asb__name')?.textContent ?? null"),
+        json!("Review the gateway"),
+        "arrow up moves to the row before"
+    );
+}
+
+/// Records every KPI ticker the page adds, before its scripts run.
+const WATCH_TICKERS: &str = r#"(() => {
+  window.__tickers = [];
+  new MutationObserver((list) => {
+    for (const m of list) for (const n of m.addedNodes) {
+      if (n.classList?.contains("kit-ticker")) window.__tickers.push({ from: n.dataset.from, hidden: n.getAttribute("aria-hidden"), text: n.textContent });
+    }
+  }).observe(document, { childList: true, subtree: true });
+})();"#;
+
+fn kpi_report_data() -> Value {
+    let mut d = today_data();
+    d["workspace"]["kpis"] = json!([{
+        "id": "K-1", "goalId": "G-1", "name": "Beta testers", "unit": "testers",
+        "baseline": 0, "target": 500, "current": 140, "evidenceAt": "2026-10-28T09:00:00Z",
+        "source": "email", "reportingWindow": "2026-10"
+    }]);
+    d["kpi_points"] = json!([
+        { "kpi": "Beta testers", "value": 140, "evidenceAt": "2026-10-28T09:00:00Z", "recordedAt": "2026-10-28T09:00:00Z" },
+        { "kpi": "Beta testers", "value": 20, "evidenceAt": "2026-10-14T09:00:00Z", "recordedAt": "2026-10-14T09:00:00Z" },
+        { "kpi": "Beta testers", "value": 40, "evidenceAt": "2026-10-21T09:00:00Z", "recordedAt": "2026-10-21T09:00:00Z" }
+    ]);
+    d
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn a_kpi_tile_rolls_once_from_its_previous_point_to_the_recorded_value() {
+    let mut c = report("today-kpi", &kpi_report_data(), WATCH_TICKERS);
+    let value = "document.querySelector('[data-section=kpis] .kit-tile__v')";
+    assert_eq!(c.eval(&format!("{value}.textContent")), json!("140"));
+    assert_eq!(
+        c.eval(&format!("{value}.getAttribute('aria-live')")),
+        json!("polite")
+    );
+    assert_eq!(
+        c.eval("window.__tickers"),
+        json!([{ "from": "40", "hidden": "true", "text": "012345678901234567890123456789" }]),
+        "one roll from the second-newest point, its digits hidden"
+    );
+    c.wait_for("document.querySelectorAll('.kit-ticker').length === 0");
+    assert_eq!(
+        c.eval(&format!("{value}.textContent")),
+        json!("140"),
+        "the value text equals the record"
+    );
+    c.eval("document.querySelector('#tab-plan').click(); document.querySelector('#tab-left').click(); true");
+    c.pause(std::time::Duration::from_millis(300));
+    assert_eq!(
+        c.eval("window.__tickers.length"),
+        json!(1),
+        "later renders do not roll"
+    );
+
+    let mut c = report("today-kpi-reduce", &kpi_report_data(), WATCH_TICKERS);
+    c.call(
+        "Emulation.setEmulatedMedia",
+        json!({ "features": [{ "name": "prefers-reduced-motion", "value": "reduce" }] }),
+    );
+    c.reload();
+    c.wait_for("document.getElementById('headline') !== null");
+    assert_eq!(
+        c.eval("window.__tickers.length"),
+        json!(0),
+        "no roll under reduce"
+    );
+    assert_eq!(c.eval(&format!("{value}.textContent")), json!("140"));
+}
+
+const RUNNING: &str = "window.postMessage({ type: 'cos-brief-state', state: 'running', text: 'brief running…', title: '' }, '*'); true";
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn a_brief_run_shows_the_loader_then_brief_ready() {
+    let mut c = report("today-loader", &today_data(), "");
+    assert_eq!(
+        c.eval("document.getElementById('brief-loader').hidden"),
+        json!(true),
+        "no loader before a run"
+    );
+    c.eval(RUNNING);
+    c.wait_for("!document.getElementById('brief-loader').hidden");
+    assert_eq!(
+        c.eval("document.querySelector('#brief-loader .brief-loader__text').textContent"),
+        json!("brief running…")
+    );
+    assert_eq!(
+        c.eval("document.getElementById('brief-loader').dataset.state"),
+        json!("running")
+    );
+    assert_eq!(
+        c.eval("document.querySelectorAll('#brief-loader .brief-loader__rays line').length"),
+        json!(8),
+        "the loader's rays"
+    );
+    c.eval("window.postMessage({ type: 'cos-brief-state', state: 'done', text: 'brief done', title: '' }, '*'); true");
+    c.wait_for("document.getElementById('brief-loader').dataset.state === 'done'");
+    assert_eq!(
+        c.eval("document.querySelector('#brief-loader .brief-loader__text').textContent"),
+        json!("Brief ready")
+    );
+    c.eval("window.postMessage({ type: 'cos-brief-state', state: 'error', text: 'brief failed: hover for why', title: '' }, '*'); true");
+    c.wait_for("document.getElementById('brief-loader').dataset.state === 'failed'");
+    assert_eq!(
+        c.eval("document.querySelector('#brief-loader .brief-loader__text').textContent"),
+        json!("brief failed: hover for why")
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_report_settles_with_no_animation_under_reduced_motion() {
+    let mut c = report("today-reduce", &today_data(), "");
+    c.call(
+        "Emulation.setEmulatedMedia",
+        json!({ "features": [{ "name": "prefers-reduced-motion", "value": "reduce" }] }),
+    );
+    c.reload();
+    c.wait_for("document.getElementById('headline') !== null");
+    c.eval(RUNNING);
+    c.pause(std::time::Duration::from_millis(600));
+    assert_eq!(
+        c.eval("document.getAnimations().length"),
+        json!(0),
+        "an animation runs under reduce"
+    );
+    assert_eq!(
+        c.eval("document.querySelectorAll('.hero-pill').length"),
+        json!(2)
     );
 }

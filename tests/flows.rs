@@ -278,7 +278,7 @@ fn the_scan_reads_every_store_and_reports_the_ones_it_cannot() {
     std::fs::write(broken.join(".chronis/fail"), "").unwrap();
     std::fs::create_dir_all(d.0.join("no-store")).unwrap();
 
-    let scan = flows::scan(&d.0, &fake_cn(), Duration::from_secs(30));
+    let scan = flows::scan(&d.0, &fake_cn(), Duration::from_secs(30), None);
     assert_eq!(scan.repos, 2, "only repos with .chronis/");
     assert_eq!(scan.flows.len(), 1);
     assert_eq!(scan.flows[0].repo, "alpha");
@@ -287,6 +287,140 @@ fn the_scan_reads_every_store_and_reports_the_ones_it_cannot() {
         scan.gaps[0].starts_with("beta: cn list failed: store is locked"),
         "{}",
         scan.gaps[0]
+    );
+}
+
+/// A hire as `out/agents/<id>/` stores it, started from `source`.
+fn hire_at(home: &Path, id: &str, source: &str, status: &str) {
+    let d = home.join("out/agents").join(id);
+    std::fs::create_dir_all(&d).unwrap();
+    let spec = json!({ "id": id, "harness": "claude", "program": "claude", "workdir": "w",
+                       "worktree": false, "title": format!("hire {id}"), "source": source,
+                       "prompt": "p", "deadline_secs": 1800, "created": "2026-11-26T09:00:00Z",
+                       "role": "builder", "terminal": format!("cos-{id}") });
+    std::fs::write(d.join("spec.json"), spec.to_string()).unwrap();
+    std::fs::write(
+        d.join("state.json"),
+        json!({ "status": status, "started": "2026-11-26T09:00:01Z" }).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn with_a_home_the_scan_attaches_hires_by_their_bead_source() {
+    let d = dir("hires");
+    let projects = d.0.join("projects");
+    let home = d.0.join("home");
+    repo(
+        &projects,
+        "alpha",
+        &json!([
+            task("e1", "epic", "open", None),
+            task("b1", "task", "in_progress", Some("e1")),
+            task("b2", "task", "open", Some("e1")),
+            task("e2", "epic", "open", None),
+            task("c1", "task", "open", Some("e2")),
+        ]),
+    );
+    repo(
+        &projects,
+        "beta",
+        &json!([
+            task("e1", "epic", "open", None),
+            task("b1", "task", "open", Some("e1")),
+        ]),
+    );
+    hire_at(&home, "20261126-090000-a001", "bead:alpha/b1", "running");
+    hire_at(&home, "20261126-090000-a002", "bead:alpha/b2", "done");
+    hire_at(&home, "20261126-090000-a003", "bead:beta/b1", "running");
+    hire_at(&home, "20261126-090000-a004", "bead:alpha/gone", "running");
+    hire_at(&home, "20261126-090000-a005", "brief", "running");
+
+    let utc = jiff::tz::TimeZone::UTC;
+    let scan = flows::scan(
+        &projects,
+        &fake_cn(),
+        Duration::from_secs(30),
+        Some(flows::Hires {
+            home: &home,
+            tz: &utc,
+        }),
+    );
+    let flow = |repo: &str, id: &str| {
+        scan.flows
+            .iter()
+            .find(|f| f.repo == repo && f.id == id)
+            .unwrap_or_else(|| panic!("no flow {repo}/{id}"))
+    };
+    let ids = |f: &flows::Flow| -> Vec<String> {
+        let mut v: Vec<String> = f.hires.iter().map(|h| h.id.clone()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        ids(flow("alpha", "e1")),
+        vec!["20261126-090000-a001", "20261126-090000-a002"]
+    );
+    assert!(ids(flow("alpha", "e2")).is_empty(), "no hire names c1");
+    assert_eq!(ids(flow("beta", "e1")), vec!["20261126-090000-a003"]);
+    let working = &flow("alpha", "e1").hires;
+    assert!(
+        working
+            .iter()
+            .any(|h| h.source == "bead:alpha/b1" && h.phase == cos::agents::Phase::Working)
+    );
+
+    let without = flows::scan(&projects, &fake_cn(), Duration::from_secs(30), None);
+    assert!(without.flows.iter().all(|f| f.hires.is_empty()));
+}
+
+/// A fixed zone whose wall clock reads `hour`:xx at `now`.
+fn zone_at_hour(now: jiff::Timestamp, hour: i64) -> jiff::tz::TimeZone {
+    let utc_hour = i64::from(now.to_zoned_datetime(jiff::tz::TimeZone::UTC).hour());
+    let shift = (hour - utc_hour).rem_euclid(24);
+    let shift = if shift > 12 { shift - 24 } else { shift };
+    jiff::tz::TimeZone::fixed(jiff::tz::Offset::from_hours(shift as i8).unwrap())
+}
+
+#[test]
+fn a_flows_hire_is_done_today_in_the_zone_the_scan_is_given() {
+    let d = dir("hires-zone");
+    let projects = d.0.join("projects");
+    let home = d.0.join("home");
+    repo(
+        &projects,
+        "alpha",
+        &json!([
+            task("e1", "epic", "open", None),
+            task("b1", "task", "in_progress", Some("e1")),
+        ]),
+    );
+    hire_at(&home, "20261126-090000-a001", "bead:alpha/b1", "done");
+    let now = jiff::Timestamp::now();
+    let ended = now - jiff::SignedDuration::from_hours(3);
+    let state = home.join("out/agents/20261126-090000-a001/state.json");
+    std::fs::write(
+        &state,
+        json!({ "status": "done", "started": "2026-11-26T09:00:01Z", "ended": ended.to_string() })
+            .to_string(),
+    )
+    .unwrap();
+    let done_today = |tz: &jiff::tz::TimeZone| {
+        let scan = flows::scan(
+            &projects,
+            &fake_cn(),
+            Duration::from_secs(30),
+            Some(flows::Hires { home: &home, tz }),
+        );
+        scan.flows[0].hires[0].done_today
+    };
+    assert!(
+        done_today(&zone_at_hour(now, 15)),
+        "three hours ago is today where it is mid-afternoon"
+    );
+    assert!(
+        !done_today(&zone_at_hour(now, 1)),
+        "three hours ago is yesterday where it is one in the morning"
     );
 }
 
@@ -374,7 +508,7 @@ fn the_design_is_read_from_the_flow_branch_while_it_exists() {
 fn a_spent_budget_leaves_the_rest_as_gaps_without_running_cn() {
     let d = dir("budget");
     repo(&d.0, "alpha", &json!([task("e1", "epic", "open", None)]));
-    let scan = flows::scan(&d.0, &fake_cn(), Duration::ZERO);
+    let scan = flows::scan(&d.0, &fake_cn(), Duration::ZERO, None);
     assert!(scan.flows.is_empty());
     assert_eq!(
         scan.gaps,

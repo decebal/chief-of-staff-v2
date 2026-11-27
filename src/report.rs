@@ -48,9 +48,20 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         "architecture": architecture(),
     });
 
-    let herdr_waiting = crate::agents::list(home)
-        .map(|l| crate::agents::view::waiting_in_herdr(&l.runs))
-        .unwrap_or_default();
+    // Never `agents::list` here: it reconciles, writing state and signalling processes.
+    let stored = crate::agents::stored(home);
+    let tz = crate::digest::zone(ws);
+    let hires: Vec<crate::agents::HireView> = stored
+        .iter()
+        .map(|(spec, state)| crate::agents::hire_view(home, spec, state, &tz, now.timestamp()))
+        .collect();
+    let needs_you: Vec<(crate::agents::Spec, crate::agents::State)> = stored
+        .into_iter()
+        .zip(&hires)
+        .filter(|(_, h)| h.phase == crate::agents::Phase::NeedsYou)
+        .map(|(run, _)| run)
+        .collect();
+    let herdr_waiting = crate::agents::view::waiting_in_herdr(&needs_you);
     let digest = crate::digest::build(
         home,
         ws,
@@ -86,6 +97,7 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         "delivery": crate::delivery::view(home),
         "constraints": crate::constraints::view(home),
         "herdr_waiting": herdr_waiting,
+        "hires": hires,
         "digest": digest,
         "kpi_points": history::kpi_points(home),
     });

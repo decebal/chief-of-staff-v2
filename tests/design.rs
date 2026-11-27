@@ -547,6 +547,15 @@ fn every_colour_token_has_a_light_and_a_dark_value() {
         "space-4",
         "space-5",
         "space-6",
+        "motion-fast",
+        "motion-slow",
+        "motion-loop",
+        "motion-stagger",
+        "ease-spring",
+        "glow-1",
+        "glow-2",
+        "gradient-from",
+        "gradient-to",
     ];
     let missing: Vec<&str> = required
         .into_iter()
@@ -633,6 +642,9 @@ fn text_tokens_meet_aa_contrast_in_light_and_dark() {
         ("hero-foreground", "hero"),
         ("hero-muted", "hero"),
         ("brand-amber", "hero"),
+        // gradient text on the hero: each stop is text
+        ("gradient-from", "hero"),
+        ("gradient-to", "hero"),
         // verb chips: DO ink, DECIDE amber, DELEGATE and BATCH blue
         ("verb-do-foreground", "verb-do"),
         ("brand-ink", "brand-amber"),
@@ -819,6 +831,91 @@ fn each_rule_catches_its_violation() {
         ),
         Vec::<String>::new()
     );
+
+    let motion = |css: &str, js: &str| {
+        motion_violations(
+            &[("sample.css", css.to_owned())],
+            &[("sample.js", js.to_owned())],
+        )
+    };
+    let frames = "@keyframes kit-settle { to { opacity: 1; } }\n";
+    for (css, js, rule) in [
+        (
+            format!("{frames}.a {{ animation: kit-settle 1s; }}"),
+            "",
+            "animation outside the reduced-motion gate",
+        ),
+        (
+            format!(
+                "{frames}@media (prefers-reduced-motion: no-preference) {{ .b {{ animation: kit-settle 1s; }} }}\n.a{{transition:transform 1s}}"
+            ),
+            "",
+            "transition outside the reduced-motion gate",
+        ),
+        (
+            "@keyframes spare { to { opacity: 0; } }".to_owned(),
+            "",
+            "unused @keyframes spare",
+        ),
+        (
+            String::new(),
+            "function f(n) { n.animate([], 1); }",
+            ".animate( outside motionOk()",
+        ),
+        (
+            String::new(),
+            "function f(n) { if (motionOk()) {} }\nfunction g(n) { for (const m of n) { m.animate([], 1); } }",
+            ".animate( outside motionOk()",
+        ),
+        (
+            String::new(),
+            "function f(n) { if (motionOk()) log(); n.animate([], 1); }",
+            ".animate( outside motionOk()",
+        ),
+        (
+            String::new(),
+            "function f(n) { if (!motionOk()) log(); n.animate([], 1); }",
+            ".animate( outside motionOk()",
+        ),
+        (
+            String::new(),
+            "function f(n) { if (motionOk()) { log(); } n.animate([], 1); }",
+            ".animate( outside motionOk()",
+        ),
+        (
+            String::new(),
+            "function f(n) { if (!motionOk() && n) return; n.animate([], 1); }",
+            ".animate( outside motionOk()",
+        ),
+        (
+            String::new(),
+            "function f(n) { if (n) { if (!motionOk()) return; } n.animate([], 1); }",
+            ".animate( outside motionOk()",
+        ),
+    ] {
+        let found = motion(&css, js);
+        assert!(
+            found.iter().any(|v| v.contains(rule)),
+            "{rule} missed in {css:?} / {js:?}: {found:?}"
+        );
+    }
+    assert_eq!(
+        motion(
+            &format!(
+                "{frames}@media (prefers-reduced-motion:no-preference){{.a{{animation:kit-settle 1s}}}}\n.b {{ animation: none; transition: color var(--motion-fast), opacity .08s; }}"
+            ),
+            "function g(n) {\n  if (!motionOk()) return;\n  for (const m of n) { m.animate([], 1); }\n}"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        motion(
+            "",
+            "function a(n) {\n  if (!motionOk() || !n.length) {\n    n.x();\n    return;\n  }\n  n.animate([], 1);\n}\nfunction b(n) { if (motionOk()) { n.animate([], 1); } }"
+        ),
+        Vec::<String>::new(),
+        "an early return block and an enclosing if both guard"
+    );
 }
 
 /// The served pages' icons come from the window's set: every icon in it
@@ -854,6 +951,40 @@ fn flows_page_never_writes_html_from_data() {
     ] {
         assert!(!page.contains(sink), "src/flows.html uses {sink}");
     }
+}
+
+/// The report's `/* kit */ … /* end kit */` block: the one place its live
+/// Today code (inbox, pills, timeline, ticker) lives.
+fn report_kit_block(page: &str) -> &str {
+    let (open, close) = ("/* kit */", "/* end kit */");
+    assert_eq!(page.matches(open).count(), 1, "one {open} marker");
+    assert_eq!(page.matches(close).count(), 1, "one {close} marker");
+    let from = page.find(open).unwrap() + open.len();
+    let to = page.find(close).unwrap();
+    assert!(from < to, "{close} before {open}");
+    &page[from..to]
+}
+
+/// The report's kit block builds every node with DOM methods and text, never
+/// markup, with the window's own rules; the page's older `esc()` templates
+/// sit outside it and are out of scope.
+#[test]
+fn report_kit_block_never_writes_html_from_data() {
+    let page = read("src/report.html");
+    let found = window_js_violations("src/report.html kit block", report_kit_block(&page));
+    assert!(
+        found.is_empty(),
+        "the report's kit block writes markup or a URL:\n{found:#?}"
+    );
+    let caught = |js: &str| {
+        let page = format!("x /* kit */\n{js}\n/* end kit */ y");
+        !window_js_violations("fixture", report_kit_block(&page)).is_empty()
+    };
+    assert!(caught("box.innerHTML = `<b>${t}</b>`;"));
+    assert!(caught("box.insertAdjacentHTML(\"beforeend\", t);"));
+    assert!(caught("a.href = url;"));
+    assert!(caught("n.setAttribute(name, v);"));
+    assert!(!caught("n.textContent = t;"));
 }
 
 const WINDOW_MARKUP_SINKS: &[&str] = &[
@@ -1445,35 +1576,409 @@ fn every_state_renders_through_state_view_with_an_icon_and_art() {
     }
 }
 
-/// Motion in the window (state art, spinners) runs only for someone who has
-/// not asked for less: every animation sits inside
-/// `prefers-reduced-motion: no-preference`.
-#[test]
-fn every_animation_respects_reduced_motion() {
-    let css = strip_comments(&read("apps/desktop/ui/style.css"));
-    let b = css.as_bytes();
-    let (mut open, mut gated, mut bad) = (Vec::new(), 0, Vec::new());
-    for i in 0..b.len() {
-        match b[i] {
-            b'{' => {
-                let head = css[..i].rsplit(['}', ';', '{']).next().unwrap_or("");
-                let gate = head.contains("prefers-reduced-motion: no-preference");
-                gated += usize::from(gate);
-                open.push(gate);
-            }
-            b'}' if open.pop() == Some(true) => gated -= 1,
-            _ => {}
-        }
-        if css[i..].starts_with("animation:") && (i == 0 || !(word(b[i - 1]) || b[i - 1] == b'-')) {
-            let v = css[i + 10..].split([';', '}']).next().unwrap_or("").trim();
-            if v != "none" && gated == 0 {
-                bad.push(format!("line {}: animation: {v}", line_of(&css, i)));
+/// Stylesheets the motion gate reads whole.
+const MOTION_CSS: &[&str] = &["apps/desktop/ui/style.css", "apps/desktop/ui/kit.css"];
+/// Pages whose `<style>` blocks the motion gate reads.
+const MOTION_PAGES: &[&str] = &["src/report.html", "src/flows.html", "src/docs.html"];
+/// Pages whose script the `.animate(` rule reads, beside `apps/desktop/ui/*.js`.
+const MOTION_SCRIPTS: &[&str] = &["src/report.html", "src/flows.html"];
+/// Properties a hover may fade outside the gate: colour and opacity changes
+/// move nothing, so they are feedback, not motion.
+const HOVER_PROPS: &[&str] = &[
+    "color",
+    "background",
+    "background-color",
+    "border-color",
+    "outline-color",
+    "fill",
+    "stroke",
+    "opacity",
+];
+
+/// Only the `<style>` blocks of `html`, everything else blanked (newlines
+/// kept, so lines still match the file).
+fn style_blocks(html: &str) -> String {
+    let mut out: Vec<u8> = html
+        .bytes()
+        .map(|c| if c == b'\n' { b'\n' } else { b' ' })
+        .collect();
+    let mut from = 0;
+    while let Some(open) = html[from..].find("<style") {
+        let open = from + open;
+        let body = open + html[open..].find('>').map_or(0, |e| e + 1);
+        let close = html[body..]
+            .find("</style>")
+            .map_or(html.len(), |c| body + c);
+        out[body..close].copy_from_slice(&html.as_bytes()[body..close]);
+        from = close;
+    }
+    String::from_utf8(out).unwrap()
+}
+
+/// A hover transition allowed outside the gate: each part a [`HOVER_PROPS`]
+/// property over `var(--motion-fast)` or at most 140ms.
+fn hover_transition(v: &str) -> bool {
+    v.split(',').all(|part| {
+        let mut words = part.split_whitespace();
+        let prop = words.next().unwrap_or("");
+        let fast = words.any(|w| {
+            w == "var(--motion-fast)"
+                || w.strip_suffix("ms")
+                    .and_then(|n| n.parse::<f64>().ok())
+                    .is_some_and(|n| n <= 140.0)
+                || (!w.ends_with("ms")
+                    && w.strip_suffix('s')
+                        .and_then(|n| n.parse::<f64>().ok())
+                        .is_some_and(|n| n <= 0.14))
+        });
+        HOVER_PROPS.contains(&prop) && fast
+    })
+}
+
+/// The offset just past the bracket that closes the one at `open`.
+fn past_close(js: &str, open: usize) -> Option<usize> {
+    let b = js.as_bytes();
+    let (o, c) = match b[open] {
+        b'(' => (b'(', b')'),
+        b'{' => (b'{', b'}'),
+        _ => return None,
+    };
+    let mut depth = 0usize;
+    for (i, &ch) in b.iter().enumerate().skip(open) {
+        if ch == o {
+            depth += 1;
+        } else if ch == c {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i + 1);
             }
         }
     }
+    None
+}
+
+/// Whether a `motionOk()` test in the function body opening at `body`
+/// guards the `.animate(` at `at`: an `if (!motionOk() …)` at the body's top
+/// level whose statement returns, before the call, or an
+/// `if (motionOk() …) { … }` whose block holds the call. Each condition may
+/// add terms only with the operator that keeps the guard (`||` after the
+/// negated test, `&&` after the plain one).
+fn motion_guarded(js: &str, body: usize, at: usize) -> bool {
+    js[body..at].match_indices("motionOk()").any(|(k, _)| {
+        let p = body + k;
+        let head = js[..p].trim_end();
+        let (negated, head) = match head.strip_suffix('!') {
+            Some(h) => (true, h.trim_end()),
+            None => (false, head),
+        };
+        let Some(before_paren) = head.strip_suffix('(') else {
+            return false;
+        };
+        let kw = before_paren.trim_end();
+        if !kw.ends_with("if")
+            || kw[..kw.len() - 2]
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        {
+            return false;
+        }
+        let open = before_paren.len();
+        let Some(close) = past_close(js, open) else {
+            return false;
+        };
+        let cond = &js[open + 1..close - 1];
+        let rest_at = close + (js[close..].len() - js[close..].trim_start().len());
+        let rest = &js[rest_at..];
+        if negated {
+            let top =
+                js[body + 1..open].matches('{').count() == js[body + 1..open].matches('}').count();
+            if cond.contains("&&") || !top {
+                return false;
+            }
+            if rest.starts_with("return") {
+                return rest_at < at;
+            }
+            if !rest.starts_with('{') {
+                return false;
+            }
+            let Some(end) = past_close(js, rest_at) else {
+                return false;
+            };
+            let last = js[rest_at + 1..end - 1]
+                .trim_end()
+                .trim_end_matches(';')
+                .rsplit([';', '{', '}'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            end <= at && (last == "return" || last.starts_with("return "))
+        } else {
+            !cond.contains("||")
+                && rest.starts_with('{')
+                && past_close(js, rest_at).is_some_and(|end| at < end)
+        }
+    })
+}
+
+/// The innermost function body enclosing `at` in `js`, as its `{` offset.
+fn enclosing_function(js: &str, at: usize) -> Option<usize> {
+    let b = js.as_bytes();
+    let mut depth = 0usize;
+    let mut i = at;
+    while i > 0 {
+        i -= 1;
+        match b[i] {
+            b'}' => depth += 1,
+            b'{' if depth > 0 => depth -= 1,
+            b'{' => {
+                let head = js[..i].trim_end();
+                if head.ends_with("=>") {
+                    return Some(i);
+                }
+                if head.ends_with(')') {
+                    let hb = head.as_bytes();
+                    let (mut d, mut j) = (0usize, hb.len());
+                    while j > 0 {
+                        j -= 1;
+                        match hb[j] {
+                            b')' => d += 1,
+                            b'(' => {
+                                d -= 1;
+                                if d == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let kw: String = head[..j]
+                        .trim_end()
+                        .chars()
+                        .rev()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    if !matches!(
+                        kw.as_str(),
+                        "if" | "for" | "while" | "switch" | "catch" | "with"
+                    ) {
+                        return Some(i);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every place motion runs for someone who asked for less, as
+/// `file:line: rule: detail`. `css` holds stylesheet text (pages already cut
+/// to their `<style>` blocks), `js` script text.
+fn motion_violations(css: &[(&str, String)], js: &[(&str, String)]) -> Vec<String> {
+    let mut bad = Vec::new();
+    let mut defined: Vec<(String, String)> = Vec::new();
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    for (rel, raw) in css {
+        let text = strip_comments(raw);
+        let b = text.as_bytes();
+        // Each open block: (gated by no-preference, a @keyframes body).
+        let mut open: Vec<(bool, bool)> = Vec::new();
+        for i in 0..b.len() {
+            match b[i] {
+                b'{' => {
+                    let head = text[..i].rsplit(['}', ';', '{']).next().unwrap_or("");
+                    let squeezed: String = head.chars().filter(|c| !c.is_whitespace()).collect();
+                    let gate = squeezed.contains("prefers-reduced-motion:no-preference");
+                    let frames = head.trim_start().starts_with("@keyframes");
+                    if frames {
+                        let name = head.trim().trim_start_matches("@keyframes").trim();
+                        defined.push((format!("{rel}:{}", line_of(&text, i)), name.to_owned()));
+                    }
+                    open.push((gate, frames));
+                }
+                b'}' => {
+                    open.pop();
+                }
+                _ => {}
+            }
+            if !text.is_char_boundary(i)
+                || open.iter().any(|(_, f)| *f)
+                || (i > 0 && (word(b[i - 1]) || b[i - 1] == b'-'))
+            {
+                continue;
+            }
+            let Some(prop) = ["animation-name", "animation", "transition"]
+                .into_iter()
+                .find(|p| {
+                    text[i..].starts_with(p) && text[i + p.len()..].trim_start().starts_with(':')
+                })
+            else {
+                continue;
+            };
+            let after = &text[i + prop.len()..];
+            let v = after[after.find(':').unwrap() + 1..]
+                .split([';', '}'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            let gated = open.iter().any(|(g, _)| *g);
+            if prop != "transition" && gated {
+                used.extend(
+                    v.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                        .map(str::to_owned),
+                );
+            }
+            if gated || v.starts_with("none") || (prop == "transition" && hover_transition(v)) {
+                continue;
+            }
+            bad.push(format!(
+                "{rel}:{}: {prop} outside the reduced-motion gate: {v}",
+                line_of(&text, i)
+            ));
+        }
+    }
+    for (at, name) in defined {
+        if !used.contains(&name) {
+            bad.push(format!(
+                "{at}: unused @keyframes {name}: no rule under no-preference runs it"
+            ));
+        }
+    }
+    for (rel, raw) in js {
+        let text = strip_comments(raw);
+        for (at, _) in text.match_indices(".animate(") {
+            let ok = enclosing_function(&text, at).is_some_and(|o| motion_guarded(&text, o, at));
+            if !ok {
+                bad.push(format!(
+                    "{rel}:{}: .animate( outside motionOk(): no `if (!motionOk()) return` before it and no `if (motionOk()) {{` around it",
+                    line_of(&text, at)
+                ));
+            }
+        }
+    }
+    bad
+}
+
+/// Motion in every page runs only for someone who has not asked for less:
+/// every animation and transition sits inside
+/// `prefers-reduced-motion: no-preference` (a fast colour or opacity hover
+/// fade excepted), every scripted `.animate(` sits in a function that tests
+/// `motionOk()`, and no keyframe exists that only ungated rules could run.
+#[test]
+fn every_animation_respects_reduced_motion() {
+    let css: Vec<(&str, String)> = MOTION_CSS
+        .iter()
+        .map(|rel| (*rel, read(rel)))
+        .chain(
+            MOTION_PAGES
+                .iter()
+                .map(|rel| (*rel, style_blocks(&read(rel)))),
+        )
+        .collect();
+    let mut scripts: Vec<String> = std::fs::read_dir(Path::new(ROOT).join(UI))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("js"))
+        .map(|p| format!("{UI}/{}", p.file_name().unwrap().to_string_lossy()))
+        .chain(MOTION_SCRIPTS.iter().map(|s| s.to_string()))
+        .collect();
+    scripts.sort();
+    let js: Vec<(&str, String)> = scripts
+        .iter()
+        .map(|rel| (rel.as_str(), read(rel)))
+        .collect();
+    let bad = motion_violations(&css, &js);
     assert!(
         bad.is_empty(),
-        "animations outside the reduced-motion gate:\n{}",
+        "motion outside the reduced-motion gate:\n{}",
         bad.join("\n")
     );
+}
+
+/// `motionOk`, `glide` and `swap` from `text`, each line trimmed.
+fn motion_helpers(rel: &str, text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let ok = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("const motionOk = "))
+        .unwrap_or_else(|| panic!("{rel}: no motionOk"));
+    out.push(ok.trim().to_owned());
+    for head in ["function glide(", "function swap("] {
+        let at = text
+            .find(head)
+            .unwrap_or_else(|| panic!("{rel}: no {head}"));
+        let open = at + text[at..].find('{').unwrap();
+        let mut depth = 0;
+        let mut end = text.len();
+        for (j, c) in text[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.extend(text[at..end].lines().map(|l| l.trim().to_owned()));
+    }
+    out
+}
+
+/// `swapPane` from `text`, each line trimmed.
+fn swap_pane(rel: &str, text: &str) -> Vec<String> {
+    let at = text
+        .find("function swapPane(")
+        .unwrap_or_else(|| panic!("{rel}: no swapPane"));
+    let open = at + text[at..].find('{').unwrap();
+    let mut depth = 0;
+    for (j, c) in text[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return text[at..open + j + 1]
+                        .lines()
+                        .map(|l| l.trim().to_owned())
+                        .collect();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{rel}: swapPane never closes")
+}
+
+/// The window's panes and the Flows page's views cross-fade with the same
+/// `swapPane`; the report has no panes.
+#[test]
+fn swap_pane_is_identical_in_the_window_and_the_flows_page() {
+    assert_eq!(
+        swap_pane("src/flows.html", &read("src/flows.html")),
+        swap_pane("kit.js", &read("apps/desktop/ui/kit.js")),
+        "src/flows.html's swapPane differs from kit.js"
+    );
+}
+
+/// The window, the report and the Flows page each carry their own copy of the
+/// motion helpers (separate documents, no shared script); the copies match.
+#[test]
+fn motion_helpers_are_identical_in_every_document() {
+    let window = motion_helpers("kit.js", &read("apps/desktop/ui/kit.js"));
+    for rel in ["src/report.html", "src/flows.html"] {
+        assert_eq!(
+            motion_helpers(rel, &read(rel)),
+            window,
+            "{rel}'s motionOk/glide/swap differ from kit.js"
+        );
+    }
 }

@@ -47,6 +47,25 @@ fn main() -> Result<()> {
         "{} looks like a repo; point the demo at an empty directory",
         home.display()
     );
+    build(&home)?;
+    println!("demo home ready: {}", home.display());
+    println!(
+        "  COS_CN={0}/bin/cn cos --home {0} --projects {0}/projects dash",
+        home.display()
+    );
+    println!(
+        "  its hires answer to a stand-in Herdr: COS_HC={} FAKE_HC_STATE={}/.herdr-demo",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fake-hc.sh")
+            .display(),
+        home.display()
+    );
+    Ok(())
+}
+
+/// Writes the demo home at `home`; `tests/read_only_render.rs` builds it too.
+pub fn build(home: &Path) -> Result<()> {
+    let home = home.to_path_buf();
     let today = jiff::ZonedDateTime::now().date();
     let mut rng = Rng(0x00C0_FFEE_2026);
 
@@ -90,18 +109,6 @@ fn main() -> Result<()> {
         let d = today.checked_sub(Span::new().days(back))?;
         std::fs::copy(&report, home.join(format!("out/reports/{d}.html")))?;
     }
-    println!("demo home ready: {}", home.display());
-    println!(
-        "  COS_CN={0}/bin/cn cos --home {0} --projects {0}/projects dash",
-        home.display()
-    );
-    println!(
-        "  its hires answer to a stand-in Herdr: COS_HC={} FAKE_HC_STATE={}/.herdr-demo",
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/fake-hc.sh")
-            .display(),
-        home.display()
-    );
     Ok(())
 }
 
@@ -215,7 +222,7 @@ fn herdr_runs(home: &Path, today: Date) -> Result<()> {
         workdir: tree,
         worktree: true,
         title: "API-77: Smoke-test gateway 3.4 on staging".into(),
-        source: "deliverable D-5".into(),
+        source: "bead:api-gateway/t-b203".into(),
         prompt: "Role: Tester. Draft the test; you run it. Leave your result in `TEST-PLAN.md`; you are judged on that file.\n\nAPI-77: Smoke-test gateway 3.4 against the staging mobile build.".into(),
         deadline_secs: 1800,
         created: ago(6),
@@ -520,6 +527,10 @@ fn flows(home: &Path) -> Result<()> {
         v["approved"] = json!(true);
         v
     };
+    let claimed = |mut v: serde_json::Value, by: &str| {
+        v["claimed_by"] = json!(by);
+        v
+    };
     let gateway = json!([
         approved(t(
             "t-a1f0",
@@ -583,6 +594,45 @@ fn flows(home: &Path) -> Result<()> {
             None,
             &[],
             "ritual-brief: docs/plans/rate-limits-brief.md\nritual-branch: feat/NW-430-rate-limits\nritual-design: docs/plans/rate-limits-design.md"
+        ),
+        claimed(
+            t(
+                "t-b201",
+                "US-001: per-tenant limits table",
+                "task",
+                "in-progress",
+                Some("t-b200"),
+                &[],
+                ""
+            ),
+            "priya"
+        ),
+        t(
+            "t-b202",
+            "US-002: limiter middleware",
+            "task",
+            "open",
+            Some("t-b200"),
+            &["t-b201"],
+            ""
+        ),
+        t(
+            "t-b203",
+            "US-003: smoke-test the limits on staging",
+            "task",
+            "open",
+            Some("t-b200"),
+            &[],
+            ""
+        ),
+        t(
+            "t-b204",
+            "US-004: 429 with Retry-After",
+            "task",
+            "open",
+            Some("t-b200"),
+            &["t-b202", "t-b203"],
+            ""
         ),
         t(
             "t-c300",
@@ -834,6 +884,63 @@ fn flows(home: &Path) -> Result<()> {
         "t-g703",
         json!({ "created_at": "2026-11-05T09:00:00Z", "description": crit(&[(false, "Test: a load is idempotent (file: tests/load.rs)")]) }),
     );
+    // Thirty-two beads in eight columns, so Lanes and the Map show a long flow.
+    let stages = [
+        "schema",
+        "extract",
+        "transform",
+        "load",
+        "verify",
+        "backfill",
+        "switch reads",
+        "retire",
+    ];
+    let parts = ["orders", "customers", "invoices", "events"];
+    let long = data.as_array_mut().unwrap();
+    long.push(approved(t(
+        "t-k000",
+        "Warehouse v2 migration",
+        "epic",
+        "open",
+        None,
+        &[],
+        "ritual-design: docs/plans/warehouse-v2-design.md\nritual-approved: docs/plans/warehouse-v2-design.md sha256:demo by Alex Rivera\nritual-plan: docs/plans/warehouse-v2-plan.md",
+    )));
+    for j in 0..32usize {
+        let mut blocked: Vec<String> = Vec::new();
+        if j >= 4 {
+            blocked.push(format!("t-k{:03}", j - 3));
+        }
+        if j >= 4 && j % 4 == 0 {
+            blocked.push(format!("t-k{:03}", j - 2));
+        }
+        let blocked: Vec<&str> = blocked.iter().map(String::as_str).collect();
+        let status = match j {
+            0..=7 => "done",
+            8..=10 => "in-progress",
+            _ => "open",
+        };
+        let mut bead = t(
+            &format!("t-k{:03}", j + 1),
+            &format!("US-{:03}: {} {}", j + 1, stages[j / 4], parts[j % 4]),
+            "task",
+            status,
+            Some("t-k000"),
+            &blocked,
+            "",
+        );
+        let owner = match j {
+            0..=7 => Some(["noor", "sam"][j % 2]),
+            8 => Some("claude:7a8b9c0d"),
+            9 => Some("priya"),
+            10 => Some("noor"),
+            _ => None,
+        };
+        if let Some(o) = owner {
+            bead["claimed_by"] = json!(o);
+        }
+        long.push(bead);
+    }
     let ops = json!([
         t(
             "t-i900",
@@ -1087,6 +1194,23 @@ fn facts(today: Date, rng: &mut Rng) -> Facts {
     }
 }
 
+/// A calendar slot `from` minutes after now (rounded down to the quarter hour),
+/// `len` minutes long, in the workspace's timezone, so Today's schedule board
+/// shows a busy day around whenever the demo is written.
+fn slot_from_now(from: i64, len: i64, what: &str, prep: &str) -> serde_json::Value {
+    let tz = jiff::tz::TimeZone::get("America/Chicago").expect("the demo's timezone");
+    let now = jiff::Timestamp::now().as_second();
+    let base = now - now.rem_euclid(900);
+    let at = |m: i64| {
+        jiff::Timestamp::from_second(base + m * 60)
+            .expect("a time")
+            .to_zoned_datetime(tz.clone())
+    };
+    let (a, z) = (at(from), at(from + len));
+    json!({ "date": a.date().to_string(), "start": a.strftime("%H:%M").to_string(),
+            "end": z.strftime("%H:%M").to_string(), "what": what, "prep": prep })
+}
+
 fn brief_json(today: Date) -> serde_json::Value {
     let in_days = |d: i64| today.checked_add(Span::new().days(d)).unwrap().to_string();
     let stop = "Stop before anything outward-facing — merging, commenting, sending, approving — and show me the draft.";
@@ -1111,10 +1235,11 @@ fn brief_json(today: Date) -> serde_json::Value {
             { "kind": "risk", "what": "infra#640 autoscaling slipped, so the canary pipeline (api-gateway#415) cannot land before the freeze.", "source": "https://github.com/northwind/infra/pull/640" }
         ],
         "calendar": [
-            { "date": in_days(0), "start": "09:30", "end": "09:45", "what": "Platform stand-up", "prep": "Raise the gateway canary blocker." },
-            { "date": in_days(0), "start": "11:00", "end": "12:00", "what": "Design review: Button v3", "prep": "Read design-system#77 first." },
-            { "date": in_days(0), "start": "14:00", "end": "14:30", "what": "1:1 with Priya", "prep": "Unblock the offline sync PR." },
-            { "date": in_days(0), "start": "16:00", "end": "17:00", "what": "Release 3.4 go/no-go", "prep": "Have api-gateway#412 reviewed." },
+            slot_from_now(-240, 15, "Platform stand-up", "Raise the gateway canary blocker."),
+            slot_from_now(-150, 60, "Design review: Button v3", "Read design-system#77 first."),
+            slot_from_now(-30, 60, "1:1 with Priya", "Unblock the offline sync PR."),
+            slot_from_now(75, 30, "Gateway sync", "Bring the 3.4 position."),
+            slot_from_now(150, 60, "Release 3.4 go/no-go", "Have api-gateway#412 reviewed."),
             { "date": in_days(1), "start": "10:00", "end": "11:30", "what": "Gateway canary dry run", "prep": "" },
             { "date": in_days(1), "start": "15:00", "end": "15:30", "what": "Review rotation kickoff", "prep": "Bring the D-3 draft." }
         ],
@@ -1663,7 +1788,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             role: Some("builder"),
             title: "Rate-limit the public token endpoint",
             repo: Some("api-gateway"),
-            source: "deliverable D-1",
+            source: "bead:api-gateway/t-b201",
             status: Status::Done,
             outcome: Outcome::Accepted,
             reasons: &[],

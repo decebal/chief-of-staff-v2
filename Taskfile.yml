@@ -162,15 +162,21 @@ tasks:
       SHOT: '"{{.CHROME}}" --headless=new --disable-gpu --hide-scrollbars --log-level=3 --virtual-time-budget=4000 --force-device-scale-factor=2 --force-prefers-reduced-motion --blink-settings=preferredColorScheme=1'
       GUIDE: api-gateway%3Adocs%2Fguides%2Frequest-log-migration.md
       MAP: api-gateway%3Adocs%2FREADME.md
+      GATEWAY: api-gateway%2F
     cmds:
       # One after the other: `deps` would run two cargo builds at once.
       - task: build
       - task: demo
       - mkdir -p docs/assets
       - defer: pkill -f "cos --home /tmp/cos-demo --projects /tmp/cos-demo/projects --no-open dash --port 8792" || true
-      - (COS_CN=/tmp/cos-demo/bin/cn target/release/cos --home /tmp/cos-demo --projects /tmp/cos-demo/projects --no-open dash --port 8792 &) ; sleep 1
+      - (COS_CN=/tmp/cos-demo/bin/cn COS_HC=$PWD/tests/fixtures/fake-hc.sh FAKE_HC_STATE=/tmp/cos-demo/.herdr-demo target/release/cos --home /tmp/cos-demo --projects /tmp/cos-demo/projects --no-open dash --port 8792 &) ; sleep 1
       - '{{.SHOT}} --window-size=1280,1500 --screenshot=docs/assets/today.png http://127.0.0.1:8792/'
       - '{{.SHOT}} --window-size=1280,1500 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/today-dark.png http://127.0.0.1:8792/'
+      # Today from the hero down: the hires inbox, the KPI tiles and the schedule board, then the board alone (offset in device pixels).
+      - '{{.SHOT}} --window-size=1280,2700 --screenshot=docs/assets/today-full.png http://127.0.0.1:8792/'
+      - '{{.SHOT}} --window-size=1280,2700 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/today-full-dark.png http://127.0.0.1:8792/'
+      - sips --cropOffset 3400 0 -c 1760 2560 docs/assets/today-full.png --out docs/assets/today-schedule.png
+      - sips --cropOffset 3400 0 -c 1760 2560 docs/assets/today-full-dark.png --out docs/assets/today-schedule-dark.png
       # Tab views start at the sub-nav under the hero: capture tall, then crop (offset in device pixels).
       - '{{.SHOT}} --window-size=1280,2700 --screenshot=/tmp/cos-shot.png "http://127.0.0.1:8792/#plan"'
       - sips --cropOffset 536 0 -c 2700 2560 /tmp/cos-shot.png --out docs/assets/plan.png
@@ -185,6 +191,14 @@ tasks:
       - '{{.SHOT}} --window-size=1440,900 --screenshot=docs/assets/docs-focus.png "http://127.0.0.1:8792/docs#doc={{.GUIDE}}&mode=focus"'
       # Every ritual flow over the demo's fictional Chronis stores, through its stand-in cn.
       - '{{.SHOT}} --window-size=1280,1100 --screenshot=docs/assets/flows.png http://127.0.0.1:8792/flows'
+      - '{{.SHOT}} --window-size=1280,1100 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/flows-dark.png http://127.0.0.1:8792/flows'
+      # The Flow view: its Steps column beside the graph, the Beads columns, and the Lanes of a flow at the gate.
+      - '{{.SHOT}} --window-size=1400,1000 --screenshot=docs/assets/flow-steps.png "http://127.0.0.1:8792/flows#v=flow&f={{.GATEWAY}}t-a1f0"'
+      - '{{.SHOT}} --window-size=1400,1000 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/flow-steps-dark.png "http://127.0.0.1:8792/flows#v=flow&f={{.GATEWAY}}t-a1f0"'
+      - '{{.SHOT}} --window-size=1400,1000 --screenshot=docs/assets/flow-beads.png "http://127.0.0.1:8792/flows#v=flow&f={{.GATEWAY}}t-a1f0&fv=beads"'
+      - '{{.SHOT}} --window-size=1400,1000 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/flow-beads-dark.png "http://127.0.0.1:8792/flows#v=flow&f={{.GATEWAY}}t-a1f0&fv=beads"'
+      - '{{.SHOT}} --window-size=1400,1000 --screenshot=docs/assets/flow-lanes.png "http://127.0.0.1:8792/flows#v=flow&f={{.GATEWAY}}t-b200&fv=lanes"'
+      - '{{.SHOT}} --window-size=1400,1000 --force-dark-mode --blink-settings=preferredColorScheme=0 --screenshot=docs/assets/flow-lanes-dark.png "http://127.0.0.1:8792/flows#v=flow&f={{.GATEWAY}}t-b200&fv=lanes"'
       # The desktop window through its browser preview, on the same demo home: the fleet, the Writer's run page, and Flows with its steps and decision stack.
       - timeout 300 cargo build
       - timeout 300 cargo build -p cos-desktop --example preview

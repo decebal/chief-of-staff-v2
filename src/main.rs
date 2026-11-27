@@ -565,7 +565,7 @@ fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<(
         } => runtime()?.block_on(mcp::http(cfg, addr, token, public_host.clone())),
         Cmd::Tunnel { port } => runtime()?.block_on(cos::tunnel::run(cfg, *port)),
         Cmd::Agents { cmd } => agents_cmd(cli, t, cmd),
-        Cmd::Flows { json, cn } => flows_cmd(&ws, &t.projects, cn, *json),
+        Cmd::Flows { json, cn } => flows_cmd(&ws, &t.projects, &t.home, cn, *json),
         Cmd::Review { cmd } => review_cmd(&ws, cmd),
         Cmd::Ritual { .. } => unreachable!("run dispatches ritual before a triple resolves"),
         Cmd::Business { .. } => unreachable!("run dispatches business before a triple resolves"),
@@ -749,6 +749,7 @@ fn announce_first_run(fresh: bool, path: &std::path::Path, default: &Business) {
 fn flows_cmd(
     ws: &std::path::Path,
     projects: &std::path::Path,
+    home: &std::path::Path,
     cn: &std::path::Path,
     json: bool,
 ) -> Result<()> {
@@ -757,7 +758,13 @@ fn flows_cmd(
             "the profile does not approve a tasks source, so cos reads no task store; approve one in .chief-of-staff/profile.json"
         );
     }
-    let scan = cos::flows::scan(projects, cn, cos::flows::SCAN_BUDGET);
+    let tz = cos::digest::zone(ws);
+    let scan = cos::flows::scan(
+        projects,
+        cn,
+        cos::flows::SCAN_BUDGET,
+        Some(cos::flows::Hires { home, tz: &tz }),
+    );
     if json {
         println!("{}", serde_json::to_string_pretty(&scan)?);
     } else {

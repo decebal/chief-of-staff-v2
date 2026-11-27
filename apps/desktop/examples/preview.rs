@@ -26,6 +26,9 @@ use tauri::test::{
 };
 use tauri::webview::InvokeRequest;
 
+#[path = "support/report_base.rs"]
+mod report_base;
+
 const UI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
 
 const SHIM: &str = r#"window.__TAURI__ = {
@@ -140,7 +143,7 @@ fn main() {
     for stream in listener.incoming().flatten() {
         let (handle, w, feed) = (app.handle().clone(), w.clone(), feed.clone());
         std::thread::spawn(move || {
-            if let Err(e) = serve(&handle, &w, &feed, stream) {
+            if let Err(e) = serve(&handle, &w, &feed, port, stream) {
                 eprintln!("request failed: {e}");
             }
         });
@@ -151,6 +154,7 @@ fn serve(
     app: &tauri::AppHandle<MockRuntime>,
     w: &tauri::WebviewWindow<MockRuntime>,
     feed: &Feed,
+    port: u16,
     mut stream: TcpStream,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -292,7 +296,7 @@ fn serve(
                 }
                 if rel == "app.js" {
                     b = String::from_utf8_lossy(&b)
-                        .replace("cosreport://localhost/", "/cosreport/")
+                        .replace("cosreport://localhost/", &report_base::report_base(port))
                         .into_bytes();
                 }
                 (200, kind_of(rel).into(), b)

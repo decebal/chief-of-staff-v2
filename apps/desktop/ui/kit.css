@@ -41,13 +41,101 @@
 .kit-stack__card[data-position="2"] { margin-inline: var(--space-4); opacity: 0.5; }
 .kit-stack__card:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 
-.kit-steps { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
-.kit-steps__step { display: flex; flex-direction: column; gap: var(--space-1); min-width: 6rem; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--muted-foreground); }
-.kit-steps__step[data-state="finished"] { color: var(--foreground); }
-.kit-steps__step[data-state="in_progress"], .kit-steps__step[data-state="awaiting_approval"] { border-color: var(--brand-text); color: var(--foreground); }
-.kit-steps__step[data-state="errored"] { border-color: var(--destructive); color: var(--destructive); }
-.kit-steps__name { font-weight: var(--font-weight-semibold); font-size: var(--text-sm); }
-.kit-steps__state { font-size: var(--text-xs); }
+/* rv2-kit StepProgressList (assets/step-progress-list.css), lengths in rem. */
+.kit-steps { box-sizing: border-box; position: relative; display: grid; gap: var(--space-3); width: 100%; max-width: 38.75rem; margin-inline: auto; padding: var(--space-4); color: var(--card-foreground); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-sm); font-variant-numeric: tabular-nums; }
+.kit-steps button { font: inherit; color: inherit; cursor: pointer; }
+.kit-steps__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); }
+.kit-steps__heading { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); font-weight: var(--font-weight-semibold); }
+.kit-steps__count { font-size: var(--text-xs); color: var(--muted-foreground); }
+.kit-steps__list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.kit-steps__item { position: relative; display: grid; gap: var(--space-1); }
+.kit-steps__branch { position: absolute; left: 1.0625rem; top: 2.375rem; bottom: 0; width: 2px; background: var(--border); pointer-events: none; }
+.kit-steps__item:last-child > .kit-steps__branch { display: none; }
+.kit-steps__row { box-sizing: border-box; display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); width: 100%; min-height: 2.5rem; padding: var(--space-1) var(--space-2); border: 0; border-radius: var(--radius); background: transparent; text-align: left; font-size: var(--text-sm); }
+button.kit-steps__row:hover { background: color-mix(in srgb, var(--foreground) 7%, var(--card)); }
+button.kit-steps__row:active { background: var(--border); }
+.kit-steps__row:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.kit-steps__item[aria-current="step"] > .kit-steps__row { background: color-mix(in srgb, var(--foreground) 7%, var(--card)); }
+.kit-steps__mark { box-sizing: border-box; display: grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: var(--radius-full); border: 1px solid var(--input); background: var(--card); font-size: var(--text-xs); line-height: 1; }
+.kit-steps__item[data-state="finished"] .kit-steps__mark { background: color-mix(in srgb, var(--success) 14%, var(--card)); border-color: var(--success); color: var(--success); }
+.kit-steps__item[data-state="in_progress"] .kit-steps__mark { border-color: var(--ring); }
+.kit-steps__item[data-state="awaiting_approval"] .kit-steps__mark { border-color: var(--warning); color: var(--warning); }
+.kit-steps__item[data-state="errored"] .kit-steps__mark { border-color: var(--destructive); color: var(--destructive); }
+.kit-steps__item[data-state="queued"] { color: var(--muted-foreground); }
+.kit-steps__name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.kit-steps__title { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.kit-steps__right { display: inline-flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; font-size: var(--text-xs); color: var(--muted-foreground); white-space: nowrap; }
+.kit-steps__state { display: inline-flex; align-items: center; gap: var(--space-1); height: 1.25rem; padding: 0 var(--space-2); border-radius: var(--radius-full); font-size: var(--text-xs); line-height: 1; background: color-mix(in srgb, var(--foreground) 7%, var(--card)); }
+.kit-steps__state::before { content: ""; width: 0.375rem; height: 0.375rem; border-radius: var(--radius-full); background: currentColor; }
+.kit-steps__item[data-state="errored"] .kit-steps__state { color: var(--destructive); background: color-mix(in srgb, var(--destructive) 10%, transparent); }
+.kit-steps__item[data-state="awaiting_approval"] .kit-steps__state { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+.kit-steps__gate { font-size: var(--text-xs); color: var(--muted-foreground); }
+.kit-steps__subs { display: grid; gap: 2px; margin: 0 0 0 2.125rem; padding-left: var(--space-2); border-left: 2px solid var(--border); }
+.kit-steps__sub-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.kit-steps__sub { display: flex; align-items: center; gap: var(--space-2); min-height: 2rem; font-size: var(--text-sm); color: var(--foreground); }
+.kit-steps__sub[data-state="queued"] { color: var(--muted-foreground); }
+.kit-steps__sub[data-state="in_progress"] { color: var(--foreground); font-weight: var(--font-weight-semibold); }
+.kit-steps__sub-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kit-steps__fact { flex: 0 1 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: var(--text-xs); color: var(--muted-foreground); }
+.kit-steps__fold { justify-self: start; min-height: 1.75rem; padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); background: transparent; font-size: var(--text-xs); color: var(--muted-foreground); }
+.kit-steps__fold:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.kit-steps__live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* rv2-kit AgentScheduleBoard (assets/agent-schedule-board.css), lengths in rem;
+   Today drops its switch, Run now, Skip and Restore. */
+.kit-asb { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-4); color: var(--foreground); background: var(--background); overflow-x: hidden; }
+.kit-asb > * { min-width: 0; }
+.kit-asb__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
+.kit-asb__title { margin: 0; text-transform: none; letter-spacing: normal; font-size: var(--text-lg); font-weight: var(--font-weight-semibold); }
+.kit-asb__count, .kit-asb__meta { margin: 0; font-size: var(--text-sm); color: var(--muted-foreground); }
+.kit-asb__timeline { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--card); }
+.kit-asb__trace { display: block; width: 100%; height: 1.5rem; margin-bottom: 0.375rem; overflow: visible; }
+.kit-asb__trace-line { fill: none; stroke: var(--primary); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.kit-asb__axis { position: relative; height: 5.25rem; border-radius: var(--radius-sm); background: linear-gradient(to right, color-mix(in srgb, var(--foreground) 7%, var(--card)), var(--card), color-mix(in srgb, var(--foreground) 7%, var(--card))); }
+.kit-asb__now { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warning); }
+.kit-asb__tick { position: absolute; bottom: 2px; transform: translateX(-50%); font-size: var(--text-xs); color: var(--muted-foreground); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 1.5rem is the WCAG 2.5.8 target size; the dot stays rv2-kit's 0.875rem. */
+/* Three marker rows (stacked by report.html) sit above the hour labels. */
+.kit-asb__marker { position: absolute; top: 2rem; box-sizing: border-box; width: 1.5rem; height: 1.5rem; margin: -0.75rem 0 0 -0.75rem; padding: 0; border: 0; border-radius: var(--radius-full); background: transparent; cursor: pointer; box-shadow: none; }
+.kit-asb__marker[hidden] { display: none; }
+.kit-asb__marker[data-row="1"] { top: 0.5rem; }
+.kit-asb__marker[data-row="2"] { top: 3.5rem; }
+.kit-asb__marker::before { content: ""; position: absolute; inset: 0; box-sizing: border-box; width: 0.875rem; height: 0.875rem; margin: auto; border: 2px solid var(--muted-foreground); border-radius: var(--radius-full); background: var(--card); }
+.kit-asb__marker:hover { background: transparent; }
+.kit-asb__marker[data-state="done"]::before { background: var(--success); border-color: var(--success); }
+.kit-asb__marker[data-state="failed"]::before { background: var(--destructive); border-color: var(--destructive); }
+.kit-asb__marker[data-state="needs-you"]::before { background: var(--warning); border-color: var(--warning); }
+.kit-asb__marker[data-state="running"]::before { background: var(--primary); border-color: var(--primary); }
+.kit-asb__marker[data-state="stopped"]::before { background: var(--muted-foreground); }
+.kit-asb__marker:focus-visible, .kit-asb__row-hit:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.kit-asb__status { margin: var(--space-2) 0 0; font-size: var(--text-sm); }
+.kit-asb__body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(15rem, 20rem); gap: var(--space-3); align-items: start; }
+.kit-asb__list { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.375rem; }
+.kit-asb__row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: var(--space-2); padding: var(--space-2) 0.625rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.kit-asb__row-hit { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto; gap: var(--space-2); align-items: center; min-width: 0; padding: 2px 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: var(--text-sm); text-align: start; cursor: pointer; box-shadow: none; border-radius: 0; }
+.kit-asb__row-hit:hover { background: transparent; }
+.kit-asb__row-hit[aria-current="true"] .kit-asb__name { text-decoration: underline; }
+.kit-asb__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--font-weight-medium); }
+.kit-asb__outcome { padding: 1px var(--space-2); border-radius: var(--radius-full); background: color-mix(in srgb, var(--foreground) 7%, var(--card)); font-size: var(--text-xs); }
+.kit-asb__outcome[data-outcome="failed"] { background: var(--destructive); color: var(--destructive-foreground); }
+.kit-asb__outcome[data-outcome="needs-you"] { background: var(--warning); color: var(--warning-foreground); }
+.kit-asb__panel { display: grid; align-content: start; gap: 0.625rem; padding: 0.875rem; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--card); box-shadow: var(--shadow-md); font-size: var(--text-sm); }
+.kit-asb__panel[hidden] { display: none; }
+.kit-asb__panel-title { margin: 0; color: var(--foreground); text-transform: none; letter-spacing: normal; font-size: var(--text-base); font-weight: var(--font-weight-semibold); }
+.kit-asb__block { display: grid; gap: var(--space-1); }
+.kit-asb__section { margin: 0; text-transform: none; letter-spacing: normal; font-size: var(--text-sm); font-weight: var(--font-weight-semibold); }
+.kit-asb__runs { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-1); }
+.kit-asb__runs li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.kit-asb__empty { display: grid; gap: 0.625rem; justify-items: start; padding: var(--space-6); border: 1px dashed var(--input); border-radius: var(--radius); color: var(--muted-foreground); }
+.kit-asb__empty p { margin: 0; }
+@media (max-width: 56.25rem) {
+  .kit-asb__body { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 30rem) {
+  .kit-asb { padding: var(--space-3); }
+  .kit-asb__row-hit { grid-template-columns: minmax(0, 1fr) auto; }
+  .kit-asb__row-hit > span:nth-child(2), .kit-asb__row-hit > span:nth-child(4) { display: none; }
+}
 
 .kit-run { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); color: var(--card-foreground); }
 .kit-run__top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
@@ -106,6 +194,13 @@
 .kit-tile__body { display: flex; flex-direction: column; gap: var(--space-2); }
 .kit-tile__value { margin: 0; font-size: var(--text-lg); }
 .kit-tile__unit { font-size: var(--text-sm); color: var(--muted-foreground); }
+/* The roll: hidden digits stand in while the value stays readable to
+   assistive tech, then the value returns. */
+.kit-tile__v--rolling { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.kit-ticker { display: inline-flex; font-family: var(--font-mono); font-variant-numeric: tabular-nums; line-height: 1.25; vertical-align: bottom; }
+.kit-ticker__col { display: inline-block; height: 1.25em; overflow: hidden; }
+.kit-ticker__col > span { display: block; }
+.kit-ticker__col > span > span { display: block; height: 1.25em; }
 .kit-tile__change { margin: 0; font-size: var(--text-xs); color: var(--muted-foreground); }
 .kit-tile[data-tone="ok"] .kit-tile__change { color: var(--success); }
 .kit-tile[data-tone="warn"] .kit-tile__change { color: var(--warning); }
@@ -123,3 +218,28 @@
 .kit-metric-card__marker { fill: var(--brand-text); }
 .kit-metric-card__marker[data-hot="true"] { fill: var(--foreground); }
 .kit-metric-card__readout { font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+
+/* The motion grammar: one keyframe per state, run by a `kit-is-*` class that
+   components compose. Under reduce none of these classes animates, so each
+   element shows its settled end state. Paths that draw carry pathLength="1". */
+@keyframes kit-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes kit-breathe { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 0.25rem color-mix(in srgb, var(--warning) 18%, transparent); } }
+@keyframes kit-settle { from { opacity: 0; transform: translateY(0.375rem); } to { opacity: 1; transform: none; } }
+@keyframes kit-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes kit-flow { from { stroke-dashoffset: 0.2; } to { stroke-dashoffset: 0; } }
+@keyframes kit-flash { from { background-color: color-mix(in srgb, var(--destructive) 24%, transparent); } }
+@keyframes kit-tick { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes kit-drift { 0%, 100% { transform: none; } 50% { transform: translate(4%, -8%) scale(1.06); } }
+@keyframes kit-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: no-preference) {
+  .kit-is-running { background-image: linear-gradient(90deg, var(--muted) 0%, var(--background) 50%, var(--muted) 100%); background-size: 200% 100%; animation: kit-shimmer var(--motion-loop) linear infinite; }
+  .kit-is-waiting { animation: kit-breathe var(--motion-loop) ease-in-out infinite; }
+  .kit-is-appearing { animation: kit-settle var(--motion-slow) var(--ease-spring) both; animation-delay: calc(var(--i) * var(--motion-stagger)); }
+  .kit-is-connecting { stroke-dasharray: 1; animation: kit-draw var(--motion-slow) var(--ease-spring) both; animation-delay: calc(var(--i) * var(--motion-stagger)); }
+  .kit-is-travelling { stroke-dasharray: 0.08 0.12; animation: kit-flow var(--motion-loop) linear infinite; }
+  .kit-is-failed { animation: kit-flash var(--motion-slow) ease-out 1; }
+  .kit-is-done { stroke-dasharray: 1; animation: kit-tick var(--motion-slow) var(--ease-spring) both; }
+  .kit-is-drifting { animation: kit-drift calc(var(--motion-loop) * 8) ease-in-out infinite; }
+  .kit-steps__item[data-state="in_progress"] .kit-steps__mark { animation: kit-spin var(--motion-spin) linear infinite; }
+  .kit-steps__subs { animation: kit-settle var(--motion-fast) var(--ease-spring) both; }
+}

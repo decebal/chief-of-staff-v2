@@ -159,7 +159,10 @@ main { flex: 1; min-height: 0; }
 }
 .card.head section { display: flex; flex-direction: column; gap: 0.75rem; }
 .role-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(min(18rem, 100%), 1fr)); }
-.card.role { cursor: pointer; transition: box-shadow 0.12s; }
+.card.role { cursor: pointer; }
+@media (prefers-reduced-motion: no-preference) {
+  .card.role { transition: box-shadow var(--motion-fast); }
+}
 .card.role:hover { box-shadow: var(--shadow-md); }
 .card.role:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .card.role h3 { font-size: var(--text-base); line-height: var(--text-base--line-height); }
@@ -296,6 +299,10 @@ fieldset.work textarea { grid-column: 2; }
 .state.over { position: absolute; inset: 0; z-index: 5; border: 0; border-radius: 0; justify-content: center; background: var(--background); }
 .state-text { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; min-width: 0; max-width: var(--measure); }
 .state-title { display: inline-flex; align-items: center; gap: 0.5rem; font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-semibold); }
+.state-shimmer { display: flex; flex-direction: column; gap: 0.375rem; width: min(16rem, 100%); }
+.state-shimmer > span { display: block; height: 0.5rem; border-radius: var(--radius-full); background-color: var(--muted); }
+.state-shimmer > span:nth-child(2) { width: 80%; }
+.state-shimmer > span:nth-child(3) { width: 60%; }
 .state-detail { font-size: var(--text-sm); line-height: var(--text-sm--line-height); color: var(--muted-foreground); overflow-wrap: anywhere; }
 .state-line { display: flex; align-items: center; gap: 0.5rem; font-size: var(--text-sm); line-height: var(--text-sm--line-height); color: var(--muted-foreground); min-width: 0; }
 .state-line > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

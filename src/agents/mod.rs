@@ -828,6 +828,135 @@ pub fn list(home: &Path) -> Result<Listing> {
     Ok(listing)
 }
 
+/// A hire's place in the fleet, the one mapping from a stored state to what
+/// the window and Today show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Phase {
+    Starting,
+    Working,
+    NeedsYou,
+    Paused,
+    Done,
+    Failed,
+    Lost,
+    TimedOut,
+    Stopped,
+}
+
+/// The fleet phase of a run at the moment `clock` was read. A running hire is
+/// paused while a pause is open, needs you while Herdr says blocked, its first
+/// message did not go in or its verdict asks for you, and works otherwise.
+pub fn phase(state: &State, clock: &timeline::Summary) -> Phase {
+    match state.status {
+        Status::Starting | Status::Queued | Status::Seeding => Phase::Starting,
+        Status::Running if clock.paused_now => Phase::Paused,
+        Status::Running => {
+            let seen = state.herdr.as_ref();
+            let blocked = seen.is_some_and(|h| h.word.as_deref() == Some("blocked"));
+            let unsent = seen.and_then(Seen::unsent).is_some();
+            let judged = state
+                .verdict
+                .as_ref()
+                .is_some_and(|v| v.outcome == Outcome::NeedsYou);
+            if blocked || unsent || judged {
+                Phase::NeedsYou
+            } else {
+                Phase::Working
+            }
+        }
+        Status::Done => Phase::Done,
+        Status::Failed => Phase::Failed,
+        Status::Killed => Phase::Stopped,
+        Status::TimedOut => Phase::TimedOut,
+        Status::Lost => Phase::Lost,
+    }
+}
+
+/// Done, and ended on `now`'s calendar day in `tz` (the business profile's).
+pub fn done_today(state: &State, tz: &jiff::tz::TimeZone, now: jiff::Timestamp) -> bool {
+    state.status == Status::Done
+        && state
+            .ended
+            .as_deref()
+            .and_then(|e| e.parse::<jiff::Timestamp>().ok())
+            .is_some_and(|e| {
+                e.to_zoned_datetime(tz.clone()).date() == now.to_zoned_datetime(tz.clone()).date()
+            })
+}
+
+/// One hire as Today and the window's live updates show it: no worktree,
+/// prompt or process detail, and the run id only for the actions that need it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HireView {
+    pub id: String,
+    pub title: String,
+    pub role: Option<String>,
+    pub identity: u8,
+    pub phase: Phase,
+    pub active_ms: u64,
+    pub paused_now: bool,
+    pub started: Option<String>,
+    pub ended: Option<String>,
+    pub done_today: bool,
+    pub deadline_secs: u64,
+    /// Herdr's last word for its terminal, and its message.
+    pub word: Option<String>,
+    pub msg: Option<String>,
+    pub source: String,
+}
+
+/// `spec` and `state` as a [`HireView`] at `now`. Reads the run's event log
+/// for its clock; writes nothing.
+pub fn hire_view(
+    home: &Path,
+    spec: &Spec,
+    state: &State,
+    tz: &jiff::tz::TimeZone,
+    now: jiff::Timestamp,
+) -> HireView {
+    let clock = events::tail_summary(home, &spec.id, now, state)
+        .unwrap_or_else(|_| timeline::stored_summary(state, now));
+    let seen = state.herdr.as_ref();
+    HireView {
+        id: spec.id.clone(),
+        title: spec.title.clone(),
+        role: spec.role.clone(),
+        identity: identity(spec.role.as_deref()),
+        phase: phase(state, &clock),
+        active_ms: clock.active_ms,
+        paused_now: clock.paused_now,
+        started: state.started.clone(),
+        ended: state.ended.clone(),
+        done_today: done_today(state, tz, now),
+        deadline_secs: spec.deadline_secs,
+        word: seen.and_then(|h| h.word.clone()),
+        msg: seen.and_then(|h| h.msg.clone()),
+        source: spec.source.clone(),
+    }
+}
+
+/// Every run's spec and state exactly as stored, newest first. A run whose id
+/// is refused or whose spec does not read is left out. Unlike [`list`] it
+/// never reconciles: nothing is written and no process is signalled.
+pub fn stored(home: &Path) -> Vec<(Spec, State)> {
+    run_ids(home)
+        .into_iter()
+        .filter_map(|id| read_raw(home, &id).ok())
+        .collect()
+}
+
+/// Every hire as last stored, newest first, for render paths. It reads each
+/// run's `spec.json`, `state.json` and event log and nothing else: it never
+/// reconciles, signals or writes, so a run lost while no follower ran shows
+/// as last stored until `agents::tick` or `cos agents watch` reconciles it.
+pub fn snapshot(home: &Path, tz: &jiff::tz::TimeZone, now: jiff::Timestamp) -> Vec<HireView> {
+    stored(home)
+        .iter()
+        .map(|(spec, state)| hire_view(home, spec, state, tz, now))
+        .collect()
+}
+
 /// Run counts under one home, for the picker's badge.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {

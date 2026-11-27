@@ -142,23 +142,263 @@ pub fn hero(data: &Value) -> String {
     }
     match &cx.brief {
         Some(b) => {
-            let _ = write!(
-                s,
-                r#"<h1 class="display" id="headline">{}</h1>"#,
-                prose(if b.headline.is_empty() {
-                    "The brief has no headline."
-                } else {
-                    &b.headline
-                })
-            );
+            s.push_str(&headline(if b.headline.is_empty() {
+                "The brief has no headline."
+            } else {
+                &b.headline
+            }));
             let _ = write!(s, r#"<p class="run-pill" id="run-pill">{}</p>"#, run_pill(&cx, b));
         }
         None => s.push_str(
             r#"<h1 class="display" id="headline">No brief yet.</h1><p class="hero-lead">Run <code>cos brief</code>: your goals, this week, and at most three things that need you today.</p>"#,
         ),
     }
+    s.push_str(LOADER);
+    s.push_str(&pills(&cx));
     s
 }
+
+/// The hero's lead phrase, in words: up to the first `;`, `:` or `,`, at most eight.
+pub fn lead_words(text: &str) -> usize {
+    let mut n = 0;
+    for w in text.split_whitespace() {
+        n += 1;
+        if n == 8 || w.ends_with([';', ':', ',']) {
+            break;
+        }
+    }
+    n
+}
+
+/// The brief's headline: named in full on the `h1`, each word an
+/// `aria-hidden` span the reveal staggers. A link stays outside the spans so
+/// it is never focusable inside hidden content.
+fn headline(text: &str) -> String {
+    let lead = lead_words(text);
+    let mut s = format!(
+        r#"<h1 class="display" id="headline" aria-label="{}">"#,
+        esc(text)
+    );
+    for (i, w) in text.split_whitespace().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        if url_of(w.trim_end_matches([',', ')', '.', ';', ':'])).is_some() {
+            s.push_str(&prose(w));
+            continue;
+        }
+        let _ = write!(
+            s,
+            r#"<span class="{}" aria-hidden="true" style="--i: {i}">{}</span>"#,
+            if i < lead { "w lead-phrase" } else { "w" },
+            esc(w)
+        );
+    }
+    s.push_str("</h1>");
+    s
+}
+
+/// `ms` as a reader says it: `40 s`, `12 min`, `1 h 5 min`.
+pub(crate) fn span_words(ms: u64) -> String {
+    let s = ms / 1000;
+    if s < 90 {
+        format!("{s} s")
+    } else if s < 3600 {
+        format!("{} min", s / 60)
+    } else if s % 3600 / 60 == 0 {
+        format!("{} h", s / 3600)
+    } else {
+        format!("{} h {} min", s / 3600, s % 3600 / 60)
+    }
+}
+
+/// What a hire is doing, in words: its phase, then Herdr's word.
+fn hire_word(h: &Value) -> &'static str {
+    match (h["phase"].as_str(), h["word"].as_str()) {
+        (Some("paused"), _) => "paused",
+        (Some("needs-you"), _) => "waiting on you",
+        (Some("starting"), _) => "starting",
+        (Some("done"), _) => "done",
+        (Some("failed"), _) => "failed",
+        (Some("lost"), _) => "lost",
+        (Some("timed-out"), _) => "ran out of time",
+        (Some("stopped"), _) => "stopped",
+        (_, Some("idle")) => "idle",
+        _ => "working",
+    }
+}
+
+/// A hire's role mark: the role's initial on its identity colour.
+fn hire_mark(h: &Value, class: &str) -> String {
+    let initial = h["role"]
+        .as_str()
+        .and_then(|r| r.chars().next())
+        .map_or("·".to_owned(), |c| c.to_uppercase().to_string());
+    format!(
+        r#"<span class="{class} kit-id-{}" aria-hidden="true">{}</span>"#,
+        h["identity"].as_u64().unwrap_or(1).clamp(1, 6),
+        esc(&initial)
+    )
+}
+
+/// One pill per hire at work (working, needs you or paused): its title and
+/// role mark, Herdr's word and the active time, and a bar of the active time
+/// against its deadline.
+fn pills(cx: &Ctx) -> String {
+    let hires: Vec<&Value> = cx.data["hires"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|h| {
+            matches!(
+                h["phase"].as_str(),
+                Some("working" | "needs-you" | "paused")
+            )
+        })
+        .collect();
+    let mut s = String::from(r#"<div class="hero-hires" id="hero-hires">"#);
+    if !hires.is_empty() {
+        s.push_str(r#"<ul class="hero-pills" aria-label="Hires at work">"#);
+    }
+    for h in &hires {
+        let phase = h["phase"].as_str().unwrap_or_default();
+        let active = h["active_ms"].as_u64().unwrap_or(0);
+        let deadline = h["deadline_secs"].as_u64().unwrap_or(0) * 1000;
+        let bar = if deadline == 0 {
+            String::new()
+        } else {
+            let pct = (active as f64 * 100.0 / deadline as f64).clamp(0.0, 100.0);
+            format!(
+                r#"<span class="hero-pill__bar{}" role="img" aria-label="{pct:.0}% of its deadline"><i style="width: {pct:.0}%"></i></span>"#,
+                if phase == "working" {
+                    " kit-is-running"
+                } else {
+                    ""
+                }
+            )
+        };
+        let role = h["role"]
+            .as_str()
+            .map(|r| format!("{} · ", esc(r)))
+            .unwrap_or_default();
+        let _ = write!(
+            s,
+            r#"<li class="hero-pill{}" data-phase="{}" data-glide="{}">{}<span class="hero-pill__main"><span class="hero-pill__title">{}</span><span class="hero-pill__word" aria-live="polite">{role}{} · {}</span>{bar}</span></li>"#,
+            if phase == "needs-you" {
+                " kit-is-waiting"
+            } else {
+                ""
+            },
+            esc(phase),
+            esc(h["id"].as_str().unwrap_or_default()),
+            hire_mark(h, "hero-pill__mark"),
+            esc(h["title"].as_str().unwrap_or_default()),
+            hire_word(h),
+            span_words(active),
+        );
+    }
+    if !hires.is_empty() {
+        s.push_str("</ul>");
+    }
+    s.push_str(r#"<p class="hero-hires__stale" data-stale hidden>as last read</p></div>"#);
+    s
+}
+
+/// The inbox column a hire's card sits in; `None` keeps it off Today.
+fn column(h: &Value) -> Option<&'static str> {
+    match h["phase"].as_str()? {
+        "needs-you" => Some("needs-you"),
+        "working" | "starting" | "paused" => Some("running"),
+        "done" if h["done_today"] == true => Some("done"),
+        _ => None,
+    }
+}
+
+const COLUMNS: [(&str, &str); 3] = [
+    ("needs-you", "Needs you"),
+    ("running", "Running"),
+    ("done", "Done today"),
+];
+
+/// The hires inbox: Needs you, Running and Done today, one list with filter
+/// buttons on a narrow screen. Open in Herdr keeps its message; the run id
+/// travels only in it. Without a hire in any column, an empty slot the live
+/// update can fill.
+fn hires(cx: &Ctx) -> String {
+    let all: Vec<(&Value, &str)> = cx.data["hires"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| Some((h, column(h)?)))
+        .collect();
+    if all.is_empty() {
+        return r#"<div id="hires-slot" hidden></div>"#.into();
+    }
+    let mut s = format!(
+        r#"<section class="inbox" id="hires" data-section="hires" aria-labelledby="hires-h"><div class="sec-head"><h2 id="hires-h">Hires <span class="count num">{}</span></h2><span class="inbox-stale" data-stale id="hires-stale" hidden>as last read</span></div><div class="inbox-filter" role="group" aria-label="Show hires"><button type="button" class="inbox-tab" data-show="all" aria-pressed="true">All</button>"#,
+        all.len()
+    );
+    for (key, label) in COLUMNS {
+        let _ = write!(
+            s,
+            r#"<button type="button" class="inbox-tab" data-show="{key}" aria-pressed="false">{label}</button>"#
+        );
+    }
+    s.push_str(r#"</div><div class="inbox-cols" data-show="all">"#);
+    for (key, label) in COLUMNS {
+        let cards: Vec<&Value> = all
+            .iter()
+            .filter(|(_, c)| *c == key)
+            .map(|(h, _)| *h)
+            .collect();
+        let _ = write!(
+            s,
+            r#"<section class="inbox-col" data-col="{key}" aria-labelledby="hires-{key}-h"><h3 class="inbox-col__h" id="hires-{key}-h">{label} <span class="num">{}</span>{}</h3><ul class="inbox-list">"#,
+            cards.len(),
+            if key == "running" {
+                r#"<span class="inbox-stale" data-stale hidden>as last read</span>"#
+            } else {
+                ""
+            }
+        );
+        if cards.is_empty() {
+            s.push_str(r#"<li class="inbox-empty">None right now.</li>"#);
+        }
+        for h in cards {
+            let id = esc(h["id"].as_str().unwrap_or_default());
+            let role = h["role"]
+                .as_str()
+                .map(|r| format!("{} · ", esc(r)))
+                .unwrap_or_default();
+            let open = if key == "done" {
+                String::new()
+            } else {
+                format!(
+                    r#"<button type="button" class="inbox-open" data-herdr-open="{id}" data-terminal="{}">Open in Herdr</button>"#,
+                    esc(&crate::agents::follow::terminal_name(
+                        h["id"].as_str().unwrap_or_default()
+                    ))
+                )
+            };
+            let _ = write!(
+                s,
+                r#"<li class="inbox-card" data-glide="{id}" data-phase="{}">{}<div class="inbox-main"><p class="inbox-title">{}</p><p class="inbox-meta">{role}{} · {}</p></div>{open}</li>"#,
+                esc(h["phase"].as_str().unwrap_or_default()),
+                hire_mark(h, "inbox-mark"),
+                esc(h["title"].as_str().unwrap_or_default()),
+                hire_word(h),
+                span_words(h["active_ms"].as_u64().unwrap_or(0)),
+            );
+        }
+        s.push_str("</ul></section>");
+    }
+    s.push_str("</div></section>");
+    s
+}
+
+/// Where a brief run shows itself (`cos-brief-state` from the window): rays
+/// and the message while it runs, a tick and "Brief ready" when it is done.
+const LOADER: &str = r#"<p class="brief-loader" id="brief-loader" role="status" aria-live="polite" data-state="idle" hidden><span class="brief-loader__icon" aria-hidden="true"><svg class="brief-loader__rays" viewBox="0 0 16 16"><line x1="8" y1="1.75" x2="8" y2="4.75" opacity="0.2"/><line x1="8" y1="1.75" x2="8" y2="4.75" opacity="0.3" transform="rotate(45 8 8)"/><line x1="8" y1="1.75" x2="8" y2="4.75" opacity="0.4" transform="rotate(90 8 8)"/><line x1="8" y1="1.75" x2="8" y2="4.75" opacity="0.5" transform="rotate(135 8 8)"/><line x1="8" y1="1.75" x2="8" y2="4.75" opacity="0.6" transform="rotate(180 8 8)"/><line x1="8" y1="1.75" x2="8" y2="4.75" opacity="0.7" transform="rotate(225 8 8)"/><line x1="8" y1="1.75" x2="8" y2="4.75" opacity="0.85" transform="rotate(270 8 8)"/><line x1="8" y1="1.75" x2="8" y2="4.75" transform="rotate(315 8 8)"/></svg><svg class="brief-loader__check" viewBox="0 0 16 16"><path d="M3.5 8.4 6.6 11.3 12.5 4.9" pathLength="1"/></svg></span><span class="brief-loader__text"></span><span class="brief-loader__band" aria-hidden="true"></span></p>"#;
 
 /// Longest failure reason the hero shows; the full text is in the receipt.
 const REASON_CHARS: usize = 180;
@@ -243,7 +483,7 @@ const FALLBACK: &str = r#"<div class="celebrate"><div class="card wins-card"><h3
 pub fn body(data: &Value) -> String {
     let cx = Ctx::new(data);
     let Some(b) = &cx.brief else {
-        let mut s = herdr_waiting(&cx);
+        let mut s = hires(&cx);
         s.push_str(&crate::digest::section(data));
         s.push_str(FALLBACK);
         s.push_str(&crate::constraints::section(data));
@@ -257,6 +497,7 @@ pub fn body(data: &Value) -> String {
     s.push_str(&crate::delivery::section(data));
     week(&mut s, &cx, b);
     s.push_str(&crate::kpis::section(data));
+    schedule(&mut s, &cx, b);
     ribbon(&mut s, &cx, b);
     changes(&mut s, b);
     coverage(&mut s, &cx, b);
@@ -277,36 +518,8 @@ fn verb(a: &crate::reports::Action) -> (&'static str, String) {
     }
 }
 
-/// Hires Herdr says wait on you (`data["herdr_waiting"]`), above the brief's
-/// own actions: each with what it waits on and Open in Herdr.
-fn herdr_waiting(cx: &Ctx) -> String {
-    let runs = cx.data["herdr_waiting"]
-        .as_array()
-        .map_or(&[][..], Vec::as_slice);
-    if runs.is_empty() {
-        return String::new();
-    }
-    let mut s = format!(
-        r#"<section class="acts" data-section="herdr" aria-labelledby="herdr-h"><div class="sec-head"><h2 id="herdr-h">Waiting on you in Herdr <span class="count num">{}</span></h2></div><div class="act-grid">"#,
-        runs.len()
-    );
-    for r in runs {
-        let str_of = |k: &str| r[k].as_str().unwrap_or_default();
-        let _ = write!(
-            s,
-            r#"<article class="act act-decide" data-herdr="{id}"><header><span class="verb verb-decide">In Herdr</span></header><h3>{title}</h3><p class="next"><b>Waiting on you in Herdr</b> ({kind}): its terminal <code>{term}</code></p><footer><button type="button" class="primary" data-herdr-open="{id}" data-terminal="{term}">Open in Herdr</button></footer></article>"#,
-            id = esc(str_of("id")),
-            title = esc(str_of("title")),
-            kind = esc(str_of("kind")),
-            term = esc(str_of("terminal")),
-        );
-    }
-    s.push_str("</div></section>");
-    s
-}
-
 fn actions(s: &mut String, cx: &Ctx, b: &Brief) {
-    s.push_str(&herdr_waiting(cx));
+    s.push_str(&hires(cx));
     let n = b.needs_you.len();
     if n == 0 {
         s.push_str(r#"<p class="quiet" data-section="actions">Nothing needs you today.</p>"#);
@@ -806,6 +1019,298 @@ fn ribbon(s: &mut String, cx: &Ctx, b: &Brief) {
         s.push_str("</p>");
     }
     s.push_str("</section>");
+}
+
+/// Half the schedule board's axis: five hours either side of now.
+const ASB_WINDOW_MS: i64 = 5 * 3_600_000;
+
+/// One marker and row on the schedule board: a calendar slot or a hire run.
+struct Run {
+    name: String,
+    cadence: String,
+    at_ms: i64,
+    state: &'static str,
+    word: String,
+    percent: Option<u8>,
+    when: String,
+    took: String,
+    note: String,
+}
+
+/// Horizontal position of `at_ms` on the axis, 0 to 100 percent, centred on now.
+fn asb_position(at_ms: i64, now_ms: i64) -> f64 {
+    (50.0 + (at_ms - now_ms) as f64 / ASB_WINDOW_MS as f64 * 50.0).clamp(0.0, 100.0)
+}
+
+/// rv2-kit's activity trace in a 100 x 24 box: a running run climbs from its
+/// marker towards the now line by its progress; a finished run leaves a blip.
+fn asb_trace(runs: &[Run], now_ms: i64) -> String {
+    let marks: Vec<(f64, &str, f64)> = runs
+        .iter()
+        .map(|r| {
+            (
+                asb_position(r.at_ms, now_ms),
+                r.state,
+                f64::from(r.percent.unwrap_or(0)),
+            )
+        })
+        .collect();
+    (0..=50)
+        .map(|step| {
+            let x = f64::from(step) * 2.0;
+            let mut level: f64 = 0.0;
+            for (start, state, progress) in &marks {
+                match *state {
+                    "running" if *start <= 50.0 && x >= *start => {
+                        let ramp = ((x - start) / (50.0 - start).max(1.0)).clamp(0.0, 1.0);
+                        level = level.max(ramp * (0.3 + 0.7 * progress / 100.0));
+                    }
+                    "done" | "failed" | "needs-you" => {
+                        let d = (x - start).abs();
+                        if d < 3.0 {
+                            level = level.max(0.6 * (1.0 - d / 3.0));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            format!("{x:.1},{:.1}", 23.0 - level * 21.0)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Today's calendar slots and the hire runs that started today, in time order.
+fn todays_runs(cx: &Ctx, b: &Brief) -> Vec<Run> {
+    let today = cx.today();
+    let now_ms = cx.now.timestamp().as_millisecond();
+    let brief_day = cx.day.parse::<Date>().ok();
+    let at = |m: u32| {
+        today
+            .at((m / 60) as i8, (m % 60) as i8, 0, 0)
+            .to_zoned_datetime(cx.tz.clone())
+            .ok()
+            .map(|z| z.timestamp().as_millisecond())
+    };
+    let mut runs = Vec::new();
+    for c in &b.calendar {
+        let day = if c.date.is_empty() {
+            brief_day
+        } else {
+            c.date.parse::<Date>().ok()
+        };
+        if day != Some(today) {
+            continue;
+        }
+        let (Some(a), Some(z)) = (minutes(&c.start), minutes(&c.end)) else {
+            continue;
+        };
+        let (Some(from), Some(to)) = (at(a), at(z)) else {
+            continue;
+        };
+        if to <= from {
+            continue;
+        }
+        let (state, percent) = if now_ms < from {
+            ("upcoming", None)
+        } else if now_ms < to {
+            ("running", Some(((now_ms - from) * 100 / (to - from)) as u8))
+        } else {
+            ("done", None)
+        };
+        runs.push(Run {
+            name: c.what.clone(),
+            cadence: format!("Calendar, {}–{}", c.start, c.end),
+            at_ms: from,
+            state,
+            word: match state {
+                "upcoming" => "Upcoming",
+                "running" => "Running",
+                _ => "Done",
+            }
+            .into(),
+            percent,
+            when: if state == "upcoming" {
+                format!("Next in {} min", (from - now_ms) / 60_000)
+            } else {
+                format!("Started {}", c.start)
+            },
+            took: span_words((to - from) as u64),
+            note: if c.prep.is_empty() {
+                String::new()
+            } else {
+                format!("Prep: {}", c.prep)
+            },
+        });
+    }
+    for h in cx.data["hires"].as_array().into_iter().flatten() {
+        let Some(started) = h["started"]
+            .as_str()
+            .and_then(parse_instant)
+            .map(|t| t.to_zoned_datetime(cx.tz.clone()))
+        else {
+            continue;
+        };
+        if started.date() != today {
+            continue;
+        }
+        let phase = h["phase"].as_str().unwrap_or_default();
+        let (state, word) = match phase {
+            "working" | "starting" => ("running", "Running"),
+            "needs-you" => ("needs-you", "Needs you"),
+            "done" => ("done", "Done"),
+            "paused" => ("paused", "Paused"),
+            "lost" => ("failed", "Lost"),
+            "timed-out" => ("failed", "Timed out"),
+            "stopped" => ("stopped", "Stopped"),
+            _ => ("failed", "Failed"),
+        };
+        let active = h["active_ms"].as_u64().unwrap_or(0);
+        let deadline = h["deadline_secs"].as_u64().unwrap_or(0) * 1000;
+        runs.push(Run {
+            name: h["title"].as_str().unwrap_or_default().to_owned(),
+            cadence: h["role"]
+                .as_str()
+                .map_or_else(|| "Hire".to_owned(), |r| format!("Hire, {r}")),
+            at_ms: started.timestamp().as_millisecond(),
+            state,
+            word: word.into(),
+            percent: (state == "running" && deadline > 0)
+                .then(|| (active.min(deadline) * 100 / deadline) as u8),
+            when: format!("Started {}", started.strftime("%H:%M")),
+            took: span_words(active),
+            note: format!("{}, {}", hire_word(h), span_words(active)),
+        });
+    }
+    runs.sort_by_key(|r| r.at_ms);
+    runs
+}
+
+/// rv2-kit AgentScheduleBoard on Today: a timeline centred on now (five hours
+/// either side) with past markers carrying outcomes in words and upcoming ones
+/// hollow, the activity trace, the status line, a row per run and its detail.
+/// Read-only: no switch, Run now, Skip or Restore.
+fn schedule(s: &mut String, cx: &Ctx, b: &Brief) {
+    let runs = todays_runs(cx, b);
+    let now_ms = cx.now.timestamp().as_millisecond();
+    let ahead = runs.iter().filter(|r| r.state == "upcoming").count();
+    let _ = write!(
+        s,
+        r#"<section class="kit-asb" id="schedule" data-section="schedule" data-now="{now_ms}" data-tz="{}" aria-labelledby="asb-h"><header class="kit-asb__head"><h2 class="kit-asb__title" id="asb-h">Today</h2><p class="kit-asb__count">{} of {} ahead</p></header>"#,
+        esc(cx.tz.iana_name().unwrap_or("UTC")),
+        ahead,
+        runs.len()
+    );
+    if runs.is_empty() {
+        s.push_str(r#"<div class="kit-asb__empty"><p>Nothing on the calendar today and nothing hired yet.</p></div></section>"#);
+        return;
+    }
+    let _ = write!(
+        s,
+        r#"<section class="kit-asb__timeline" aria-label="Timeline"><svg class="kit-asb__trace" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><polyline class="kit-asb__trace-line" points="{}"/></svg><div class="kit-asb__axis"><span class="kit-asb__now" style="left: 50.00%;" aria-hidden="true"></span>"#,
+        asb_trace(&runs, now_ms)
+    );
+    let hour = cx
+        .now
+        .checked_sub(jiff::Span::new().hours(5))
+        .ok()
+        .and_then(|z| z.round(jiff::Unit::Hour).ok());
+    let mut t = hour;
+    while let Some(z) = t {
+        let at = z.timestamp().as_millisecond();
+        if at >= now_ms + ASB_WINDOW_MS {
+            break;
+        }
+        if z.hour() % 2 == 0 && (at - now_ms).abs() < ASB_WINDOW_MS {
+            let _ = write!(
+                s,
+                r#"<span class="kit-asb__tick" style="left: {:.2}%;">{}</span>"#,
+                asb_position(at, now_ms),
+                z.strftime("%H:00")
+            );
+        }
+        t = z.checked_add(jiff::Span::new().hours(1)).ok();
+    }
+    for (i, r) in runs.iter().enumerate() {
+        let when = if r.at_ms < now_ms { "earlier" } else { "later" };
+        let label = match r.percent {
+            Some(p) if r.state == "running" => {
+                format!("{}, {when}, in progress, {p} percent", r.name)
+            }
+            _ => format!("{}, {when}, {}", r.name, r.word),
+        };
+        let _ = write!(
+            s,
+            r#"<button type="button" class="kit-asb__marker" data-state="{}" data-at="{}" data-percent="{}" data-pick="{i}" style="left: {:.2}%;" aria-label="{}"{}></button>"#,
+            r.state,
+            r.at_ms,
+            r.percent.unwrap_or(0),
+            asb_position(r.at_ms, now_ms),
+            esc(&label),
+            if (r.at_ms - now_ms).abs() < ASB_WINDOW_MS {
+                ""
+            } else {
+                " hidden"
+            }
+        );
+    }
+    let status = match runs.iter().find(|r| r.state == "running") {
+        Some(r) => format!(
+            "Running now: {}, {} percent",
+            r.name,
+            r.percent.unwrap_or(0)
+        ),
+        None => match runs.iter().find(|r| r.at_ms >= now_ms) {
+            Some(r) => format!("Next: {} in {} min", r.name, (r.at_ms - now_ms) / 60_000),
+            None => "Nothing else scheduled today.".into(),
+        },
+    };
+    let _ = write!(
+        s,
+        r#"</div><p class="kit-asb__status" role="status">{}</p></section><div class="kit-asb__body"><ul class="kit-asb__list" role="list">"#,
+        esc(&status)
+    );
+    let selected = runs
+        .iter()
+        .position(|r| r.state == "running" || r.at_ms >= now_ms)
+        .unwrap_or(runs.len() - 1);
+    for (i, r) in runs.iter().enumerate() {
+        let _ = write!(
+            s,
+            r#"<li class="kit-asb__row" data-pick="{i}"><button type="button" class="kit-asb__row-hit" id="asb-row-{i}" data-pick="{i}"{}><span class="kit-asb__name">{}</span><span class="kit-asb__meta">{}</span><span class="kit-asb__meta">{}</span><span class="kit-asb__outcome" data-outcome="{}">{}</span><span class="kit-asb__meta">{}</span></button></li>"#,
+            if i == selected {
+                r#" aria-current="true""#
+            } else {
+                ""
+            },
+            esc(&r.name),
+            esc(&r.cadence),
+            esc(&r.when),
+            r.state,
+            esc(&r.word),
+            esc(&r.took)
+        );
+    }
+    s.push_str("</ul>");
+    for (i, r) in runs.iter().enumerate() {
+        let _ = write!(
+            s,
+            r#"<aside class="kit-asb__panel" data-panel="{i}" aria-label="Detail"{}><h3 class="kit-asb__panel-title">{}</h3>{}<p class="kit-asb__meta">{} · {}</p><section class="kit-asb__block" aria-label="When"><h4 class="kit-asb__section">When</h4><ul class="kit-asb__runs"><li><span>{}</span><span class="kit-asb__outcome" data-outcome="{}">{}</span></li></ul></section></aside>"#,
+            if i == selected { "" } else { " hidden" },
+            esc(&r.name),
+            if r.note.is_empty() {
+                String::new()
+            } else {
+                format!(r#"<p class="kit-asb__meta">{}</p>"#, prose(&r.note))
+            },
+            esc(&r.cadence),
+            esc(&r.took),
+            esc(&r.when),
+            r.state,
+            esc(&r.word)
+        );
+    }
+    s.push_str("</div></section>");
 }
 
 fn changes(s: &mut String, b: &Brief) {

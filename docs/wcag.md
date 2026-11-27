@@ -34,6 +34,14 @@ dark, 0 violation nodes and 2,223 colour-contrast nodes axe could not decide, in
 matched exactly. The four Flows states (board, a flow with a bead's drawer open, the Map, the
 palette) add 166 of the undecided nodes, 140 of them the Map's SVG labels.
 
+2026-11-27, with the Steps column (rv2-kit StepProgressList) and Today's schedule board
+(rv2-kit AgentScheduleBoard): 23 states, light and dark, 0 violation nodes and 1,884
+undecided. The run before the fixes found 5: the Steps "Needs you" pill at 4.2:1 (its tint
+dropped from 20% to 12% warning) and the board's 14 px markers under the 24 px target size.
+The markers are buttons again, as in rv2-kit: each is a 24 px target with the 14 px dot drawn
+inside it, and a marker within one target of another moves to the row above or below, so no
+button covers another. Same count after that change: 0 violation nodes, 1,884 undecided.
+
 The undecided nodes are mostly text inside SVG (the docs graph's labels,
 which carry a `--background` halo), glyphs axe skips by design, and content
 behind an open modal. axe decides part of WCAG: keyboard order, reflow at

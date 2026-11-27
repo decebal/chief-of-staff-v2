@@ -559,8 +559,14 @@ pub struct FlowSteps {
 }
 
 /// Every flow under `projects` waiting at the gate, and what could not be read.
-pub fn gates(projects: &Path, cn: &Path, budget: Duration) -> (Vec<Gate>, Vec<String>) {
-    let (found, gaps, _) = board(projects, cn, budget);
+/// `hires` is where the scan reads hires from.
+pub fn gates(
+    projects: &Path,
+    cn: &Path,
+    budget: Duration,
+    hires: Option<flows::Hires>,
+) -> (Vec<Gate>, Vec<String>) {
+    let (found, gaps, _) = board(projects, cn, budget, hires);
     (found, gaps)
 }
 
@@ -569,9 +575,10 @@ pub fn board(
     projects: &Path,
     cn: &Path,
     budget: Duration,
+    hires: Option<flows::Hires>,
 ) -> (Vec<Gate>, Vec<String>, Vec<FlowSteps>) {
     let until = Deadline::after(budget);
-    let scan = flows::scan(projects, cn, budget);
+    let scan = flows::scan(projects, cn, budget, hires);
     let mut gaps = scan.gaps;
     let steps = scan
         .flows

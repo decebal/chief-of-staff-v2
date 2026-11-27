@@ -57,6 +57,13 @@
   --hero-foreground: light-dark(#ffffff, #ffffff);
   --hero-muted: light-dark(#a1a1a1, #a1a1a1);
   --hero-border: light-dark(#3d3d3d, #333333);
+  /* the glow floor drifting behind the hero band */
+  --glow-1: light-dark(#0062d1, #164a8a);
+  --glow-2: light-dark(#aa4d00, #7a3d00);
+  /* gradient text on the hero; on --hero amber is 9.9:1 light, 10.5:1 dark,
+     blue 7.2:1 light, 7.6:1 dark */
+  --gradient-from: light-dark(#ffb224, #ffb224);
+  --gradient-to: light-dark(#52a8ff, #52a8ff);
   /* the DO verb: ink, inverted in dark where ink sinks into the card */
   --verb-do: light-dark(#171717, #ededed);
   --verb-do-foreground: light-dark(#ffffff, #171717);
@@ -141,6 +148,15 @@
   --motion-enter: 420ms;
   --motion-step: 60ms;
   --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  /* the kit's motion grammar (kit.css): a hover fade at most fast, a state
+     change slow, a running state one loop; --i is an element's stagger index */
+  --motion-fast: 140ms;
+  --motion-slow: 320ms;
+  --motion-loop: 1.8s;
+  --motion-spin: 1.2s;
+  --motion-stagger: 90ms;
+  --ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --i: 0;
 
   --radius: 0.625rem;
   --radius-sm: 0.375rem;
