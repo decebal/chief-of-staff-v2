@@ -106,9 +106,14 @@ fn tile(cx: &Ctx, k: &Value, points: &[Value], id: &str, s: &mut String) {
         }
         _ => None,
     };
+    // The page's script rolls the digits from here to `value` once per load.
+    let from = match (current, series.len()) {
+        (Some(_), n) if n >= 2 => format!(r#" data-from="{}""#, num(series[n - 2].1)),
+        _ => String::new(),
+    };
     let _ = write!(
         s,
-        r#"<article class="kit-tile" data-tone="{tone}"><header class="kit-tile__top"><span class="kit-tile__label">{}</span></header><div class="kit-tile__body"><p class="kit-tile__value"><span class="num">{}</span> <span class="kit-tile__unit">{}</span></p><p class="kit-tile__change">{}</p>"#,
+        r#"<article class="kit-tile" data-tone="{tone}"><header class="kit-tile__top"><span class="kit-tile__label">{}</span></header><div class="kit-tile__body"><p class="kit-tile__value"><span class="num kit-tile__v" aria-live="polite"{from}>{}</span> <span class="kit-tile__unit">{}</span></p><p class="kit-tile__change">{}</p>"#,
         today::esc(name),
         today::esc(&value),
         today::esc(unit),

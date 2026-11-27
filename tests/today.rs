@@ -362,6 +362,29 @@ fn a_kpi_name_with_markup_renders_escaped() {
     assert!(!m.contains("<b>Signed</b>"), "{m}");
 }
 
+#[test]
+fn a_kpi_value_is_a_polite_live_region_that_rolls_from_the_second_newest_point() {
+    let d = kpi_data(vec![
+        ("<b>Signed</b> pilots", 2.0, "2026-11-13T09:00:00Z"),
+        ("<b>Signed</b> pilots", 3.0, "2026-11-20T09:00:00Z"),
+        ("<b>Signed</b> pilots", 1.0, "2026-11-06T09:00:00Z"),
+    ]);
+    let m = markup(&d);
+    assert!(
+        m.contains(r#"<span class="num kit-tile__v" aria-live="polite" data-from="2">3</span>"#),
+        "{m}"
+    );
+    let one = markup(&kpi_data(vec![(
+        "<b>Signed</b> pilots",
+        3.0,
+        "2026-11-20T09:00:00Z",
+    )]));
+    assert!(
+        one.contains(r#"<span class="num kit-tile__v" aria-live="polite">3</span>"#),
+        "one point shows the value without a roll: {one}"
+    );
+}
+
 fn sample_digest() -> Value {
     json!({
         "since": "2026-10-27T13:00:00Z",
@@ -385,15 +408,15 @@ fn the_digest_sits_after_the_actions_with_a_brief() {
 }
 
 #[test]
-fn without_a_brief_the_digest_sits_after_herdr_waiting() {
+fn without_a_brief_the_digest_sits_after_the_hires_inbox() {
     let d = json!({
         "now_ts": "2026-10-29T14:30:00Z",
         "today": "2026-10-29",
-        "herdr_waiting": [{ "id": "h1", "title": "Hire", "kind": "blocked", "terminal": "cos-h1", "address": "1" }],
+        "hires": [hire("20261029-100100-a002", "Hire", "needs-you", json!({ "word": "blocked" }))],
         "digest": sample_digest()
     });
     let m = markup(&d);
-    let herdr = m.find("data-section=\"herdr\"").unwrap();
+    let herdr = m.find("data-section=\"hires\"").unwrap();
     let digest = m.find("data-section=\"digest\"").unwrap();
     assert!(
         herdr < digest && digest < m.find("class=\"celebrate\"").unwrap(),
@@ -607,7 +630,7 @@ fn a_failed_run_says_so_and_keeps_the_last_brief_below() {
     let alert = m.find("run-alert").unwrap();
     let headline = m.find("id=\"headline\"").unwrap();
     assert!(alert < headline, "the alert sits above the old headline");
-    assert!(text.contains("Release 3.4 waits on your review"));
+    assert!(m.contains(r#"aria-label="Release 3.4 waits on your review"#));
     assert!(
         m.contains("<article class=\"act "),
         "the old brief's actions are gone"
@@ -644,6 +667,211 @@ fn no_alert_once_today_has_a_brief_or_the_run_is_old() {
 }
 
 #[test]
+fn the_lead_phrase_runs_to_the_first_stop_and_at_most_eight_words() {
+    assert_eq!(
+        cos::today::lead_words("Release 3.4 ships in three days; the board meets Friday."),
+        6
+    );
+    assert_eq!(cos::today::lead_words("Ship it: now"), 2);
+    assert_eq!(cos::today::lead_words("One, two"), 1);
+    assert_eq!(
+        cos::today::lead_words("one two three four five six seven eight nine ten, eleven"),
+        8
+    );
+    assert_eq!(cos::today::lead_words("short and plain"), 3);
+}
+
+#[test]
+fn the_headline_is_named_in_full_and_its_words_are_hidden_spans() {
+    let mut b = full_brief();
+    b["headline"] = json!("Release 3.4 ships in three days; the board meets Friday.");
+    let m = markup(&data(b));
+    assert!(
+        m.contains(r#"<h1 class="display" id="headline" aria-label="Release 3.4 ships in three days; the board meets Friday.">"#),
+        "{m}"
+    );
+    let h1 = &m[m.find("id=\"headline\"").unwrap()..];
+    let h1 = &h1[..h1.find("</h1>").unwrap()];
+    assert_eq!(h1.matches(r#"aria-hidden="true""#).count(), 10, "{h1}");
+    assert_eq!(h1.matches("class=\"w lead-phrase\"").count(), 6, "{h1}");
+    assert!(visible(h1).contains("Release"), "{h1}");
+}
+
+#[test]
+fn a_headline_link_stays_reachable_inside_the_reveal() {
+    let m = markup(&data(full_brief()));
+    let h1 = &m[m.find("id=\"headline\"").unwrap()..];
+    let h1 = &h1[..h1.find("</h1>").unwrap()];
+    assert!(h1.contains(r#"href="https://github.com/northwind/api-gateway/pull/412""#));
+    let before = &h1[..h1.find("<a ").unwrap()];
+    assert_eq!(
+        before.matches("<span").count(),
+        before.matches("</span>").count(),
+        "the link sits inside a word span: {h1}"
+    );
+}
+
+fn hire(id: &str, title: &str, phase: &str, extra: Value) -> Value {
+    let mut h = json!({
+        "id": id, "title": title, "role": "builder", "identity": 2, "phase": phase,
+        "active_ms": 720000, "paused_now": phase == "paused", "started": "2026-10-29T15:00:00Z",
+        "ended": null, "done_today": false, "deadline_secs": 3600, "word": "working",
+        "msg": null, "source": "brief:1"
+    });
+    for (k, v) in extra.as_object().into_iter().flatten() {
+        h[k] = v.clone();
+    }
+    h
+}
+
+fn with_hires() -> Value {
+    let mut d = data(full_brief());
+    d["hires"] = json!([
+        hire(
+            "20261029-100000-a001",
+            "Ship <b>parser</b>",
+            "working",
+            json!({})
+        ),
+        hire(
+            "20261029-100100-a002",
+            "Review the gateway",
+            "needs-you",
+            json!({ "word": "blocked", "role": "reviewer", "identity": 4 })
+        ),
+        hire(
+            "20261029-100200-a003",
+            "Write the notes",
+            "paused",
+            json!({ "word": "idle", "role": null, "identity": 1 })
+        ),
+        hire(
+            "20261029-090000-a004",
+            "Ship the docs",
+            "done",
+            json!({ "done_today": true, "ended": "2026-10-29T16:00:00Z", "word": "done" })
+        ),
+        hire(
+            "20261028-090000-a005",
+            "Old failure",
+            "failed",
+            json!({ "started": "2026-10-28T09:00:00Z", "ended": "2026-10-28T16:00:00Z" })
+        ),
+    ]);
+    d
+}
+
+fn hero_of(d: &Value) -> String {
+    cos::today::hero(d)
+}
+
+#[test]
+fn the_hero_has_a_pill_per_working_waiting_or_paused_hire() {
+    let h = hero_of(&with_hires());
+    assert_eq!(h.matches(r#"<li class="hero-pill"#).count(), 3, "{h}");
+    for phase in ["working", "needs-you", "paused"] {
+        assert!(
+            h.contains(&format!(r#"data-phase="{phase}""#)),
+            "{phase}: {h}"
+        );
+    }
+    assert!(
+        !h.contains("Old failure") && !h.contains("Ship the docs"),
+        "{h}"
+    );
+    assert!(h.contains("Ship &lt;b&gt;parser&lt;/b&gt;"), "{h}");
+    assert!(!h.contains("<b>parser"), "{h}");
+    assert!(h.contains("20% of its deadline"), "{h}");
+    assert_eq!(
+        h.matches(r#"class="hero-pill__word" aria-live="polite""#)
+            .count(),
+        3,
+        "only each pill's word line is live: {h}"
+    );
+    let text = visible(&h);
+    assert!(
+        !text.contains("20261029-"),
+        "a run id in visible text: {text}"
+    );
+    assert!(text.contains("12 min"), "{text}");
+}
+
+#[test]
+fn the_hero_floor_is_hidden_from_assistive_tech() {
+    let m = markup(&data(full_brief()));
+    assert!(
+        m.contains(r#"<div class="hero-floor" aria-hidden="true">"#),
+        "{m}"
+    );
+    assert!(m.contains(r#"id="brief-loader""#), "{m}");
+    let none = markup(&json!({ "now_ts": "2026-10-29T14:30:00Z", "today": "2026-10-29" }));
+    assert!(
+        none.contains(r#"id="brief-loader""#),
+        "no brief yet still runs one"
+    );
+}
+
+/// The inbox column `col`'s card titles, in order.
+fn inbox_column(m: &str, col: &str) -> Vec<String> {
+    let at = m
+        .find(&format!(r#"data-col="{col}""#))
+        .unwrap_or_else(|| panic!("no {col} column: {m}"));
+    let rest = &m[at..];
+    let body = &rest[..rest.find("</ul>").unwrap()];
+    body.split(r#"class="inbox-title">"#)
+        .skip(1)
+        .map(|t| t[..t.find('<').unwrap()].to_owned())
+        .collect()
+}
+
+#[test]
+fn the_inbox_sorts_hires_into_needs_you_running_and_done_today() {
+    let m = markup(&with_hires());
+    assert!(m.contains(r#"data-section="hires""#), "{m}");
+    assert!(!m.contains(r#"data-section="herdr""#), "{m}");
+    assert_eq!(inbox_column(&m, "needs-you"), ["Review the gateway"]);
+    assert_eq!(
+        inbox_column(&m, "running"),
+        ["Ship &lt;b&gt;parser&lt;/b&gt;", "Write the notes"]
+    );
+    assert_eq!(inbox_column(&m, "done"), ["Ship the docs"]);
+    assert!(!m.contains("Old failure"), "{m}");
+    let inbox = &m[m.find(r#"data-section="hires""#).unwrap()..];
+    let inbox = &inbox[..inbox.find("</section></section>").unwrap_or(inbox.len())];
+    let text = visible(inbox);
+    assert!(
+        !text.contains("20261029-"),
+        "a run id in visible text: {text}"
+    );
+    assert!(
+        !text.contains("cos-2026"),
+        "a terminal name in visible text: {text}"
+    );
+    assert!(
+        inbox.contains(r#"data-herdr-open="20261029-100100-a002""#),
+        "Open in Herdr keeps its message: {inbox}"
+    );
+    assert!(inbox.contains(r#"id="hires-stale" hidden"#), "{inbox}");
+}
+
+#[test]
+fn without_hires_at_work_the_inbox_is_not_rendered() {
+    let mut d = data(full_brief());
+    d["hires"] = json!([hire(
+        "20261028-090000-a005",
+        "Old failure",
+        "failed",
+        json!({})
+    )]);
+    let m = markup(&d);
+    assert!(!m.contains(r#"data-section="hires""#), "{m}");
+    assert!(
+        m.contains(r#"id="hires-slot""#),
+        "a slot for live hires: {m}"
+    );
+}
+
+#[test]
 fn view_text_cannot_inject_markup() {
     let mut b = full_brief();
     b["needs_you"][0]["recommendation"] = json!("<img src=x onerror=alert(1)>");
@@ -658,4 +886,243 @@ fn view_text_cannot_inject_markup() {
         m.contains("/*__MARKDY__*/"),
         "the bundle replaced text in the markup"
     );
+}
+
+/// A busy morning at 09:30 in Chicago (14:30Z): a slot done, one running, one
+/// ahead inside the window and one past it; hires that started today, and one
+/// from yesterday that stays off the board.
+fn busy_day() -> Value {
+    let mut brief = full_brief();
+    brief["calendar"] = json!([
+        { "date": "2026-10-29", "start": "08:00", "end": "08:30", "what": "Standup", "prep": "" },
+        { "date": "2026-10-29", "start": "09:00", "end": "10:00", "what": "Design review", "prep": "Read the <b>RFC</b>." },
+        { "date": "2026-10-29", "start": "11:00", "end": "11:30", "what": "Vendor call", "prep": "" },
+        { "date": "2026-10-29", "start": "16:00", "end": "17:00", "what": "Go/no-go", "prep": "Have #412 reviewed." }
+    ]);
+    let mut d = data(brief);
+    d["hires"] = json!([
+        hire(
+            "20261029-070000-a101",
+            "Ship the docs",
+            "done",
+            json!({ "started": "2026-10-29T12:00:00Z", "done_today": true })
+        ),
+        hire(
+            "20261029-080000-a102",
+            "Fix the flaky test",
+            "failed",
+            json!({ "started": "2026-10-29T13:00:00Z" })
+        ),
+        hire(
+            "20261029-090000-a103",
+            "Review the gateway",
+            "needs-you",
+            json!({ "started": "2026-10-29T14:00:00Z", "role": "reviewer" })
+        ),
+        hire(
+            "20261029-091000-a104",
+            "Ship the parser",
+            "working",
+            json!({ "started": "2026-10-29T14:10:00Z", "active_ms": 900000 })
+        ),
+        hire(
+            "20261028-090000-a105",
+            "Old failure",
+            "failed",
+            json!({ "started": "2026-10-28T14:00:00Z" })
+        ),
+    ]);
+    d
+}
+
+fn board(m: &str) -> &str {
+    let a = m
+        .find(r#"data-section="schedule""#)
+        .expect("a schedule board");
+    let a = m[..a].rfind("<section").unwrap();
+    let b = m[a..]
+        .find(r#"data-section="ribbon""#)
+        .map_or(m.len(), |e| a + e);
+    &m[a..b]
+}
+
+/// `attr="…"` values in document order.
+fn attrs(s: &str, attr: &str) -> Vec<String> {
+    let key = format!(r#"{attr}=""#);
+    s.match_indices(&key)
+        .map(|(i, _)| {
+            let v = &s[i + key.len()..];
+            v[..v.find('"').unwrap()].to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn the_schedule_board_ports_agent_schedule_board_centred_on_now() {
+    let m = markup(&busy_day());
+    let sb = board(&m);
+    assert!(sb.starts_with(r#"<section class="kit-asb""#), "{sb}");
+    assert!(
+        m.find(r#"data-section="schedule""#) < m.find(r#"data-section="ribbon""#),
+        "the board sits above the week ribbon, which stays"
+    );
+    assert!(m.contains("The week, by the hour"), "the ribbon is kept");
+    assert!(
+        sb.contains(
+            r#"<span class="kit-asb__now" style="left: 50.00%;" aria-hidden="true"></span>"#
+        ),
+        "the now line at the centre: {sb}"
+    );
+    let ticks: Vec<&str> = sb
+        .match_indices(r#"class="kit-asb__tick""#)
+        .map(|(i, _)| {
+            let t = &sb[i..];
+            let a = t.find('>').unwrap() + 1;
+            &t[a..a + t[a..].find('<').unwrap()]
+        })
+        .collect();
+    assert_eq!(
+        ticks,
+        ["06:00", "08:00", "10:00", "12:00", "14:00"],
+        "two-hourly ticks in the profile's timezone, five hours either side"
+    );
+    let states = attrs(sb, "data-state");
+    let labels: Vec<String> = attrs(sb, "aria-label")
+        .into_iter()
+        .filter(|l| l.contains(", earlier") || l.contains(", later"))
+        .collect();
+    let markers: Vec<(&str, &str)> = states
+        .iter()
+        .map(String::as_str)
+        .zip(labels.iter().map(String::as_str))
+        .collect();
+    assert_eq!(
+        markers,
+        [
+            ("done", "Ship the docs, earlier, Done"),
+            ("done", "Standup, earlier, Done"),
+            ("failed", "Fix the flaky test, earlier, Failed"),
+            ("running", "Design review, earlier, in progress, 50 percent"),
+            ("needs-you", "Review the gateway, earlier, Needs you"),
+            (
+                "running",
+                "Ship the parser, earlier, in progress, 25 percent"
+            ),
+            ("upcoming", "Vendor call, later, Upcoming"),
+            ("upcoming", "Go/no-go, later, Upcoming"),
+        ],
+        "markers from today's slots and today's hires, outcomes in words: {sb}"
+    );
+    assert!(!sb.contains("Old failure"), "yesterday's hire stays off");
+    assert!(
+        sb.contains(r#"aria-label="Go/no-go, later, Upcoming" hidden"#),
+        "a run outside the window is not on the axis: {sb}"
+    );
+    assert!(
+        sb.contains(
+            r#"<p class="kit-asb__status" role="status">Running now: Design review, 50 percent</p>"#
+        ),
+        "{sb}"
+    );
+    assert!(sb.contains(r#"<polyline class="kit-asb__trace-line" points=""#));
+    assert_eq!(
+        sb.matches(r#"<button type="button" class="kit-asb__marker""#)
+            .count(),
+        8,
+        "every marker is a button, as rv2-kit draws it: {sb}"
+    );
+    assert!(!sb.contains(r#"role="img""#), "no marker is an image: {sb}");
+    for word in ["Done", "Needs you", "Failed", "Upcoming"] {
+        assert!(
+            sb.contains(&format!(r#"">{word}</span>"#)),
+            "{word} as an outcome pill"
+        );
+    }
+    for gone in [
+        "Run now",
+        "Skip",
+        "Restore",
+        "Pause",
+        "Resume",
+        r#"role="switch""#,
+    ] {
+        assert!(!sb.contains(gone), "Today is read-only: {gone}");
+    }
+    assert!(
+        sb.contains("Read the &lt;b&gt;RFC&lt;/b&gt;."),
+        "prep is escaped in the detail"
+    );
+    assert_eq!(
+        sb.matches(r#"aria-current="true""#).count(),
+        1,
+        "one row selected"
+    );
+    assert!(
+        sb.contains(r#"data-now="1793284200000""#),
+        "the server's now, for the client's minute"
+    );
+}
+
+#[test]
+fn a_lost_timed_out_or_stopped_hire_says_so_on_the_schedule_board() {
+    let mut brief = full_brief();
+    brief["calendar"] = json!([]);
+    let mut d = data(brief);
+    d["hires"] = json!([
+        hire(
+            "20261029-070000-a201",
+            "Lost one",
+            "lost",
+            json!({ "started": "2026-10-29T12:00:00Z" })
+        ),
+        hire(
+            "20261029-080000-a202",
+            "Slow one",
+            "timed-out",
+            json!({ "started": "2026-10-29T13:00:00Z" })
+        ),
+        hire(
+            "20261029-090000-a203",
+            "Stopped one",
+            "stopped",
+            json!({ "started": "2026-10-29T14:00:00Z" })
+        ),
+    ]);
+    let m = markup(&d);
+    let sb = board(&m);
+    let labels: Vec<String> = attrs(sb, "aria-label")
+        .into_iter()
+        .filter(|l| l.contains(", earlier"))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "Lost one, earlier, Lost",
+            "Slow one, earlier, Timed out",
+            "Stopped one, earlier, Stopped"
+        ],
+        "{sb}"
+    );
+    assert_eq!(
+        attrs(sb, "data-outcome")[..3],
+        ["failed", "failed", "stopped"],
+        "lost and timed out are failures; a stop was asked for: {sb}"
+    );
+    for word in ["Lost", "Timed out", "Stopped"] {
+        assert!(
+            sb.contains(&format!(r#"">{word}</span>"#)),
+            "{word} as an outcome pill: {sb}"
+        );
+    }
+    assert!(!sb.contains(">Failed<"), "{sb}");
+}
+
+#[test]
+fn an_empty_day_says_so_on_the_schedule_board() {
+    let mut brief = full_brief();
+    brief["calendar"] = json!([]);
+    let m = markup(&data(brief));
+    let sb = board(&m);
+    assert!(sb.contains("kit-asb__empty"), "{sb}");
+    assert!(!sb.contains("kit-asb__axis"), "{sb}");
 }

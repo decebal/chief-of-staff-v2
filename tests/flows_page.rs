@@ -97,8 +97,8 @@ fn board_filters_groups_and_searches() {
     );
     assert_eq!(
         c.eval("document.querySelectorAll('#needs .need').length"),
-        2,
-        "the gate and the review findings need you"
+        3,
+        "the gate, the drift and the review findings need you"
     );
 
     click(&mut c, "#facets input[data-facet=repo][value=gamma-data]");
@@ -137,7 +137,7 @@ fn board_filters_groups_and_searches() {
         "one lane per repo"
     );
     click(&mut c, "#presets [data-preset=needs]");
-    assert_eq!(num(&mut c, "flows"), 2);
+    assert_eq!(num(&mut c, "flows"), 3);
     click(&mut c, "#presets [data-preset=all]");
 
     click(&mut c, ".fcard[data-key='alpha-api/t-b000'] .pin");
@@ -218,7 +218,9 @@ fn flow_view_opens_a_card_drawer() {
         "b002→b004, b003→b005, b004→b005, ext→b006 wait on undone blockers"
     );
     assert_eq!(
-        c.eval("document.querySelector('#steprail [aria-current]').textContent"),
+        c.eval(
+            "document.querySelector('#flowsteps [aria-current=step] .kit-steps__title').textContent"
+        ),
         "Build"
     );
 
@@ -388,9 +390,16 @@ fn map_on_gpu_on_swiftshader() {
 /// an opaque origin), under a host that records every message, and an isolated world
 /// in the frame through which the test reaches its DOM.
 fn framed(name: &str) -> (Chrome, Value, FlowsPage) {
+    framed_with(name, |html| html)
+}
+
+/// [`framed`], over the fixture page as `edit` rewrites it.
+fn framed_with(name: &str, edit: impl Fn(String) -> String) -> (Chrome, Value, FlowsPage) {
     cdp::chrome_path();
     let dir = cdp::profile(name);
     let page = fixture::write(&dir.join("page"), 1001);
+    let html = std::fs::read_to_string(&page.page).unwrap();
+    std::fs::write(&page.page, edit(html)).unwrap();
     let host = dir.join("page/host.html");
     std::fs::write(
         &host,
@@ -611,4 +620,508 @@ fn messages_name_only_repo_epic_and_key() {
             other => panic!("unexpected message {other}: {m}"),
         }
     }
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn a_view_change_crossfades_with_the_outgoing_view_inert() {
+    let (mut c, _page) = open("view-swap", &["--disable-gpu"], "?engine-test");
+    c.wait_for("document.body.dataset.view === 'board'");
+    let v = c.eval(
+        "(() => { document.querySelector('.views button[data-view=map]').click(); const b = document.getElementById('board'); return [b.hidden, b.inert, document.getElementById('map').hidden]; })()",
+    );
+    assert_eq!(
+        v,
+        json!([false, true, false]),
+        "the board fades out inert as the map comes in"
+    );
+    c.wait_for("document.getElementById('board').hidden");
+    assert_eq!(
+        c.eval("document.getElementById('board').inert"),
+        json!(false)
+    );
+
+    let (mut c, _page) = open("view-swap-reduce", &["--disable-gpu"], "?engine-test");
+    reduce(&mut c);
+    c.wait_for("document.body.dataset.view === 'board'");
+    let v = c.eval(
+        "(() => { document.querySelector('.views button[data-view=map]').click(); return [document.getElementById('board').hidden, document.getElementById('board').inert]; })()",
+    );
+    assert_eq!(
+        v,
+        json!([true, false]),
+        "under reduce the change is instant"
+    );
+}
+
+/// Emulates `prefers-reduced-motion: reduce` from here on, and lets a view
+/// crossfade started before it (one `--motion-slow`) finish.
+fn reduce(c: &mut Chrome) {
+    c.call(
+        "Emulation.setEmulatedMedia",
+        json!({ "features": [{ "name": "prefers-reduced-motion", "value": "reduce" }] }),
+    );
+    c.pause(std::time::Duration::from_millis(450));
+}
+
+/// How many animations the document runs, two frames from now.
+fn animations(c: &mut Chrome) -> Value {
+    c.eval("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(document.getAnimations().length))))")
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_flow_views_steps_column_ports_step_progress_list() {
+    let (mut c, _page) = open("steps", &["--disable-gpu"], "?engine-test");
+    c.eval("cosFlowsTest.openFlow('alpha-api/t-b000')");
+    let items = "[...document.querySelectorAll('#flowsteps section.kit-steps > ol.kit-steps__list > li.kit-steps__item')].map((li) => [li.querySelector('.kit-steps__title').textContent, li.dataset.state, li.querySelector('.kit-steps__mark').textContent])";
+    assert_eq!(
+        c.eval(items),
+        json!([
+            ["Think", "finished", "✓"],
+            ["Spec", "finished", "✓"],
+            ["Plan", "finished", "✓"],
+            ["Build", "in_progress", "◌"],
+            ["Review", "queued", "○"],
+            ["Ship", "queued", "○"],
+            ["Reflect", "queued", "○"]
+        ])
+    );
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#flowsteps [aria-current=step]')].filter((n) => n.matches('li.kit-steps__item')).map((li) => li.querySelector('.kit-steps__title').textContent)"),
+        json!(["Build"]),
+        "only the step in progress is current"
+    );
+    assert_eq!(
+        c.eval("document.querySelector('#flowsteps .kit-steps__count').textContent"),
+        json!("3 of 7 steps finished")
+    );
+    assert_eq!(
+        c.eval("[document.querySelectorAll('#flowsteps [role=status][aria-live=polite]').length, document.querySelector('#flowsteps [role=status]').textContent]"),
+        json!([1, "3 of 7 steps finished"]),
+        "one polite live region"
+    );
+    assert_eq!(
+        c.eval("(() => { const b = document.querySelector('#flowsteps li[data-key=build] > button.kit-steps__row'); return [b.getAttribute('aria-expanded'), document.querySelectorAll('#flowsteps li[data-key=build] .kit-steps__sub').length]; })()"),
+        json!(["true", 6]),
+        "Build is open to its beads"
+    );
+    assert_eq!(
+        c.eval("document.querySelectorAll('#flowsteps .kit-steps__mark:not([aria-hidden=true]), #flowsteps .kit-steps__branch:not([aria-hidden=true])').length"),
+        json!(0)
+    );
+    assert_eq!(
+        c.eval("document.querySelectorAll('#flowsteps time').length"),
+        json!(0),
+        "steps carry no times"
+    );
+    let side = "(() => { const s = document.getElementById('flowsteps').getBoundingClientRect(), t = document.querySelector('.flowtabs').getBoundingClientRect(); return [s.right <= t.left + 1, s.bottom <= t.top + 1]; })()";
+    assert_eq!(
+        c.eval(side),
+        json!([true, false]),
+        "a side column beside the tabs"
+    );
+    narrow(&mut c, 60);
+    c.pause(std::time::Duration::from_millis(100));
+    assert_eq!(
+        c.eval(side),
+        json!([false, true]),
+        "above the tabs below 64rem"
+    );
+
+    c.eval("cosFlowsTest.openFlow('alpha-api/t-f000')");
+    assert_eq!(
+        c.eval("document.querySelectorAll('#flowsteps li.kit-steps__item').length"),
+        json!(7),
+        "drift is a state of a step, not an eighth step"
+    );
+    assert_eq!(
+        c.eval("(() => { const li = document.querySelector('#flowsteps li[data-state=errored]'); return [li.querySelector('.kit-steps__title').textContent, li.querySelector('.kit-steps__mark').textContent, li.querySelector('.kit-steps__state').textContent]; })()"),
+        json!(["Plan", "✕", "design changed after approval"]),
+        "the furthest step with a ritual file is the drifted one"
+    );
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#flowsteps li.kit-is-failed')].map((li) => li.dataset.key)"),
+        json!(["plan"]),
+        "the drifted step flashes, and only it"
+    );
+    assert_eq!(
+        c.eval("document.querySelector('#flowsteps [role=status]').textContent"),
+        json!("2 of 7 steps finished"),
+        "a drift waits on no step, so the count"
+    );
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#flowsteps li[data-state=finished] > .kit-steps__row')].map((r) => r.getAttribute('aria-label'))"),
+        json!(["Think", "Spec"]),
+        "a finished step's name drops the empty state word"
+    );
+
+    c.eval("cosFlowsTest.openFlow('alpha-api/t-a000')");
+    assert_eq!(
+        c.eval("(() => { const li = document.querySelector('#flowsteps li[data-state=awaiting_approval]'); return [li?.querySelector('.kit-steps__title').textContent ?? null, document.querySelector('#flowsteps [role=status]').textContent]; })()"),
+        json!(["Spec", "Spec: Needs you"]),
+        "at the gate the live region names the step that needs you"
+    );
+
+    reduce(&mut c);
+    c.eval("cosFlowsTest.openFlow('alpha-api/t-b000')");
+    assert_eq!(
+        animations(&mut c),
+        json!(0),
+        "reduced motion settles the steps"
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn board_cards_carry_a_ring_whose_counts_are_in_the_name() {
+    let (mut c, _page) = open("ring", &["--disable-gpu"], "?engine-test");
+    let card = ".fcard[data-key='alpha-api/t-b000']";
+    assert_eq!(
+        c.eval(&format!(
+            "document.querySelector(\"{card} button.open\").getAttribute('aria-label')"
+        )),
+        json!(
+            "Request log on the new store, alpha-api: 1 of 6 beads done, 1 in progress, 1 ready, 3 blocked"
+        ),
+    );
+    assert_eq!(
+        c.eval(&format!(
+            "(() => {{ const r = document.querySelector(\"{card} .ring\"); return [r.getAttribute('aria-hidden'), [...r.querySelectorAll('path.ring__arc')].map((p) => p.dataset.state), r.querySelector('.ring__n').textContent]; }})()"
+        )),
+        json!([
+            "true",
+            ["done", "active", "ready", "blocked", "blocked", "blocked"],
+            "1"
+        ]),
+        "one arc per bead in bead order, the done count in the centre"
+    );
+    assert_eq!(
+        c.eval(&format!(
+            "document.querySelectorAll(\"{card} path.ring__arc.kit-is-connecting[pathLength='1']\").length"
+        )),
+        json!(6),
+        "the arcs draw in"
+    );
+    assert_eq!(
+        c.eval(&format!(
+            "document.querySelectorAll(\"{card} [role=img]\").length"
+        )),
+        json!(0),
+        "the counts are said once, in the button's name"
+    );
+    assert_eq!(
+        c.eval("document.querySelector(\".fcard[data-key='alpha-api/t-a000'] .ring\")"),
+        json!(null),
+        "a flow with no beads has no ring"
+    );
+    reduce(&mut c);
+    c.eval("cosFlowsTest.go('map')");
+    c.eval("cosFlowsTest.go('board')");
+    assert_eq!(
+        animations(&mut c),
+        json!(0),
+        "reduced motion settles the rings"
+    );
+}
+
+/// Narrows the viewport to `rem` root ems (16 px each).
+fn narrow(c: &mut Chrome, rem: u32) {
+    c.call(
+        "Emulation.setDeviceMetricsOverride",
+        json!({ "width": rem * 16, "height": 800, "deviceScaleFactor": 1, "mobile": false }),
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_scene_heads_the_board_while_a_flow_waits_on_you() {
+    let (mut c, _page) = open("scene", &["--disable-gpu"], "?engine-test");
+    assert_eq!(
+        c.eval("(() => { const s = document.getElementById('board').firstElementChild; return [s.className, s.getAttribute('aria-hidden'), !!s.querySelector('svg')]; })()"),
+        json!(["scene", "true", true]),
+        "the scene heads the Board"
+    );
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#board .scene text')].map((t) => t.textContent)"),
+        json!([
+            "Rate limits per tenant",
+            "No beads yet",
+            "No beads yet",
+            "No beads yet",
+            "You approve",
+            "Agents build"
+        ]),
+        "the first flow that waits on you, branching into its beads and two roles"
+    );
+    assert_eq!(
+        c.eval("[document.querySelectorAll('#board .scene path.kit-is-connecting[pathLength=\"1\"]').length > 0, document.querySelectorAll('#board .scene g.kit-is-appearing').length]"),
+        json!([true, 6]),
+        "links draw, nodes settle"
+    );
+    narrow(&mut c, 30);
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#board .scene text')].every((t) => getComputedStyle(t).display === 'none')"),
+        json!(true),
+        "labels hide below 32rem"
+    );
+    narrow(&mut c, 80);
+    click(&mut c, "#presets [data-preset=ready]");
+    assert_eq!(
+        c.eval("document.querySelector('#board .scene')"),
+        json!(null),
+        "no flow shown waits on you: no scene"
+    );
+    reduce(&mut c);
+    click(&mut c, "#presets [data-preset=all]");
+    assert_eq!(
+        animations(&mut c),
+        json!(0),
+        "reduced motion settles the scene"
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_scene_is_the_art_of_the_empty_board() {
+    cdp::chrome_path();
+    let dir = cdp::profile("flows-scene-empty");
+    std::fs::create_dir_all(&dir).unwrap();
+    let page = dir.join("flows.html");
+    std::fs::write(
+        &page,
+        cos::flows::page_html(&cos::flows::Scan::default(), true).unwrap(),
+    )
+    .unwrap();
+    let mut c = Chrome::start(&dir, &["--disable-gpu"]);
+    c.open(&format!("file://{}?engine-test", page.display()));
+    assert_eq!(
+        c.eval("[!!document.querySelector('#board .empty'), document.querySelector('#board .scene')?.getAttribute('aria-hidden')]"),
+        json!([true, "true"]),
+        "no flows: the scene is the empty state's art"
+    );
+}
+
+const BEAD_COLUMNS: &str = "Object.fromEntries([...document.querySelectorAll('#beadcols [data-col]')].map((col) => [col.dataset.col, [...col.querySelectorAll('[data-glide]')].map((e) => e.dataset.glide)]))";
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn beads_view_sorts_by_state_and_a_rescan_glides_a_bead_to_its_new_column() {
+    let (mut c, page) = open("beads", &["--disable-gpu"], "?engine-test");
+    c.eval("location.hash = 'v=flow&f=alpha-api/t-b000&fv=beads'");
+    c.wait_for("document.body.dataset.flowView === 'beads'");
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('.flowtabs [role=tab]')].map((t) => t.textContent + ':' + t.getAttribute('aria-selected'))"),
+        json!(["Graph:false", "Beads:true", "Lanes:false"])
+    );
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#beadcols [data-col] h4 span:first-child')].map((e) => e.textContent)"),
+        json!(["Ready", "In progress", "Blocked", "Done"])
+    );
+    assert_eq!(
+        c.eval(BEAD_COLUMNS),
+        json!({ "ready": ["t-b003"], "active": ["t-b002"], "blocked": ["t-b004", "t-b005", "t-b006"], "done": ["t-b001"] }),
+        "status, then ready, then open blockers decide the column"
+    );
+    assert!(
+        c.eval("document.querySelector('#beadcols [data-glide=t-b002]').textContent")
+            .as_str()
+            .unwrap()
+            .contains("claude 1a2b"),
+        "a card carries its owner"
+    );
+    click(&mut c, "#beadcols [data-glide=t-b004]");
+    assert_eq!(
+        c.eval("cosFlowsTest.state().bead"),
+        "t-b004",
+        "a card opens the drawer"
+    );
+    key(&mut c, "Escape", "Escape", 27, 0);
+
+    // The scan finds t-b003 started: the page on disk changes, as a rescan's would.
+    let html = std::fs::read_to_string(&page.page).unwrap();
+    let was = r#""id":"t-b003","title":"US-003: read path","status":"open""#;
+    assert!(html.contains(was), "the fixture's t-b003 moved in the JSON");
+    std::fs::write(
+        &page.page,
+        html.replace(was, &was.replace("\"open\"", "\"in-progress\"")),
+    )
+    .unwrap();
+    c.call("Animation.enable", json!({}));
+    c.call(
+        "Animation.setPlaybackRate",
+        json!({ "playbackRate": 0.001 }),
+    );
+    key(&mut c, "r", "KeyR", 82, 0);
+    c.wait_for("location.search.includes('fresh=1') && document.readyState === 'complete' && document.body.dataset.flowView === 'beads'");
+    assert_eq!(
+        c.eval("document.querySelector('#beadcols [data-glide=t-b003]').getAnimations().map((a) => a.effect.getKeyframes()[0].transform.startsWith('translate'))"),
+        json!([true]),
+        "the moved card slides from its old column"
+    );
+    assert_eq!(
+        c.eval(BEAD_COLUMNS),
+        json!({ "ready": [], "active": ["t-b002", "t-b003"], "blocked": ["t-b004", "t-b005", "t-b006"], "done": ["t-b001"] })
+    );
+    assert_eq!(
+        c.data("moved"),
+        "t-b003",
+        "the bead that changed column glides"
+    );
+    assert!(
+        !c.eval("location.hash").as_str().unwrap().contains("was="),
+        "the columns before the rescan leave the hash once read"
+    );
+
+    reduce(&mut c);
+    c.eval("location.replace(location.href.split('#')[0] + '#v=flow&f=alpha-api/t-b000&fv=beads&was=t-b003.r')");
+    c.reload();
+    c.wait_for("document.body.dataset.flowView === 'beads'");
+    assert_eq!(c.data("moved"), "t-b003");
+    assert_eq!(
+        animations(&mut c),
+        json!(0),
+        "under reduce the move is instant"
+    );
+}
+
+fn focused(c: &mut Chrome) -> Value {
+    c.eval("document.activeElement?.dataset?.bead ?? null")
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn lanes_put_beads_in_hire_owner_and_unclaimed_lanes_by_column() {
+    let (mut c, _page) = open("lanes", &["--disable-gpu"], "?engine-test");
+    c.eval("location.hash = 'v=flow&f=alpha-api/t-b000&fv=lanes'");
+    c.wait_for("document.body.dataset.flowView === 'lanes'");
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#lanesview [data-lane]')].map((l) => [l.dataset.lane, l.querySelector('.ln__name').textContent, [...l.querySelectorAll('[data-bead]')].map((b) => b.dataset.bead + '@' + b.parentElement.dataset.col)])"),
+        json!([
+            ["hire:run-read", "Read pathbuilder · working", ["t-b003@1"]],
+            ["owner:ann", "ann", ["t-b001@0"]],
+            ["owner:claude:1a2b3c4d", "claude 1a2b", ["t-b002@0"]],
+            ["none", "Not yet claimed", ["t-b006@0", "t-b004@1", "t-b005@2"]]
+        ]),
+        "hires, then owners, then the unclaimed; a done hire has no lane; columns are layers"
+    );
+    assert_eq!(
+        c.eval(
+            "document.querySelector('#lanesview [data-bead=t-b005]').getAttribute('aria-label')"
+        ),
+        json!("t-b005 US-005: dashboards, Blocked, waits on t-b003, t-b004")
+    );
+    assert_eq!(
+        c.eval("(() => { const s = document.querySelector('#lanesview svg.lanes__links'); return [s.getAttribute('aria-hidden'), s.getAttribute('viewBox'), s.querySelectorAll('path.lanes__edge').length, s.querySelectorAll('path.lanes__edge.open').length]; })()"),
+        json!(["true", "0 0 3 4", 5, 3]),
+        "one connector per blocker edge, dashed into an open blocker, in column and row units"
+    );
+    assert_eq!(
+        c.eval("['t-b001', 't-b002', 't-b003', 't-b004'].map((id) => document.querySelector(`#lanesview [data-bead=${id}]`).className)"),
+        json!(["lbox done kit-is-appearing", "lbox active kit-is-running", "lbox ready", "lbox blocked"])
+    );
+    assert_eq!(
+        c.eval("!!document.querySelector('#lanesview [data-bead=t-b001] path.kit-is-done[pathLength=\"1\"]')"),
+        json!(true),
+        "a done box settles with a tick"
+    );
+
+    assert_eq!(
+        c.eval("[...document.querySelectorAll('#lanesview [data-bead]')].filter((b) => b.tabIndex === 0).map((b) => b.dataset.bead)"),
+        json!(["t-b003"]),
+        "one tab stop into the lanes"
+    );
+    c.eval("document.querySelector('#lanesview [data-bead=t-b003]').focus()");
+    let moves: [(&str, &str, u32, &str); 7] = [
+        ("ArrowDown", "ArrowDown", 40, "t-b001"),
+        ("ArrowDown", "ArrowDown", 40, "t-b002"),
+        ("ArrowDown", "ArrowDown", 40, "t-b006"),
+        ("ArrowRight", "ArrowRight", 39, "t-b004"),
+        ("End", "End", 35, "t-b005"),
+        ("Home", "Home", 36, "t-b006"),
+        ("ArrowUp", "ArrowUp", 38, "t-b002"),
+    ];
+    for (k, code, vk, want) in moves {
+        key(&mut c, k, code, vk, 0);
+        assert_eq!(focused(&mut c), json!(want), "{k}");
+    }
+    for kind in ["keyDown", "keyUp"] {
+        c.call(
+            "Input.dispatchKeyEvent",
+            json!({ "type": kind, "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "text": "\r" }),
+        );
+    }
+    assert_eq!(
+        c.eval("cosFlowsTest.state().bead"),
+        "t-b002",
+        "Enter opens the drawer"
+    );
+    key(&mut c, "Escape", "Escape", 27, 0);
+
+    narrow(&mut c, 36);
+    assert_eq!(
+        c.eval("(() => { const r = ['t-b006', 't-b004', 't-b005'].map((id) => document.querySelector(`#lanesview [data-bead=${id}]`).getBoundingClientRect()); return [r[0].left === r[1].left && r[1].left === r[2].left, r[0].top < r[1].top && r[1].top < r[2].top, getComputedStyle(document.querySelector('#lanesview svg.lanes__links')).display]; })()"),
+        json!([true, true, "none"]),
+        "narrow: one list per lane, no connectors"
+    );
+    narrow(&mut c, 80);
+    reduce(&mut c);
+    c.eval("cosFlowsTest.go('board')");
+    c.eval("location.hash = 'v=flow&f=alpha-api/t-b000&fv=lanes'");
+    c.wait_for("document.body.dataset.flowView === 'lanes'");
+    assert_eq!(
+        animations(&mut c),
+        json!(0),
+        "reduced motion settles the lanes"
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
+fn the_lanes_gate_breathes_and_asks_the_window_for_the_approval() {
+    // The gate flow gains one planned bead, so the gate has a column to feed.
+    let (mut c, world, _page) = framed_with("flows-lanes-gate", |html| {
+        let at = html.find(r#""id":"t-a000""#).unwrap();
+        let beads = at + html[at..].find(r#""beads":[]"#).unwrap();
+        let bead = r#""beads":[{"id":"t-a001","title":"US-001: limiter","status":"open","parent":"t-a000","blocked_by":[],"ready":true,"priority":null,"owner":null,"created_at":null,"done_at":null,"done_reason":null,"layer":0,"criteria":[],"criteria_more":0,"open_blockers":[],"handoff":""}]"#;
+        format!(
+            "{}{bead}{}",
+            &html[..beads],
+            &html[beads + r#""beads":[]"#.len()..]
+        )
+    });
+    let inside = |c: &mut Chrome, expr: &str| inside(c, &world, expr);
+    for _ in 0..50 {
+        if inside(&mut c, "document.body.dataset.view === 'board'") == json!(true) {
+            break;
+        }
+        c.pause(std::time::Duration::from_millis(100));
+    }
+    inside(
+        &mut c,
+        "(() => { document.querySelector('[data-open=\"alpha-api/t-a000\"]').click(); document.querySelector('[data-fv=lanes]').click(); })()",
+    );
+    for _ in 0..50 {
+        if inside(&mut c, "document.body.dataset.flowView === 'lanes'") == json!(true) {
+            break;
+        }
+        c.pause(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(
+        inside(
+            &mut c,
+            "(() => { const g = document.querySelector('#lanesview .gate'), li = document.querySelector('#lanesview [data-bead=t-a001]').parentElement; return [g.querySelector('.gate__diamond').classList.contains('kit-is-waiting'), document.querySelectorAll('#lanesview svg.lanes__links path.kit-is-travelling[pathLength=\"1\"]').length, g.querySelector('button').textContent, li.dataset.col, li.style.left]; })()"
+        ),
+        json!([true, 1, "Review and approve", "0", "12rem"]),
+        "the gate breathes before column 0, a light running along its connector"
+    );
+    inside(
+        &mut c,
+        "document.querySelector('#lanesview .gate button').click()",
+    );
+    c.pause(std::time::Duration::from_millis(200));
+    assert_eq!(
+        c.eval("got.filter((m) => m.type === 'cos-flows-gate')"),
+        json!([{ "type": "cos-flows-gate", "repo": "alpha-api", "epic": "t-a000" }])
+    );
 }

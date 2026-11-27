@@ -596,3 +596,132 @@ fn a_failed_append_is_audited_and_the_reply_still_goes_in() {
     assert!(audit.contains(&spec.id), "{audit}");
     assert!(audit.contains("error"), "{audit}");
 }
+
+fn clock(paused_now: bool) -> timeline::Summary {
+    timeline::Summary {
+        active_ms: 0,
+        paused_ms: 0,
+        paused_now,
+    }
+}
+
+fn seen(word: &str) -> agents::Seen {
+    agents::Seen {
+        live: true,
+        word: Some(word.into()),
+        ..agents::Seen::default()
+    }
+}
+
+#[test]
+fn phase_maps_every_status_and_word_to_the_fleet() {
+    use agents::Phase;
+    let st = |status: Status| State {
+        status,
+        ..State::default()
+    };
+    for (status, want) in [
+        (Status::Starting, Phase::Starting),
+        (Status::Queued, Phase::Starting),
+        (Status::Seeding, Phase::Starting),
+        (Status::Running, Phase::Working),
+        (Status::Done, Phase::Done),
+        (Status::Failed, Phase::Failed),
+        (Status::Killed, Phase::Stopped),
+        (Status::TimedOut, Phase::TimedOut),
+        (Status::Lost, Phase::Lost),
+    ] {
+        assert_eq!(agents::phase(&st(status), &clock(false)), want, "{status}");
+    }
+    let running = |herdr: Option<agents::Seen>| State {
+        status: Status::Running,
+        herdr,
+        ..State::default()
+    };
+    for (word, want) in [
+        ("working", Phase::Working),
+        ("idle", Phase::Working),
+        ("done", Phase::Working),
+        ("error", Phase::Working),
+        ("blocked", Phase::NeedsYou),
+    ] {
+        assert_eq!(
+            agents::phase(&running(Some(seen(word))), &clock(false)),
+            want,
+            "{word}"
+        );
+    }
+    assert_eq!(
+        agents::phase(&running(Some(seen("blocked"))), &clock(true)),
+        Phase::Paused,
+        "an open pause wins over the word"
+    );
+    let mut unsent = seen("idle");
+    unsent.first_message = Some(cos::herdr::FirstMessage {
+        sent: false,
+        reason: Some("no prompt".into()),
+    });
+    assert_eq!(
+        agents::phase(&running(Some(unsent)), &clock(false)),
+        Phase::NeedsYou
+    );
+    let mut judged = running(Some(seen("idle")));
+    judged.verdict = Some(agents::Verdict {
+        outcome: agents::Outcome::NeedsYou,
+        reasons: vec![],
+        changed: vec![],
+        out_of_scope: vec![],
+        checks: vec![],
+        overclaimed: false,
+        judged: at(5),
+    });
+    assert_eq!(agents::phase(&judged, &clock(false)), Phase::NeedsYou);
+    assert_eq!(
+        serde_json::to_value(Phase::NeedsYou).unwrap(),
+        "needs-you",
+        "the window's state keys"
+    );
+    assert_eq!(serde_json::to_value(Phase::TimedOut).unwrap(), "timed-out");
+}
+
+#[test]
+fn done_today_is_the_profile_timezones_day() {
+    let tz = jiff::tz::TimeZone::get("America/Chicago").unwrap();
+    let done = |ended: &str| State {
+        status: Status::Done,
+        ended: Some(ended.into()),
+        ..State::default()
+    };
+    // 03:00 UTC on the 29th is still the 28th in Chicago.
+    let now: Timestamp = "2026-10-29T03:00:00Z".parse().unwrap();
+    assert!(agents::done_today(&done("2026-10-28T15:00:00Z"), &tz, now));
+    assert!(!agents::done_today(&done("2026-10-29T06:00:00Z"), &tz, now));
+    assert!(!agents::done_today(
+        &done("2026-10-28T15:00:00Z"),
+        &jiff::tz::TimeZone::UTC,
+        now
+    ));
+    let failed = State {
+        status: Status::Failed,
+        ended: Some("2026-10-28T15:00:00Z".into()),
+        ..State::default()
+    };
+    assert!(!agents::done_today(&failed, &tz, now));
+}
+
+#[test]
+fn the_snapshot_matches_the_listing_for_well_formed_runs() {
+    let (_, home, repo, _f) = setup("snapshot");
+    let spec = hire(&home, &repo, "edit");
+    agents::tick(&home).unwrap();
+    let listed = agents::list(&home).unwrap().runs;
+    let views = agents::snapshot(&home, &jiff::tz::TimeZone::UTC, Timestamp::now());
+    assert_eq!(views.len(), listed.len());
+    let v = views.iter().find(|v| v.id == spec.id).unwrap();
+    let (lspec, lstate) = listed.iter().find(|(s, _)| s.id == spec.id).unwrap();
+    assert_eq!(v.title, lspec.title);
+    assert_eq!(v.source, lspec.source);
+    assert_eq!(v.deadline_secs, lspec.deadline_secs);
+    assert_eq!(v.started, lstate.started);
+    assert_eq!(v.word, lstate.herdr.as_ref().and_then(|h| h.word.clone()));
+}

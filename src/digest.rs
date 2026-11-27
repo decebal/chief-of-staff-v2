@@ -71,7 +71,8 @@ struct Item {
     at: Option<Timestamp>,
 }
 
-fn zone(ws: &Path) -> TimeZone {
+/// The workspace profile's timezone, else the machine's.
+pub fn zone(ws: &Path) -> TimeZone {
     state::profile(ws)
         .as_ref()
         .and_then(state::timezone)
@@ -178,7 +179,7 @@ fn ledger_items(home: &Path, since: Timestamp, items: &mut Vec<Item>) {
             }
             (Outcome::Accepted, _) => Lane::Done,
         };
-        let title = agents::read(home, &row.id)
+        let title = agents::read_raw(home, &row.id)
             .ok()
             .map(|(spec, _)| spec.title)
             .filter(|t| !t.trim().is_empty())

@@ -579,7 +579,14 @@ fn a_run_waiting_in_herdr_needs_you_and_the_window_replies_pauses_opens_and_mark
 
     let report = cos_desktop::report_response(app.handle(), "/");
     let html = String::from_utf8_lossy(report.body());
-    assert!(html.contains("Waiting on you in Herdr"), "Today lists it");
+    let needs = html
+        .find(r#"data-col="needs-you""#)
+        .map(|at| &html[at..at + html[at..].find("</ul>").unwrap_or(0)])
+        .unwrap_or_default();
+    assert!(
+        needs.contains("waiting on you"),
+        "Today lists it under Needs you"
+    );
     assert!(
         html.contains(&format!(r#"data-herdr-open="{id}""#)),
         "with Open in Herdr"
@@ -671,6 +678,11 @@ fn the_fleet_row_carries_identity_and_clock_and_a_pause_is_one_span() {
     assert!((1..=6).contains(&identity), "{row}");
     assert!(row["active_ms"].as_u64().is_some(), "{row}");
     assert_eq!(row["paused_now"], false, "{row}");
+    assert_eq!(row["done_today"], false, "{row}");
+    assert!(
+        ["starting", "working", "needs-you"].contains(&row["phase"].as_str().unwrap_or("")),
+        "{row}"
+    );
 
     call(
         &w,
@@ -680,6 +692,28 @@ fn the_fleet_row_carries_identity_and_clock_and_a_pause_is_one_span() {
     .unwrap();
     assert!(herdr.calls().contains(&format!("interrupt | {t}")));
     assert_eq!(row_of(&w, &id)["paused_now"], true);
+    assert_eq!(row_of(&w, &id)["phase"], "paused");
+
+    let snapshot = call(&w, "agents_snapshot", json!({ "business": "default" })).unwrap();
+    let hire = snapshot
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["id"] == id.as_str())
+        .unwrap_or_else(|| panic!("{snapshot}"))
+        .clone();
+    assert_eq!(hire["phase"], "paused", "{hire}");
+    assert_eq!(hire["paused_now"], true, "{hire}");
+    assert!(hire["deadline_secs"].as_u64().is_some(), "{hire}");
+    assert!(hire["identity"].as_u64().is_some(), "{hire}");
+    for detail in ["spec", "state", "prompt", "workdir"] {
+        assert!(
+            hire.get(detail).is_none(),
+            "a HireView carries no {detail}: {hire}"
+        );
+    }
+    let stale = call(&w, "agents_snapshot", json!({ "business": "acme" })).unwrap_err();
+    assert!(!error_text(&stale).is_empty(), "{stale}");
     call(
         &w,
         "agents_say",

@@ -286,6 +286,10 @@ pub struct Flow {
     pub needs_you: Option<NeedsYou>,
     /// The latest `created_at` or `done_at` of its beads.
     pub touched: Option<String>,
+    /// Hires started from one of its beads (`source` is
+    /// `bead:<repo>/<bead id>`), as last stored; empty when the scan was given
+    /// no business home.
+    pub hires: Vec<crate::agents::HireView>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -458,6 +462,7 @@ pub fn flows_in(repo: &str, drift: Option<&DriftCheck>, tasks: &[Task]) -> Vec<F
                 counts: count(&beads),
                 markers,
                 beads,
+                hires: Vec::new(),
             }
         })
         .collect();
@@ -703,13 +708,62 @@ pub fn repos(projects: &Path) -> Result<Vec<PathBuf>> {
 /// Told before each repo is read: (repos done, repos in all, the next one).
 pub type Progress<'a> = &'a (dyn Fn(usize, usize, &str) + Sync);
 
-/// Every flow under `projects`, read with `cn` under one `budget`.
-pub fn scan(projects: &Path, cn: &Path, budget: Duration) -> Scan {
-    scan_with(projects, cn, budget, &|_, _, _| {})
+/// Where a scan reads hires from.
+#[derive(Clone, Copy)]
+pub struct Hires<'a> {
+    /// The business home.
+    pub home: &'a Path,
+    /// The zone a hire's `done_today` is judged in: the workspace profile's
+    /// (`digest::zone`, which falls back to the system zone when the profile
+    /// names none). Only a caller with no workspace at all passes
+    /// `TimeZone::system()` itself.
+    pub tz: &'a jiff::tz::TimeZone,
+}
+
+/// Every flow under `projects`, read with `cn` under one `budget`. With
+/// `hires`, each flow carries the hires started from its beads.
+pub fn scan(projects: &Path, cn: &Path, budget: Duration, hires: Option<Hires>) -> Scan {
+    scan_with(projects, cn, budget, hires, &|_, _, _| {})
 }
 
 /// `scan`, telling `progress` as it moves from repo to repo.
-pub fn scan_with(projects: &Path, cn: &Path, budget: Duration, progress: Progress) -> Scan {
+pub fn scan_with(
+    projects: &Path,
+    cn: &Path,
+    budget: Duration,
+    hires: Option<Hires>,
+    progress: Progress,
+) -> Scan {
+    let mut out = scan_repos(projects, cn, budget, progress);
+    if let Some(hires) = hires {
+        attach_hires(&mut out.flows, hires);
+    }
+    out
+}
+
+/// Gives each flow the hires whose `source` names one of its beads. The
+/// snapshot is a directory read with no child process, so it sits outside
+/// the scan's `cn` budget.
+fn attach_hires(flows: &mut [Flow], from: Hires) {
+    let hires = crate::agents::snapshot(from.home, from.tz, jiff::Timestamp::now());
+    if hires.is_empty() {
+        return;
+    }
+    for f in flows {
+        let sources: HashSet<String> = f
+            .beads
+            .iter()
+            .map(|b| format!("bead:{}/{}", f.repo, b.id))
+            .collect();
+        f.hires = hires
+            .iter()
+            .filter(|h| sources.contains(&h.source))
+            .cloned()
+            .collect();
+    }
+}
+
+fn scan_repos(projects: &Path, cn: &Path, budget: Duration, progress: Progress) -> Scan {
     let mut out = Scan::default();
     let repos = match repos(projects) {
         Ok(r) => r,
@@ -820,25 +874,33 @@ const PAGE_TTL: Duration = Duration::from_secs(10);
 /// the scan already running and gets its result, and a page younger than
 /// `PAGE_TTL` is served without scanning unless `fresh` (the page's Rescan).
 /// The page carries the time of its own scan, so a cached one says its age.
-pub fn page_cached(ws: &Path, projects: &Path, fresh: bool) -> String {
-    type Entry = (std::time::Instant, PathBuf, PathBuf, String);
+pub fn page_cached(ws: &Path, projects: &Path, home: Option<&Path>, fresh: bool) -> String {
+    type Entry = (
+        std::time::Instant,
+        PathBuf,
+        PathBuf,
+        Option<PathBuf>,
+        String,
+    );
     static LAST: std::sync::Mutex<Option<Entry>> = std::sync::Mutex::new(None);
     let mut last = LAST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((at, w, p, html)) = last.as_ref()
+    if let Some((at, w, p, h, html)) = last.as_ref()
         && !fresh
         && at.elapsed() < PAGE_TTL
         && w == ws
         && p == projects
+        && h.as_deref() == home
     {
         return html.clone();
     }
-    let html = page(ws, projects);
+    let html = page(ws, projects, home);
     *last = Some((
         std::time::Instant::now(),
         ws.to_path_buf(),
         projects.to_path_buf(),
+        home.map(Path::to_path_buf),
         html.clone(),
     ));
     html
@@ -867,7 +929,14 @@ impl Pages {
 
     /// Scans and keeps the page. A caller that finds a scan running waits for
     /// it and, unless `fresh`, takes its page instead of scanning again.
-    pub fn scan(&self, ws: &Path, projects: &Path, fresh: bool, progress: Progress) -> String {
+    pub fn scan(
+        &self,
+        ws: &Path,
+        projects: &Path,
+        home: Option<&Path>,
+        fresh: bool,
+        progress: Progress,
+    ) -> String {
         let _one = self
             .scanning
             .lock()
@@ -878,17 +947,29 @@ impl Pages {
         {
             return html;
         }
-        self.scan_held(ws, projects, progress)
+        self.scan_held(ws, projects, home, progress)
     }
 
     /// Scans only when no scan is running; `None` when one is.
-    pub fn try_scan(&self, ws: &Path, projects: &Path, progress: Progress) -> Option<String> {
+    pub fn try_scan(
+        &self,
+        ws: &Path,
+        projects: &Path,
+        home: Option<&Path>,
+        progress: Progress,
+    ) -> Option<String> {
         let _one = self.scanning.try_lock().ok()?;
-        Some(self.scan_held(ws, projects, progress))
+        Some(self.scan_held(ws, projects, home, progress))
     }
 
-    fn scan_held(&self, ws: &Path, projects: &Path, progress: Progress) -> String {
-        let html = page_with(ws, projects, progress);
+    fn scan_held(
+        &self,
+        ws: &Path,
+        projects: &Path,
+        home: Option<&Path>,
+        progress: Progress,
+    ) -> String {
+        let html = page_with(ws, projects, home, progress);
         *self
             .last
             .lock()
@@ -907,15 +988,17 @@ pub const STALE: Duration = PAGE_TTL;
 
 /// `/flows` for `cos dash` and the desktop app: read only when the profile
 /// approves the `tasks` source, the gate the brief's `cn` facts use.
-pub fn page(ws: &Path, projects: &Path) -> String {
-    page_with(ws, projects, &|_, _, _| {})
+pub fn page(ws: &Path, projects: &Path, home: Option<&Path>) -> String {
+    page_with(ws, projects, home, &|_, _, _| {})
 }
 
 /// `page`, telling `progress` as the scan moves from repo to repo.
-pub fn page_with(ws: &Path, projects: &Path, progress: Progress) -> String {
+pub fn page_with(ws: &Path, projects: &Path, home: Option<&Path>, progress: Progress) -> String {
     let approved = crate::context::local_reads(ws).tasks;
     let scan = if approved {
-        scan_with(projects, &cn_program(), SCAN_BUDGET, progress)
+        let tz = crate::digest::zone(ws);
+        let hires = home.map(|home| Hires { home, tz: &tz });
+        scan_with(projects, &cn_program(), SCAN_BUDGET, hires, progress)
     } else {
         Scan {
             gaps: vec![

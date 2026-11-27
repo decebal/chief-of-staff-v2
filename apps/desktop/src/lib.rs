@@ -859,7 +859,13 @@ pub fn flows_response<R: Runtime>(
             }
             html
         }
-        None => pages.scan(&s.workspace, &s.projects, fresh, &flows_progress(app)),
+        None => pages.scan(
+            &s.workspace,
+            &s.projects,
+            Some(&s.home),
+            fresh,
+            &flows_progress(app),
+        ),
     };
     tauri::http::Response::builder()
         .status(200)
@@ -904,7 +910,12 @@ fn flows_behind<R: Runtime>(app: AppHandle<R>) {
         let s = app.state::<App>().get();
         let pages = app.state::<FlowPages>().0.clone();
         if pages
-            .try_scan(&s.workspace, &s.projects, &flows_progress(&app))
+            .try_scan(
+                &s.workspace,
+                &s.projects,
+                Some(&s.home),
+                &flows_progress(&app),
+            )
             .is_some()
         {
             let _ = app.emit("flows-changed", ());
@@ -1091,13 +1102,18 @@ struct Row {
     /// Active time at the moment of the call; the window ticks it on.
     active_ms: u64,
     paused_now: bool,
+    phase: agents::Phase,
+    /// Done, and ended today in the business profile's timezone.
+    done_today: bool,
 }
 
 #[tauri::command]
 async fn agents_list(app: tauri::State<'_, App>) -> Res<Vec<Row>> {
-    let home = app.get().home;
+    let cur = app.get();
+    let (home, ws) = (cur.home, cur.workspace);
     blocking(move || {
         let now = jiff::Timestamp::now();
+        let tz = cos::digest::zone(&ws);
         Ok(agents::list(&home)?
             .runs
             .into_iter()
@@ -1109,12 +1125,35 @@ async fn agents_list(app: tauri::State<'_, App>) -> Res<Vec<Row>> {
                     identity: agents::identity(spec.role.as_deref()),
                     active_ms: clock.active_ms,
                     paused_now: clock.paused_now,
+                    phase: agents::phase(&state, &clock),
+                    done_today: agents::done_today(&state, &tz, now),
                     spec,
                     state,
                     needs,
                 }
             })
             .collect())
+    })
+    .await
+}
+
+/// Every hire as last stored, for Today's live inbox. Read-only: it calls
+/// `agents::snapshot` and nothing else, so it never reconciles, signals or
+/// writes (the fleet's `agents_list` does reconcile).
+#[tauri::command]
+async fn agents_snapshot(
+    app: tauri::State<'_, App>,
+    business: String,
+) -> Res<Vec<agents::HireView>> {
+    let cur = app.get();
+    named(&cur, &business)?;
+    let (home, ws) = (cur.home, cur.workspace);
+    blocking(move || {
+        Ok(agents::snapshot(
+            &home,
+            &cos::digest::zone(&ws),
+            jiff::Timestamp::now(),
+        ))
     })
     .await
 }
@@ -1625,10 +1664,15 @@ async fn ritual_gates(app: tauri::State<'_, App>) -> Res<Value> {
                 "flows": [],
             }));
         }
+        let tz = cos::digest::zone(&s.workspace);
         let (gates, gaps, flows) = cos::ritual::board(
             &s.projects,
             &cos::flows::cn_program(),
             cos::flows::SCAN_BUDGET,
+            Some(cos::flows::Hires {
+                home: &s.home,
+                tz: &tz,
+            }),
         );
         let gates: Vec<Value> = gates
             .iter()
@@ -1695,10 +1739,15 @@ async fn ritual_open(
     let s = app.get();
     blocking(move || {
         let dir = flow_repo(&s.projects, &repo)?;
+        let tz = cos::digest::zone(&s.workspace);
         let (gates, _) = cos::ritual::gates(
             &s.projects,
             &cos::flows::cn_program(),
             cos::flows::SCAN_BUDGET,
+            Some(cos::flows::Hires {
+                home: &s.home,
+                tz: &tz,
+            }),
         );
         let g = gates
             .iter()
@@ -2119,6 +2168,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             tax_read,
             tax_save,
             agents_list,
+            agents_snapshot,
             agents_fit,
             agents_spawn,
             agents_record,

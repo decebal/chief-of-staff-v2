@@ -1,6 +1,95 @@
 // The kit's window builders: DOM from plain data and callbacks, over states.js
 // el(). app.js fetches and wires; it does not build these itself.
 
+// ---- motion: every scripted animation asks motionOk() first. The window,
+// the report and the Flows page each carry this block; tests/design.rs keeps
+// the copies identical.
+
+const motionOk = () => !matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// FLIP: children marked data-glide="<key>" move from where they were before
+// render() to where they are after it.
+function glide(container, render) {
+  const keyed = () => new Map([...container.querySelectorAll("[data-glide]")].map((n) => [n.dataset.glide, n]));
+  const before = new Map([...keyed()].map(([k, n]) => [k, n.getBoundingClientRect()]));
+  render();
+  if (!motionOk()) return;
+  const root = getComputedStyle(document.documentElement);
+  const duration = parseFloat(root.getPropertyValue("--motion-slow")) || 0;
+  const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+  for (const [k, n] of keyed()) {
+    const was = before.get(k);
+    if (!was) continue;
+    const now = n.getBoundingClientRect();
+    const dx = was.left - now.left;
+    const dy = was.top - now.top;
+    if (dx || dy) n.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration, easing });
+  }
+}
+
+// Crossfade: `next` (an element) replaces the container's children, which
+// fade out with a small blur in an inert layer while the height glides.
+function swap(container, next) {
+  const old = [...container.childNodes];
+  if (!motionOk() || !old.length) {
+    container.replaceChildren(next);
+    return;
+  }
+  const root = getComputedStyle(document.documentElement);
+  const duration = parseFloat(root.getPropertyValue("--motion-slow")) || 0;
+  const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+  const from = container.offsetHeight;
+  const out = document.createElement("div");
+  out.inert = true;
+  out.setAttribute("aria-hidden", "true");
+  Object.assign(out.style, { position: "absolute", inset: "0", pointerEvents: "none" });
+  out.append(...old);
+  if (getComputedStyle(container).position === "static") container.style.position = "relative";
+  container.replaceChildren(next, out);
+  const to = container.offsetHeight;
+  const fade = out.animate([{ opacity: 1, filter: "blur(0)" }, { opacity: 0, filter: "blur(0.25rem)" }], { duration, easing });
+  fade.finished.then(() => out.remove(), () => out.remove());
+  next.animate([{ opacity: 0, filter: "blur(0.25rem)" }, { opacity: 1, filter: "blur(0)" }], { duration, easing });
+  if (from !== to) container.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration, easing });
+}
+
+// The same crossfade between two panes that stay in the page (a view shown
+// and hidden, never rebuilt): `to` shows at once and fades in, `from` fades
+// out over it, inert, where it stood, then hides. A pane brought back
+// mid-fade is settled first, so it is live again at once.
+function swapPane(from, to) {
+  for (const p of [from, to]) p?.leave?.();
+  to.hidden = false;
+  if (!from || from === to || from.hidden) return;
+  if (!motionOk()) {
+    from.hidden = true;
+    return;
+  }
+  const root = getComputedStyle(document.documentElement);
+  const duration = parseFloat(root.getPropertyValue("--motion-slow")) || 0;
+  const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+  const box = from.offsetParent ?? document.body;
+  const at = from.getBoundingClientRect();
+  const base = box.getBoundingClientRect();
+  from.inert = true;
+  from.setAttribute("aria-hidden", "true");
+  Object.assign(from.style, { position: "absolute", left: `${at.left - base.left + box.scrollLeft}px`, top: `${at.top - base.top + box.scrollTop}px`, width: `${at.width}px`, pointerEvents: "none" });
+  const fade = from.animate([{ opacity: 1, filter: "blur(0)" }, { opacity: 0, filter: "blur(0.25rem)" }], { duration, easing });
+  to.animate([{ opacity: 0, filter: "blur(0.25rem)" }, { opacity: 1, filter: "blur(0)" }], { duration, easing });
+  let done = false;
+  from.leave = () => {
+    if (done) return;
+    done = true;
+    fade.cancel();
+    from.hidden = true;
+    from.inert = false;
+    from.removeAttribute("aria-hidden");
+    Object.assign(from.style, { position: "", left: "", top: "", width: "", pointerEvents: "" });
+    from.leave = null;
+  };
+  fade.finished.then(from.leave, from.leave);
+}
+
 // ---- clocks: a live, unpaused clock counts once a second; a held one stays.
 
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -59,35 +148,22 @@ function fleetStep(len, current, key) {
   }
 }
 
-const FLEET_PHASE = {
-  starting: "starting",
-  queued: "starting",
-  seeding: "starting",
-  done: "done",
-  failed: "failed",
-  killed: "stopped",
-  timed_out: "timed-out",
-  lost: "lost",
-};
 const LIVE_STATUS = ["starting", "queued", "seeding", "running"];
-const isToday = (at) => Boolean(at) && new Date(at).toDateString() === new Date().toDateString();
 
+// `a.phase` is `agents::phase`; `a.done_today` is in the profile's timezone.
 function fleetRow(a, roleName) {
   const { spec, state } = a;
-  const phase = state.status === "running"
-    ? a.paused_now ? "paused" : a.needs || state.herdr?.word === "blocked" ? "needs-you" : "working"
-    : (FLEET_PHASE[state.status] ?? state.status);
   return {
     id: spec.id,
     title: spec.title?.trim() || "Untitled hire",
     roleName,
     identity: a.identity,
-    state: phase,
+    state: a.phase,
     latest: state.error ?? state.herdr?.msg ?? "",
     activeMs: a.active_ms,
     live: LIVE_STATUS.includes(state.status),
     paused: a.paused_now,
-    doneToday: state.status === "done" && isToday(state.ended),
+    doneToday: a.done_today,
   };
 }
 
@@ -523,50 +599,116 @@ const fileName = (p) => p.split("/").pop();
 const counts = (r) => `${r.blocking} blocking, ${r.should} should, ${r.nit} nit`;
 const badge = (text, tone) => el("span", { className: "badge", textContent: text, tone });
 
-// ---- steps: a ritual's steps as a progress list, with no times
+// ---- steps: rv2-kit StepProgressList (agents/step_progress_list.rs), with no times
 
 const STEP_NAME = { think: "Think", spec: "Spec", approve: "Approve", plan: "Plan", build: "Build", review: "Review", ship: "Ship", reflect: "Reflect" };
-const STEP_STATE = { finished: "finished", in_progress: "in progress", awaiting_approval: "awaiting your approval", errored: "drifted", queued: "queued" };
+const STEP_MARK = { finished: "✓", in_progress: "◌", queued: "○", awaiting_approval: "◇", errored: "✕" };
+const STEP_WORD = { finished: "Done", in_progress: "Running", queued: "Queued", awaiting_approval: "Needs you", errored: "Failed" };
+const STEPS_FOLD_WINDOW = 5;
+const STEPS_FOLD_THRESHOLD = 6;
 
-// `names`: the ritual's steps in order. `current` is where the flow stands, in
-// `state`; `drift` replaces that step's state with the reason it drifted.
-function steps(names, current, { state = "in_progress", drift = null, beads = [] } = {}) {
-  const at = names.indexOf(current);
-  return el(
-    "ol",
-    { className: "kit-steps", ariaLabel: "Ritual steps" },
-    ...names.map((s, i) => {
-      const st = i < at ? "finished" : i > at ? "queued" : drift ? "errored" : state;
-      const li = el(
-        "li",
-        { className: "kit-steps__step", dataset: { state: st } },
-        el("span", { className: "kit-steps__name", textContent: STEP_NAME[s] ?? s }),
-        el("span", { className: "kit-steps__state", textContent: i === at && drift ? drift : STEP_STATE[st] }),
-        s === "build" && beads.length ? beadList(beads) : null,
-      );
-      if (i === at) li.setAttribute("aria-current", "step");
-      return li;
-    }),
-  );
+// The sub-items shown folded: `STEPS_FOLD_WINDOW` around the one in progress.
+function stepsFold(len, focus) {
+  if (len <= STEPS_FOLD_THRESHOLD) return [0, len];
+  const start = Math.min(Math.max(0, (focus < 0 ? 0 : focus) - Math.floor(STEPS_FOLD_WINDOW / 2)), len - STEPS_FOLD_WINDOW);
+  return [start, start + STEPS_FOLD_WINDOW];
 }
 
-const BEAD_STATE = { done: "finished", in_progress: "in progress" };
-function beadList(beads) {
-  const shown = beads.length > 6 ? beads.slice(0, 5) : beads;
-  const more = beads.length - shown.length;
+const beadStepState = (b) => (b.status === "done" ? "finished" : b.status === "in_progress" || b.status === "in-progress" ? "in_progress" : "queued");
+
+// `names`: the ritual's steps in order. `current` is where the flow stands, in
+// `state`; `drift` replaces that step's state with the reason it drifted. The
+// beads sit under Build, which opens like any step with sub-items.
+function steps(names, current, { state = "in_progress", drift = null, beads = [], heading = "Steps" } = {}) {
+  const at = names.indexOf(current);
+  const uid = `kit-steps-${(steps.n = (steps.n ?? 0) + 1)}`;
+  const items = names.map((s, i) => ({
+    key: s,
+    title: STEP_NAME[s] ?? s,
+    state: i < at ? "finished" : i > at ? "queued" : drift ? "errored" : state,
+    subs: s === "build" ? beads : [],
+  }));
+  const open = new Set(items.filter((it) => it.state === "in_progress").map((it) => it.key));
+  const all = new Set();
+  const finished = items.filter((it) => it.state === "finished").length;
+  const count = `${finished} of ${items.length} steps finished`;
+  const waiting = items.find((it) => it.state === "awaiting_approval");
+  const announce = waiting ? `${waiting.title}: ${STEP_WORD.awaiting_approval}` : count;
+
+  const item = (it) => {
+    const word = it.state === "errored" && drift ? drift : it.state === "finished" ? "" : STEP_WORD[it.state];
+    const name = [it.title, word].filter(Boolean).join(", ");
+    const hasSubs = it.subs.length > 0;
+    const isOpen = hasSubs && open.has(it.key);
+    const rowId = `${uid}-item-${it.key}`;
+    const subsId = `${rowId}-subs`;
+    const kids = [
+      el("span", { className: "kit-steps__mark", ariaHidden: "true", textContent: STEP_MARK[it.state] }),
+      el("span", { className: "kit-steps__name" }, el("span", { className: "kit-steps__title", textContent: it.title })),
+      el(
+        "span",
+        { className: "kit-steps__right" },
+        word && it.state !== "in_progress" ? el("span", { className: "kit-steps__state", textContent: word }) : null,
+        it.state === "awaiting_approval" ? el("span", { className: "kit-steps__gate", ariaHidden: "true", textContent: "gate" }) : null,
+      ),
+    ];
+    const row = hasSubs
+      ? el("button", { id: rowId, className: "kit-steps__row", type: "button", ariaLabel: name, ariaExpanded: String(isOpen), onClick: () => toggle(it, open) }, ...kids)
+      : el("div", { id: rowId, className: "kit-steps__row", ariaLabel: name, role: "group" }, ...kids);
+    if (isOpen) row.setAttribute("aria-controls", subsId);
+    const li = el("li", { className: it.state === "errored" ? "kit-steps__item kit-is-failed" : "kit-steps__item", dataset: { state: it.state, key: it.key } }, el("span", { className: "kit-steps__branch", ariaHidden: "true" }), row, isOpen ? subList(it, subsId) : null);
+    if (it.state === "in_progress") li.setAttribute("aria-current", "step");
+    return li;
+  };
+
+  const subList = (it, id) => {
+    const focus = it.subs.findIndex((b) => beadStepState(b) === "in_progress");
+    const expanded = all.has(it.key);
+    const [start, end] = expanded ? [0, it.subs.length] : stepsFold(it.subs.length, focus);
+    const fold = (text) => el("button", { className: "kit-steps__fold", type: "button", textContent: text, onClick: () => toggle(it, all) });
+    return el(
+      "div",
+      { id, className: "kit-steps__subs" },
+      start > 0 && !expanded ? fold(`${start} earlier`) : null,
+      el(
+        "ul",
+        { className: "kit-steps__sub-list", ariaLabel: "Beads" },
+        ...it.subs.slice(start, end).map((b, k) => {
+          const st = beadStepState(b);
+          const sub = el(
+            "li",
+            { className: "kit-steps__sub", dataset: { state: st } },
+            el("span", { className: "kit-steps__sub-text", textContent: b.title?.trim() || "Untitled bead" }),
+            el("span", { className: "kit-steps__fact", textContent: STEP_WORD[st] }),
+          );
+          if (focus === start + k) sub.setAttribute("aria-current", "step");
+          return sub;
+        }),
+      ),
+      end < it.subs.length && !expanded ? fold(`${it.subs.length - end} later`) : null,
+      expanded && it.subs.length > STEPS_FOLD_THRESHOLD ? fold("Show fewer") : null,
+    );
+  };
+
+  const list = el("ol", { className: "kit-steps__list", ariaLabel: "Ritual steps" }, ...items.map(item));
+
+  // A toggle redraws its item in place and keeps focus on the same control.
+  function toggle(it, set) {
+    if (set.has(it.key)) set.delete(it.key);
+    else set.add(it.key);
+    const was = list.querySelector(`[data-key="${it.key}"]`);
+    const focusRow = document.activeElement?.classList.contains("kit-steps__row");
+    const next = item(it);
+    was.replaceWith(next);
+    (focusRow ? next.querySelector(".kit-steps__row") : next.querySelector(".kit-steps__fold") ?? next.querySelector(".kit-steps__row"))?.focus();
+  }
+
   return el(
-    "ol",
-    { className: "kit-steps__beads", ariaLabel: "Beads" },
-    ...shown.map((b) => {
-      const st = BEAD_STATE[b.status] ?? "queued";
-      return el(
-        "li",
-        { dataset: { beadState: st } },
-        el("span", { className: "kit-steps__bead", textContent: b.title?.trim() || "Untitled bead" }),
-        el("span", { className: "kit-steps__state", textContent: st }),
-      );
-    }),
-    more ? el("li", { className: "kit-steps__more", textContent: `${more} more beads` }) : null,
+    "section",
+    { className: "kit-steps" },
+    el("header", { className: "kit-steps__head" }, el("h3", { className: "kit-steps__heading", textContent: heading }), el("span", { className: "kit-steps__count", textContent: count })),
+    list,
+    el("span", { className: "kit-steps__live", role: "status", ariaLive: "polite", textContent: announce }),
   );
 }
 
@@ -579,7 +721,7 @@ function runPanel(view, read, { onAction }) {
     shown(stateView("reading", { title: "Reading the run's timeline…", line: true }));
     try {
       const tl = await read();
-      box.replaceChildren(runCard(view, tl.spans, { onAction }), timeline(tl, { live: view.live && !view.paused }));
+      swap(box, el("div", { className: "kit-run-panel__body" }, runCard(view, tl.spans, { onAction }), timeline(tl, { live: view.live && !view.paused })));
     } catch (e) {
       logDev("agents_timeline", e);
       shown(stateView("unreachable", { title: "The timeline could not be read", detail: "Its event log is unreadable or the business changed. Retry reads it again.", line: true, action: { icon: "rotate-ccw", label: "Retry", onClick: load } }));

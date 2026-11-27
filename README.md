@@ -260,6 +260,11 @@ cos --home /tmp/cos-demo dash
 | [rv2-kit in the desktop app plan](docs/plans/2026-11-25-rv2-kit-desktop-plan.md) | quality gates, the testing trophy and 15 stories |
 | [rv2-kit in the desktop app code reviews](docs/plans/2026-11-25-rv2-kit-desktop-code-review.md) | two fresh-context prove-it reviews ([second](docs/plans/2026-11-25-rv2-kit-desktop-code-review-2.md)), sink to VERIFY, what they left to check by hand |
 | [rv2-kit in the desktop app evidence](docs/reports/2026-11-25-rv2-kit-desktop.html) | before and after, screenshots of every new view, how to reproduce, and what was not checked |
+| [Flows and Today in motion brief](docs/plans/2026-11-26-flows-today-motion-brief.md) | lanes, rail, bead rings and board for Flows; a living hero, hires inbox, day timeline and ticking KPIs for Today |
+| [Flows and Today in motion design](docs/plans/2026-11-26-flows-today-motion-design.md) | the motion grammar, each component's data and states, reduced motion, and acceptance |
+| [Flows and Today in motion plan](docs/plans/2026-11-26-flows-today-motion-plan.md) | gates, the testing trophy and 14 stories |
+| [Flows and Today in motion code reviews](docs/plans/2026-11-26-flows-today-motion-code-review.md) | two fresh-context prove-it reviews ([second](docs/plans/2026-11-26-flows-today-motion-code-review-2.md)) and what was left to check by hand |
+| [Flows and Today in motion evidence](docs/reports/2026-11-27-flows-today-motion.html) | before and after, every new view in light and dark, the no-writes proof, and what was not checked |
 
 ## License
 

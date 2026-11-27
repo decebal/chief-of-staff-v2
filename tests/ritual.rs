@@ -100,7 +100,7 @@ fn waiting(name: &str) -> (Dir, PathBuf, String) {
 #[test]
 fn a_waiting_flow_yields_an_approval_card_with_its_step_and_review_counts() {
     let (d, _r, sha) = waiting("card");
-    let (gates, gaps) = ritual::gates(&d.0, &store_cn(), Duration::from_secs(60));
+    let (gates, gaps) = ritual::gates(&d.0, &store_cn(), Duration::from_secs(60), None);
     assert!(gaps.is_empty(), "{gaps:?}");
     assert_eq!(gates.len(), 1);
     let g = &gates[0];
@@ -160,7 +160,7 @@ fn the_button_refuses_a_review_with_findings_then_approves_a_clean_one() {
     std::fs::write(r.join(LATEST), review(&sha, "clean", "")).unwrap();
     git(&r, &["commit", "-q", "-am", "clean review"]);
     git(&r, &["checkout", "-q", "main"]);
-    let (gates, _) = ritual::gates(&d.0, &cn, Duration::from_secs(60));
+    let (gates, _) = ritual::gates(&d.0, &cn, Duration::from_secs(60), None);
     assert!(gates[0].clean(), "the card offers a plain Approve");
 
     let (line, after) =
@@ -175,7 +175,7 @@ fn the_button_refuses_a_review_with_findings_then_approves_a_clean_one() {
             design: DESIGN.into()
         }
     );
-    let (gates, _) = ritual::gates(&d.0, &cn, Duration::from_secs(60));
+    let (gates, _) = ritual::gates(&d.0, &cn, Duration::from_secs(60), None);
     assert!(gates.is_empty(), "an approved flow leaves the gate");
 }
 
@@ -192,7 +192,7 @@ fn the_steps_carry_the_beads_under_each_flow() {
         "status": "done", "task_type": "task", "parent": "t-s100", "blocked_by": [],
         "approved": null, "archived": false, "description": "" }));
     std::fs::write(&path, tasks.to_string()).unwrap();
-    let (gates, _gaps, flows) = ritual::board(&d.0, &store_cn(), Duration::from_secs(60));
+    let (gates, _gaps, flows) = ritual::board(&d.0, &store_cn(), Duration::from_secs(60), None);
     assert_eq!(gates.len(), 1);
     let f = flows
         .iter()

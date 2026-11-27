@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flows and Today in motion: evidence</title>
+<style>
+  :root { color-scheme: light dark; --fg: #171717; --bg: #ffffff; --muted: #4d4d4d; --rule: #e6e6e6; --code: #f2f2f2; --accent: #0062d1; --ok: #1a7f37; --warn: #aa4d00; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #ededed; --bg: #0a0a0a; --muted: #a1a1a1; --rule: #2e2e2e; --code: #1a1a1a; --accent: #52a8ff; --ok: #3fb950; --warn: #ffb224; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
+  main { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .skip { position: absolute; left: -999px; } .skip:focus { left: 1rem; top: 1rem; background: var(--bg); padding: .5rem; }
+  h1 { font-size: 1.6rem; line-height: 1.25; } h2 { font-size: 1.2rem; margin-top: 2.5rem; border-top: 1px solid var(--rule); padding-top: 1.25rem; }
+  .claim { font-size: 1.15rem; border-left: 4px solid var(--accent); padding: .5rem 1rem; }
+  figure { margin: 1rem 0; } figure img { width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 8px; }
+  figcaption { font-size: .875rem; color: var(--muted); margin-top: .4rem; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; } @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
+  .label { font-weight: 600; } code, pre { font-family: ui-monospace, Menlo, monospace; font-size: .875rem; }
+  pre { background: var(--code); padding: .75rem; border-radius: 6px; overflow-x: auto; margin: .25rem 0; }
+  .cmd { position: relative; } .cmd button { position: absolute; top: .35rem; right: .35rem; font: inherit; font-size: .8rem; padding: .15rem .5rem; border: 1px solid var(--rule); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
+  .pass { color: var(--ok); font-weight: 600; } .gap { border: 1px dashed var(--warn); padding: 1rem; border-radius: 8px; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; } th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#claim">Skip to the claim</a>
+<main>
+<h1>Flows and Today in motion: Flows shows who holds each bead, and Today shows the day around now</h1>
+<p>PR <a href="https://github.com/decebal/chief-of-staff-v2/pull/61">#61</a>, branch <code>feat/desktop-flows-today-motion</code>, base <code>8f68a6a</code>. Design: <a href="../plans/2026-11-26-flows-today-motion-design.md">2026-11-26-flows-today-motion-design.md</a> (approved). Ritual epic <code>t-e89af1</code>. Components are ported from rust-v2 <code>7ff3ec5</code>.</p>
+
+<h2 id="claim">The claim: a flow reads as owners, steps and states, and Today reads as hires at work around a now line</h2>
+<p class="claim">On Flows, a flow opens as lanes, one per hire or owner, with its beads in dependency columns and the gate breathing at Approve. A side column lists the ritual's steps in rv2-kit's StepProgressList; the step waiting on you is announced. Board cards carry a bead ring, and a Beads view glides cards between columns when a rescan moves them. On Today, the hero shows a pill for each hire at work and a loader while a brief runs. The hires inbox moves cards live as their state changes, without a reload. rv2-kit's AgentScheduleBoard shows today around now, and KPI values roll to the recorded figure. Every animation is off under reduced motion, and rendering writes nothing.</p>
+
+<h2>Before and after: the same demo home, two commits</h2>
+<div class="pair">
+  <figure><img loading="lazy" src="assets/2026-11-27-flows-today-motion/flows-before.png" alt="Flows board before: flow cards in step columns with a flat progress bar, no ring, no scene."><figcaption><span class="label">Flows before, <code>8f68a6a</code>.</span> <code>docs/assets/flows.png</code> as committed at the base.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/flows.png" alt="Flows board after: a branch scene heads the board, each card has a bead ring with its done count."><figcaption><span class="label">Flows after.</span> <code>task screenshots</code> on the demo home, 2026-11-27 UTC.</figcaption></figure>
+  <figure><img loading="lazy" src="assets/2026-11-27-flows-today-motion/today-before.png" alt="Today before: a still ink hero, Waiting on you in Herdr card, Needs you cards."><figcaption><span class="label">Today before, <code>8f68a6a</code>.</span></figcaption></figure>
+  <figure><img loading="lazy" src="../assets/today.png" alt="Today after: hero with hire pills and the gradient lead phrase, then the hires inbox with Needs you, Running and Done today columns."><figcaption><span class="label">Today after.</span> <code>task screenshots</code>, demo home.</figcaption></figure>
+</div>
+
+<h2>What a person sees</h2>
+<p>All images come from <code>task screenshots</code> on the synthetic demo home (<code>/tmp/cos-demo</code>), taken in headless Chrome on 2026-11-27 UTC. They show the report through <code>cos dash</code> and the window through <code>apps/desktop/examples/preview.rs</code>. Light is on the left and dark on the right.</p>
+<div class="pair">
+  <figure><img loading="lazy" src="../assets/flow-lanes.png" alt="Lanes view: lanes for a live hire, owners and not yet claimed, beads in columns with connectors, the gate diamond."><figcaption>Lanes.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/flow-lanes-dark.png" alt="Lanes view in dark."><figcaption>Lanes, dark.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/flow-steps.png" alt="Flow view with the Steps column: Think, Spec and Plan finished, Build unfolding its beads, later steps queued."><figcaption>Steps column (rv2-kit StepProgressList).</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/flow-beads.png" alt="Beads view: Ready, In progress, Blocked and Done columns of bead cards."><figcaption>Beads.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/today-schedule.png" alt="Schedule board: activity trace, axis with done, running and needs-you markers around an orange now line, rows with outcomes, a detail panel."><figcaption>Today's schedule board (rv2-kit AgentScheduleBoard). Two hires close together stack into rows.</figcaption></figure>
+  <figure><img loading="lazy" src="../assets/today-schedule-dark.png" alt="Schedule board in dark."><figcaption>Schedule board, dark.</figcaption></figure>
+</div>
+<div class="gap">No image shows motion. The reveal, the gradient sweep, the shimmer, the breathe and the glide only show in a live page. Their reduced-motion settle is proven by e2e tests (<code>document.getAnimations()</code> is empty), not by images.</div>
+
+<h2>Prove it yourself</h2>
+<ol>
+<li>Build the demo home.
+<div class="cmd"><pre>task demo</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> <code>demo home ready: /tmp/cos-demo</code>.</li>
+<li>Serve the report and Flows.
+<div class="cmd"><pre>COS_CN=/tmp/cos-demo/bin/cn target/debug/cos --home /tmp/cos-demo --projects /tmp/cos-demo/projects --no-open dash --port 8794</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> <code>http://127.0.0.1:8794/flows</code> shows the scene and rings. The Rate limits flow shows Lanes, and Steps reads "Spec: Needs you" to a screen reader.</li>
+<li>Run the e2e suites.
+<div class="cmd"><pre>task test-e2e</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> <code>flows_page</code> 17 passed, <code>kit_page</code> 21 passed.</li>
+<li>Prove rendering writes nothing.
+<div class="cmd"><pre>cargo test --test read_only_render</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> 2 passed.</li>
+<li>Run every gate.
+<div class="cmd"><pre>task test</pre><button type="button" data-copy>Copy</button></div>
+<span class="pass">Pass:</span> exit 0, with no <code>FAILED</code> line.</li>
+</ol>
+
+<h2>The render path no longer writes or signals</h2>
+<p><code>report::data</code> used to call <code>agents::list</code> on every render. That call reconciles: it writes <code>state.json</code>, can kill a legacy process group, and ends runs. This PR replaces it with <code>agents::snapshot</code>, a pure read. <code>tests/read_only_render.rs</code> walks every file's path, length and mtime under the demo home, before and after rendering Today, scanning Flows and taking the snapshot. It asserts the two listings are equal. Before the fix it failed: the report wrote <code>state.json</code>, events, the ledger and lock files.</p>
+
+<h2>Traps that look like this change and are not</h2>
+<table>
+<tr><th>Symptom</th><th>Cause</th><th>Tell</th></tr>
+<tr><td>Flows says no design is waiting</td><td>The server was started without <code>COS_CN</code></td><td>The board is empty too</td></tr>
+<tr><td>The window's report or Flows frame stays blank in the preview</td><td>An old <code>preview.rs</code> used a relative base, which <code>safeFrameSrc</code> refuses (fixed here)</td><td>The console shows "frame refused"</td></tr>
+<tr><td>The hires inbox reads "as last read"</td><td>No <code>cos-hires</code> message arrived within 10 s: the page is outside the window, or the follower is not running</td><td>It is served by <code>cos dash</code></td></tr>
+<tr><td>Nothing animates</td><td>Reduced motion is on in the OS</td><td>Everything is in its settled state</td></tr>
+</table>
+
+<h2>What this proves that the tests cannot</h2>
+<p>The tests prove structure, states, keyboard behaviour, reduced motion and the absence of writes. The images show the ported components look like the rv2-kit gallery's, on real demo data, in both themes. The owner rejected the first, hand-drawn rail, and Steps and the schedule board were rebuilt from the gallery. Side-by-side shots of each against the gallery are kept in the build's scratchpad.</p>
+
+<h2>What I have NOT checked</h2>
+<ul>
+<li>The installed Tauri app, opened and used. The window was seen only through <code>preview.rs</code> in a browser.</li>
+<li>The two prove-it hand-checks, listed in the PR body under "Verify by hand":
+  <ul>
+    <li>a live <code>cos dash</code> session in light, dark and reduced motion, including a minute spent on another tab;</li>
+    <li>a desktop inbox card moving when a stand-in Herdr word changes.</li>
+  </ul>
+</li>
+<li>Motion by eye under reduced motion. The browser tool cannot emulate it; e2e covers it.</li>
+<li>More than three schedule markers within one 1.5rem target. They overlap again; no current data does this.</li>
+<li>Lanes past 12 columns. Only an 8-column, 32-bead flow was looked at.</li>
+<li>The 1,884 colour-contrast nodes axe could not decide. Nobody checked them by eye.</li>
+</ul>
+</main>
+<script>
+  for (const b of document.querySelectorAll("[data-copy]")) {
+    b.addEventListener("click", async () => {
+      const text = b.previousElementSibling.textContent;
+      try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; }
+      catch { const r = document.createRange(); r.selectNodeContents(b.previousElementSibling); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = "Selected"; }
+    });
+  }
+</script>
+</body>
+</html>

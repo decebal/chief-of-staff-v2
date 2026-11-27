@@ -6,6 +6,7 @@
 <title>cos flows</title>
 <style>
 /*__COS_TOKENS__*/
+/*__COS_KIT__*/
 html,body{height:100%}
 [hidden]{display:none !important}
 body{margin:0;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:var(--text-sm);line-height:var(--text-sm--line-height);overflow:hidden}
@@ -81,6 +82,31 @@ header.top{display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0.75rem;bo
 .fcard.needs-you{border-color:var(--brand-amber)}
 .fcard>button.open{display:block;width:100%;border:0;background:none;text-align:left;cursor:pointer;padding:0.625rem 2rem 0.625rem 0.75rem;border-radius:var(--radius-lg)}
 .fcard>button.open:hover{background:var(--accent)}
+.scene{max-width:27.5rem;margin:0 0 0.75rem}
+.scene svg{display:block;width:100%;height:auto;overflow:visible}
+.scene__link{fill:none;stroke:var(--chart-axis);stroke-width:1.5}
+.scene__node rect{fill:var(--card);stroke:var(--border);stroke-width:1.5}
+.scene__epic rect{stroke:var(--primary);stroke-width:2}
+.scene__bead[data-state=done] rect{fill:var(--muted)}
+.scene__bead[data-state=active] rect{stroke:var(--primary)}
+.scene__bead[data-state=ready] rect{stroke:var(--success)}
+.scene__bead[data-state=blocked] rect,.scene__ghost rect{stroke-dasharray:4 3}
+.scene__bead[data-state=blocked] rect{stroke:var(--warning)}
+.scene__chip rect{fill:var(--secondary);stroke:var(--brand-amber)}
+.scene text{fill:var(--foreground);font-family:var(--font-sans);font-size:var(--text-xs)}
+.scene__ghost text{fill:var(--muted-foreground)}
+@media (max-width:32rem){.scene text{display:none}}
+.fhead{display:flex;gap:0.5rem;align-items:flex-start}
+.ftext{flex:1;min-width:0}
+.ring{position:relative;flex:none;width:2.5rem;height:2.5rem;display:grid;place-items:center}
+.ring svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.ring__track{fill:none;stroke:var(--muted);stroke-width:2.5}
+.ring__arc{fill:none;stroke-width:2.5;stroke-linecap:butt}
+.ring__arc[data-state=done]{stroke:var(--success)}
+.ring__arc[data-state=active]{stroke:var(--primary)}
+.ring__arc[data-state=ready]{stroke:var(--muted-foreground)}
+.ring__arc[data-state=blocked]{stroke:var(--warning)}
+.ring__n{font-family:var(--font-mono);font-size:var(--text-xs);font-weight:var(--font-weight-semibold);font-variant-numeric:tabular-nums}
 .fcard .repo{font-size:var(--text-xs);color:var(--muted-foreground)}
 .fcard .title{font-weight:var(--font-weight-medium);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .fcard .id{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted-foreground)}
@@ -93,12 +119,58 @@ header.top{display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0.75rem;bo
 .pin[aria-pressed=true]{color:var(--brand-amber)}
 .empty{color:var(--muted-foreground);padding:1rem}
 /* flow view */
-.flowview{display:flex;flex-direction:column}
-ol.rail{display:flex;gap:0.25rem;list-style:none;margin:0;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border);overflow-x:auto}
-ol.rail li{font-size:var(--text-xs);padding:0.125rem 0.5rem;border-radius:var(--radius-full);border:1px solid var(--border);color:var(--muted-foreground);white-space:nowrap}
-ol.rail li.past{color:var(--foreground)}
-ol.rail li[aria-current]{background:var(--primary);border-color:var(--primary);color:var(--primary-foreground);font-weight:var(--font-weight-semibold)}
-ol.rail li button{border:0;background:none;padding:0;cursor:pointer;text-decoration:underline;color:inherit}
+.flowview{display:grid;grid-template-columns:minmax(16rem,22rem) minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+.flowsteps{min-height:0;overflow-y:auto;padding:0.75rem;border-right:1px solid var(--border)}
+.flowmain{display:flex;flex-direction:column;min-width:0;min-height:0}
+@media (max-width:64rem){.flowview{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}.flowsteps{max-height:40vh;border-right:0;border-bottom:1px solid var(--border)}}
+.flowtabs{display:flex;gap:0.25rem;padding:0.375rem 0.75rem;border-bottom:1px solid var(--border)}
+.flowtabs button{border:1px solid var(--border);background:none;border-radius:var(--radius-md);padding:0.125rem 0.625rem;min-height:1.5rem;cursor:pointer}
+.flowtabs button[aria-selected=true]{background:var(--primary);border-color:var(--primary);color:var(--primary-foreground)}
+.beadsview{flex:1;min-height:0;overflow:auto;padding:0.75rem}
+.bcols{display:grid;grid-template-columns:repeat(4,minmax(12rem,1fr));gap:0.75rem;align-items:start}
+.bcol>h4{margin:0;display:flex;gap:0.5rem;align-items:center;font-size:var(--text-xs);font-weight:var(--font-weight-semibold);text-transform:uppercase;letter-spacing:var(--tracking-wide);color:var(--muted-foreground)}
+.bcol ul{list-style:none;margin:0.5rem 0 0;padding:0;display:flex;flex-direction:column;gap:0.5rem}
+.bkcard{display:flex;flex-direction:column;gap:0.25rem;width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);color:var(--card-foreground);padding:0.5rem 0.625rem;text-align:left;cursor:pointer;box-shadow:var(--shadow-sm)}
+.bkcard:hover{background:var(--accent)}
+.bkcard .h{display:flex;gap:0.375rem;align-items:center;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted-foreground)}
+.bkcard .t{font-weight:var(--font-weight-medium)}
+.bkcard .f{display:flex;flex-wrap:wrap;gap:0.25rem}
+.bkcard.done{background:var(--muted);color:var(--muted-foreground)}
+.bkcard.active{border-color:var(--primary)}
+.bkcard.ready{border-color:var(--success)}
+.bkcard.blocked{border-style:dashed;border-color:var(--brand-amber)}
+@media (max-width:48rem){.bcols{grid-template-columns:1fr}}
+.lanesview{flex:1;min-height:0;overflow:auto;padding:0.75rem}
+.lanes__body{position:relative;min-width:max-content}
+.lanes__links{position:absolute;top:0;left:10rem;overflow:visible;pointer-events:none}
+.lanes__edge{fill:none;stroke:var(--chart-axis);stroke-width:1.5;vector-effect:non-scaling-stroke}
+.lanes__edge.open{stroke:var(--warning);stroke-dasharray:6 4}
+.lanes__gate{fill:none;stroke:var(--warning);stroke-width:0.03}
+.ln{display:grid;grid-template-columns:10rem auto;border-bottom:1px solid var(--border)}
+.ln__name{position:sticky;left:0;z-index:1;background:var(--background);margin:0;padding:0.5rem 0.5rem 0.5rem 0;display:flex;flex-direction:column;min-width:0;font-size:var(--text-sm);font-weight:var(--font-weight-semibold)}
+.ln__name span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ln__sub{font-size:var(--text-xs);font-weight:var(--font-weight-normal);color:var(--muted-foreground)}
+.ln__beads{position:relative;list-style:none;margin:0;padding:0}
+.ln__beads>li,.gate{position:absolute;width:10rem;height:3.5rem}
+.lbox{display:flex;flex-direction:column;gap:0.125rem;width:100%;height:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--card);color:var(--card-foreground);padding:0.375rem 0.5rem;text-align:left;cursor:pointer;overflow:hidden}
+.lbox .h{display:flex;gap:0.375rem;align-items:center;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted-foreground)}
+.lbox .t{font-size:var(--text-xs);font-weight:var(--font-weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lbox.done{background:var(--muted);color:var(--muted-foreground)}
+.lbox.active{border-color:var(--primary)}
+.lbox.ready{border:2px solid var(--success)}
+.lbox.blocked{border-style:dashed;border-color:var(--brand-amber)}
+.lbox__tick{flex:none;width:0.75rem;height:0.75rem}
+.lbox__tick path{fill:none;stroke:var(--success);stroke-width:2}
+.gate{display:flex;align-items:center;gap:0.75rem;width:auto}
+.gate__diamond{flex:none;box-sizing:border-box;width:1rem;height:1rem;margin-left:0.25rem;transform:rotate(45deg);border:2px solid var(--warning);border-radius:0;background:var(--card)}
+@media (max-width:40rem){
+.ln{grid-template-columns:1fr}
+.ln__beads{display:flex;flex-direction:column;gap:0.5rem;padding-bottom:0.5rem;height:auto !important;width:auto !important}
+.ln__beads>li,.gate{position:static}
+.ln__beads>li{width:auto}
+.lanes__links{display:none}
+.lanes__body{min-width:0}
+}
 .canvas{flex:1;position:relative;overflow:hidden;background:var(--background);cursor:grab;touch-action:none;outline:0}
 .canvas.panning{cursor:grabbing}
 .world{position:absolute;left:0;top:0;transform-origin:0 0}
@@ -125,7 +197,7 @@ ol.rail li button{border:0;background:none;padding:0;cursor:pointer;text-decorat
 .bcard.ghost{border-style:dotted;background:none;box-shadow:none;cursor:default}
 .bcard.sel{outline:2px solid var(--ring);outline-offset:2px}
 .bcard.crit{box-shadow:0 0 0 2px var(--destructive)}
-@media (prefers-reduced-motion:no-preference){.bcard.active{animation:breathe 2s ease-in-out infinite}}
+@media (prefers-reduced-motion: no-preference){.bcard.active{animation:breathe 2s ease-in-out infinite}}
 @keyframes breathe{50%{box-shadow:0 0 0 2px var(--ring)}}
 .startnode{position:absolute;box-sizing:border-box;border-radius:var(--radius-full);border:2px solid var(--primary);background:var(--card);display:flex;align-items:center;justify-content:center;flex-direction:column;cursor:pointer;font-family:var(--font-mono);font-size:var(--text-xs);text-align:center}
 .ctrls{position:absolute;right:0.75rem;bottom:0.75rem;display:flex;gap:0.25rem;align-items:flex-end}
@@ -226,7 +298,15 @@ dialog::backdrop{background:var(--overlay)}
     <div class="needs" id="needs" hidden></div>
     <div class="view board" id="board" role="region" aria-label="Board"></div>
     <div class="view flowview" id="flow" hidden>
-      <ol class="rail" id="steprail" aria-label="Ritual steps"></ol>
+      <aside class="flowsteps" id="flowsteps" aria-label="Ritual steps"></aside>
+      <div class="flowmain">
+      <div class="flowtabs" role="tablist" aria-label="Flow view">
+        <button type="button" role="tab" data-fv="graph" aria-selected="true">Graph</button>
+        <button type="button" role="tab" data-fv="beads" aria-selected="false">Beads</button>
+        <button type="button" role="tab" data-fv="lanes" aria-selected="false">Lanes</button>
+      </div>
+      <div class="lanesview" id="lanesview" hidden></div>
+      <div class="beadsview" id="beadsview" hidden><div class="bcols" id="beadcols" role="region" aria-label="Beads by state"></div></div>
       <div class="canvas" id="canvas" tabindex="-1" aria-label="Bead graph">
         <div class="world" id="world"><svg class="edges" id="edges" aria-hidden="true"></svg><div id="cards"></div></div>
         <div class="ctrls">
@@ -236,6 +316,7 @@ dialog::backdrop{background:var(--overlay)}
           <button class="iconbtn" type="button" data-act="fit" aria-label="Fit the graph">Fit</button>
           <svg class="mini" id="mini" aria-label="Minimap"></svg>
         </div>
+      </div>
       </div>
     </div>
     <div class="view mapview" id="map" hidden>
@@ -287,7 +368,96 @@ const DATA = /*__COS_FLOWS__*/;
   const put = (e, ...kids) => { for (const c of kids.flat()) if (c != null && c !== false) e.append(c); return e; };
   const clear = (e) => { while (e.firstChild) e.firstChild.remove(); return e; };
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const REDUCED = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---- motion: every scripted animation asks motionOk() first. The window,
+  // the report and the Flows page each carry this block; tests/design.rs keeps
+  // the copies identical.
+
+  const motionOk = () => !matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // FLIP: children marked data-glide="<key>" move from where they were before
+  // render() to where they are after it.
+  function glide(container, render) {
+    const keyed = () => new Map([...container.querySelectorAll("[data-glide]")].map((n) => [n.dataset.glide, n]));
+    const before = new Map([...keyed()].map(([k, n]) => [k, n.getBoundingClientRect()]));
+    render();
+    if (!motionOk()) return;
+    const root = getComputedStyle(document.documentElement);
+    const duration = parseFloat(root.getPropertyValue("--motion-slow")) || 0;
+    const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+    for (const [k, n] of keyed()) {
+      const was = before.get(k);
+      if (!was) continue;
+      const now = n.getBoundingClientRect();
+      const dx = was.left - now.left;
+      const dy = was.top - now.top;
+      if (dx || dy) n.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration, easing });
+    }
+  }
+
+  // Crossfade: `next` (an element) replaces the container's children, which
+  // fade out with a small blur in an inert layer while the height glides.
+  function swap(container, next) {
+    const old = [...container.childNodes];
+    if (!motionOk() || !old.length) {
+      container.replaceChildren(next);
+      return;
+    }
+    const root = getComputedStyle(document.documentElement);
+    const duration = parseFloat(root.getPropertyValue("--motion-slow")) || 0;
+    const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+    const from = container.offsetHeight;
+    const out = document.createElement("div");
+    out.inert = true;
+    out.setAttribute("aria-hidden", "true");
+    Object.assign(out.style, { position: "absolute", inset: "0", pointerEvents: "none" });
+    out.append(...old);
+    if (getComputedStyle(container).position === "static") container.style.position = "relative";
+    container.replaceChildren(next, out);
+    const to = container.offsetHeight;
+    const fade = out.animate([{ opacity: 1, filter: "blur(0)" }, { opacity: 0, filter: "blur(0.25rem)" }], { duration, easing });
+    fade.finished.then(() => out.remove(), () => out.remove());
+    next.animate([{ opacity: 0, filter: "blur(0.25rem)" }, { opacity: 1, filter: "blur(0)" }], { duration, easing });
+    if (from !== to) container.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration, easing });
+  }
+
+  // The same crossfade between two panes that stay in the page (a view shown
+  // and hidden, never rebuilt): `to` shows at once and fades in, `from` fades
+  // out over it, inert, where it stood, then hides. A pane brought back
+  // mid-fade is settled first, so it is live again at once.
+  function swapPane(from, to) {
+    for (const p of [from, to]) p?.leave?.();
+    to.hidden = false;
+    if (!from || from === to || from.hidden) return;
+    if (!motionOk()) {
+      from.hidden = true;
+      return;
+    }
+    const root = getComputedStyle(document.documentElement);
+    const duration = parseFloat(root.getPropertyValue("--motion-slow")) || 0;
+    const easing = root.getPropertyValue("--ease-spring").trim() || "ease";
+    const box = from.offsetParent ?? document.body;
+    const at = from.getBoundingClientRect();
+    const base = box.getBoundingClientRect();
+    from.inert = true;
+    from.setAttribute("aria-hidden", "true");
+    Object.assign(from.style, { position: "absolute", left: `${at.left - base.left + box.scrollLeft}px`, top: `${at.top - base.top + box.scrollTop}px`, width: `${at.width}px`, pointerEvents: "none" });
+    const fade = from.animate([{ opacity: 1, filter: "blur(0)" }, { opacity: 0, filter: "blur(0.25rem)" }], { duration, easing });
+    to.animate([{ opacity: 0, filter: "blur(0.25rem)" }, { opacity: 1, filter: "blur(0)" }], { duration, easing });
+    let done = false;
+    from.leave = () => {
+      if (done) return;
+      done = true;
+      fade.cancel();
+      from.hidden = true;
+      from.inert = false;
+      from.removeAttribute("aria-hidden");
+      Object.assign(from.style, { position: "", left: "", top: "", width: "", pointerEvents: "" });
+      from.leave = null;
+    };
+    fade.finished.then(from.leave, from.leave);
+  }
+
 
   // ---- data
   const STEPS = ["think", "spec", "plan", "build", "review", "ship", "reflect", "drift", "done"];
@@ -334,7 +504,8 @@ const DATA = /*__COS_FLOWS__*/;
 
   // ---- view state, kept in the hash
   const FACETS = ["repo", "step", "state", "owner"];
-  const S = { view: "board", flow: null, bead: null, q: "", preset: "all", facets: { repo: new Set(), step: new Set(), state: new Set(), owner: new Set() }, showDone: false, crit: false };
+  const FLOW_VIEWS = ["graph", "beads", "lanes"];
+  const S = { view: "board", flow: null, bead: null, q: "", preset: "all", facets: { repo: new Set(), step: new Set(), state: new Set(), owner: new Set() }, showDone: false, crit: false, fv: "graph" };
   const readHash = () => {
     const p = new URLSearchParams(location.hash.slice(1));
     S.view = ["board", "flow", "map"].includes(p.get("v")) ? p.get("v") : "board";
@@ -345,6 +516,7 @@ const DATA = /*__COS_FLOWS__*/;
     S.preset = ["all", "needs", "active", "ready", "blocked", "done"].includes(p.get("p")) ? p.get("p") : "all";
     for (const k of FACETS) S.facets[k] = new Set((p.get(k) || "").split(",").filter(Boolean));
     S.showDone = p.get("done") === "1";
+    S.fv = FLOW_VIEWS.includes(p.get("fv")) ? p.get("fv") : "graph";
   };
   const hashOf = () => {
     const p = new URLSearchParams();
@@ -355,6 +527,7 @@ const DATA = /*__COS_FLOWS__*/;
     if (S.preset !== "all") p.set("p", S.preset);
     for (const k of FACETS) if (S.facets[k].size) p.set(k, [...S.facets[k]].join(","));
     if (S.showDone) p.set("done", "1");
+    if (S.view === "flow" && S.fv !== "graph") p.set("fv", S.fv);
     return p.toString();
   };
   // A sandboxed frame's origin is opaque, where history.replaceState refuses any URL: the
@@ -496,22 +669,69 @@ const DATA = /*__COS_FLOWS__*/;
   };
 
   // ---- board
+  // The ring: one arc per bead, clockwise from twelve o'clock with a small gap
+  // between arcs, on a 24-unit box.
+  const arc = (a0, a1) => {
+    const pt = (deg) => { const r = (deg - 90) * Math.PI / 180; return `${(12 + 9 * Math.cos(r)).toFixed(3)} ${(12 + 9 * Math.sin(r)).toFixed(3)}`; };
+    return `M${pt(a0)} A9 9 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${pt(a1)}`;
+  };
+  const tally = (f) => { const t = { done: 0, active: 0, ready: 0, blocked: 0 }; for (const b of f.beads) t[beadState(b)]++; return t; };
+  const ringWords = (f) => {
+    const t = tally(f);
+    return [`${t.done} of ${f.beads.length} beads done`, t.active && `${t.active} in progress`, t.ready && `${t.ready} ready`, t.blocked && `${t.blocked} blocked`].filter(Boolean).join(", ");
+  };
+  const ring = (f) => {
+    const svg = s("svg", { viewBox: "0 0 24 24" }), slice = 360 / f.beads.length;
+    s("circle", { class: "ring__track", cx: "12", cy: "12", r: "9" }, svg);
+    f.beads.forEach((b, i) => {
+      const a0 = i * slice + 1.5;
+      s("path", { class: "ring__arc kit-is-connecting", "data-state": beadState(b), d: arc(a0, Math.max(a0 + 0.1, (i + 1) * slice - 1.5)), pathLength: "1", style: `--i:${i}` }, svg);
+    });
+    return h("span", { class: "ring", "aria-hidden": "true" }, svg, h("span", { class: "ring__n", text: String(tally(f).done) }));
+  };
   const flowCard = (f) => {
     const total = f.beads.length, done = f.counts.done, ready = f.beads.filter((b) => b.ready).length;
     const bits = [ready && `${ready} ready`, f.counts.blocked && `${f.counts.blocked} blocked`, f.counts.in_progress && `${f.counts.in_progress} active`].filter(Boolean);
     const owners = [...f.owners].slice(0, 3);
     const card = h("div", { class: `fcard${f.needs_you ? " needs-you" : ""}`, "data-key": f.key },
-      h("button", { type: "button", class: "open", "data-open": f.key },
-        h("div", { class: "repo", text: f.repo }),
-        h("div", { class: "title", text: f.title }),
-        h("div", { class: "id", text: f.id }),
-        total ? h("div", { class: "bar", role: "img", "aria-label": `${done} of ${total} beads done` }, h("i", { style: `width:${Math.round(100 * done / total)}%` })) : null,
+      h("button", { type: "button", class: "open", "data-open": f.key, "aria-label": total ? `${f.title}, ${f.repo}: ${ringWords(f)}` : null },
+        h("div", { class: "fhead" }, h("div", { class: "ftext" },
+          h("div", { class: "repo", text: f.repo }),
+          h("div", { class: "title", text: f.title }),
+          h("div", { class: "id", text: f.id })), total ? ring(f) : null),
         h("div", { class: "meta" }, total ? h("span", { text: `${done} / ${total}` }) : h("span", { text: "no beads yet" }), bits.length ? h("span", { text: bits.join(" · ") }) : null,
           ...owners.map((o) => h("span", { class: "chip", text: `◔ ${ownerName(o)}` })),
           f.legacy ? h("span", { class: "chip", text: "legacy" }) : null,
           f.needs_you ? h("span", { class: "chip warn", text: "Needs you" }) : null)),
       h("button", { type: "button", class: "pin", "data-pin": f.key, "aria-pressed": String(pinned(f)), "aria-label": `${pinned(f) ? "Unpin" : "Pin"} ${f.title}`, text: pinned(f) ? "★" : "☆" }));
     return card;
+  };
+  // The scene: art of an epic branching into its first beads and the two
+  // roles that move it. It says nothing the page does not say in words.
+  const cut = (t, n) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+  const scene = (f) => {
+    const beads = f ? f.beads.slice(0, 3) : [];
+    const rows = [[16, 56, 96], [56], [36, 76], [16, 56, 96]][beads.length];
+    const svg = s("svg", { viewBox: "0 0 440 112" });
+    let i = 0;
+    const link = (x1, y1, x2, y2) => s("path", { class: "scene__link kit-is-connecting", d: `M${x1} ${y1} C${(x1 + x2) / 2} ${y1} ${(x1 + x2) / 2} ${y2} ${x2} ${y2}`, pathLength: "1", style: `--i:${i++}` }, svg);
+    const node = (x, y, w, label, cls, state) => {
+      const g = s("g", { class: `scene__node ${cls} kit-is-appearing`, "data-state": state, style: `--i:${i++}` }, svg);
+      s("rect", { x, y: y - 11, width: w, height: 22, rx: cls === "scene__chip" ? 11 : 6 }, g);
+      s("text", { x: x + 8, y: y + 4 }, g).textContent = label;
+    };
+    for (const y of rows) link(164, 56, 192, y);
+    link(324, rows[0], 352, 32);
+    link(324, rows[rows.length - 1], 352, 80);
+    node(4, 56, 160, f ? cut(f.title, 22) : "Epic", "scene__epic");
+    rows.forEach((y, k) => {
+      const b = beads[k];
+      if (b) node(192, y, 132, cut(b.title, 18), "scene__bead", beadState(b));
+      else node(192, y, 132, f ? "No beads yet" : "Bead", "scene__ghost");
+    });
+    node(352, 32, 84, "You approve", "scene__chip");
+    node(352, 80, 84, "Agents build", "scene__chip");
+    return h("div", { class: "scene", "aria-hidden": "true" }, svg);
   };
   const columns = (list) => {
     const has = (st) => list.some((f) => f.step === st);
@@ -529,12 +749,14 @@ const DATA = /*__COS_FLOWS__*/;
     const list = shownFlows();
     ds.flows = String(list.length);
     const box = clear($("board"));
+    const waits = DATA.tasks_approved ? ordered(list.filter((f) => f.needs_you)) : [];
+    if (waits.length) box.append(scene(waits[0]));
     box.append(h("div", { class: "boardbar" },
       h("label", {}, "Group by ", h("select", { "data-pref": "group" }, ...[["none", "nothing"], ["repo", "repo"], ["owner", "owner"]].map(([v, t]) => h("option", { value: v, selected: prefs.group === v, text: t })))),
       h("label", {}, "Sort by ", h("select", { "data-pref": "sort" }, ...[["touched", "recently touched"], ["needs", "needs you"], ["ready", "most ready"], ["title", "title"], ["id", "epic id"]].map(([v, t]) => h("option", { value: v, selected: prefs.sort === v, text: t })))),
       h("span", { text: `${list.length} of ${flows.length} flows · ${DATA.repos} repos` })));
     if (!DATA.tasks_approved) { box.append(h("p", { class: "empty", text: "Approve a tasks source in the workspace profile to see flows." })); return; }
-    if (!flows.length) { box.append(h("p", { class: "empty", text: "No flows yet. The ritual skill starts one with a Chronis epic." })); return; }
+    if (!flows.length) { box.append(scene(null), h("p", { class: "empty", text: "No flows yet. The ritual skill starts one with a Chronis epic." })); return; }
     if (!list.length) { box.append(h("p", { class: "empty" }, "No flows match. ", h("button", { type: "button", class: "link", "data-act": "clear", text: "Clear filters" }))); return; }
     const cols = columns(list);
     if (prefs.group === "none") { box.append(h("div", { class: "cols" }, ...cols.map((c) => colEl(c, list)))); return; }
@@ -576,19 +798,215 @@ const DATA = /*__COS_FLOWS__*/;
     const sx = a.x + a.w, sy = a.y + a.h / 2, ex = b.x, ey = b.y + b.h / 2, dx = Math.max(40, (ex - sx) / 2);
     return `M${sx} ${sy} C${sx + dx} ${sy} ${ex - dx} ${ey} ${ex} ${ey}`;
   };
+  // The Steps column: the markup of the window's steps() in kit.js, rv2-kit
+  // StepProgressList. A drifted flow's markers say how far it got, so its
+  // furthest step with a file is the errored one.
+  const STEP_MARK = { finished: "✓", in_progress: "◌", queued: "○", awaiting_approval: "◇", errored: "✕" };
+  const STEP_WORD = { finished: "Done", in_progress: "Running", queued: "Queued", awaiting_approval: "Needs you", errored: "design changed after approval" };
+  const FOLD_WINDOW = 5, FOLD_THRESHOLD = 6;
+  const stepsAt = (f) => {
+    if (f.step === "done") return [RAIL.length, "finished"];
+    if (f.step === "drift") return [RAIL.reduce((at, st, i) => (RAIL_FILE[st] && f.markers[RAIL_FILE[st]] ? i : at), 1), "errored"];
+    return [RAIL.indexOf(f.step), f.needs_you === "gate" ? "awaiting_approval" : "in_progress"];
+  };
+  const subState = (b) => b.status === "done" ? "finished" : b.status === "in-progress" ? "in_progress" : "queued";
+  const stepsFold = (len, focus) => {
+    if (len <= FOLD_THRESHOLD) return [0, len];
+    const start = Math.min(Math.max(0, Math.max(focus, 0) - Math.floor(FOLD_WINDOW / 2)), len - FOLD_WINDOW);
+    return [start, start + FOLD_WINDOW];
+  };
+  // Per flow: which steps are open and which show every bead, kept across redraws.
+  const stepsOpen = new Map();
+  const drawSteps = (f) => {
+    const [at, state] = stepsAt(f);
+    const items = RAIL.map((st, i) => ({ key: st, title: STEP_NAME[st], state: i < at ? "finished" : i > at ? "queued" : state, subs: st === "build" ? f.beads : [] }));
+    if (!stepsOpen.has(f.key)) stepsOpen.set(f.key, { open: new Set(items.filter((it) => it.state === "in_progress").map((it) => it.key)), all: new Set() });
+    const { open, all } = stepsOpen.get(f.key);
+    const count = `${items.filter((it) => it.state === "finished").length} of ${items.length} steps finished`;
+    const waiting = items.find((it) => it.state === "awaiting_approval");
+    const announce = waiting ? `${waiting.title}: ${STEP_WORD.awaiting_approval}` : count;
+    const uid = `steps-${f.key.replace(/[^a-z0-9]/gi, "-")}`;
+    const subList = (it, id) => {
+      const focus = it.subs.findIndex((b) => subState(b) === "in_progress"), expanded = all.has(it.key);
+      const [start, end] = expanded ? [0, it.subs.length] : stepsFold(it.subs.length, focus);
+      const fold = (text) => h("button", { class: "kit-steps__fold", type: "button", onclick: () => toggle(it, all), text });
+      return h("div", { id, class: "kit-steps__subs" },
+        start > 0 && !expanded ? fold(`${start} earlier`) : null,
+        h("ul", { class: "kit-steps__sub-list", "aria-label": "Beads" }, it.subs.slice(start, end).map((b, k) =>
+          h("li", { class: "kit-steps__sub", "data-state": subState(b), "aria-current": focus === start + k ? "step" : null },
+            h("span", { class: "kit-steps__sub-text", text: b.title?.trim() || "Untitled bead" }),
+            h("span", { class: "kit-steps__fact", text: STATE_NAME[beadState(b)] })))),
+        end < it.subs.length && !expanded ? fold(`${it.subs.length - end} later`) : null,
+        expanded && it.subs.length > FOLD_THRESHOLD ? fold("Show fewer") : null);
+    };
+    const item = (it) => {
+      const word = it.state === "finished" ? "" : STEP_WORD[it.state], name = [it.title, word].filter(Boolean).join(", ");
+      const hasSubs = it.subs.length > 0, isOpen = hasSubs && open.has(it.key), file = RAIL_FILE[it.key];
+      const rowId = `${uid}-item-${it.key}`, subsId = `${rowId}-subs`;
+      const kids = [
+        h("span", { class: "kit-steps__mark", "aria-hidden": "true", text: STEP_MARK[it.state] }),
+        h("span", { class: "kit-steps__name" }, h("span", { class: "kit-steps__title", text: it.title })),
+        h("span", { class: "kit-steps__right" },
+          word && it.state !== "in_progress" ? h("span", { class: "kit-steps__state", text: word }) : null,
+          it.state === "awaiting_approval" ? h("span", { class: "kit-steps__gate", "aria-hidden": "true", text: "gate" }) : null)];
+      const row = hasSubs
+        ? h("button", { id: rowId, class: "kit-steps__row", type: "button", "aria-label": name, "aria-expanded": String(isOpen), "aria-controls": isOpen ? subsId : null, onclick: () => toggle(it, open) }, kids)
+        : file && f.markers[file] && HOST
+          ? h("button", { id: rowId, class: "kit-steps__row", type: "button", "aria-label": `${name}, open the ${file}`, "data-file": file }, kids)
+          : h("div", { id: rowId, class: "kit-steps__row", role: "group", "aria-label": name }, kids);
+      return h("li", { class: it.state === "errored" ? "kit-steps__item kit-is-failed" : "kit-steps__item", "data-state": it.state, "data-key": it.key, "aria-current": it.state === "in_progress" ? "step" : null },
+        h("span", { class: "kit-steps__branch", "aria-hidden": "true" }), row, isOpen ? subList(it, subsId) : null);
+    };
+    const list = h("ol", { class: "kit-steps__list", "aria-label": "Ritual steps" }, items.map(item));
+    function toggle(it, set) {
+      if (set.has(it.key)) set.delete(it.key); else set.add(it.key);
+      const onRow = document.activeElement?.classList.contains("kit-steps__row"), next = item(it);
+      list.querySelector(`[data-key="${it.key}"]`).replaceWith(next);
+      (onRow ? next.querySelector(".kit-steps__row") : next.querySelector(".kit-steps__fold") || next.querySelector(".kit-steps__row"))?.focus();
+    }
+    clear($("flowsteps")).append(h("section", { class: "kit-steps" },
+      h("header", { class: "kit-steps__head" }, h("h3", { class: "kit-steps__heading", text: "Steps" }), h("span", { class: "kit-steps__count", text: count })),
+      list,
+      h("span", { class: "kit-steps__live", role: "status", "aria-live": "polite", text: announce })));
+  };
+  // The Beads view: one column per state. With `prev` (the columns before a
+  // rescan) it first lays the beads out as they were, then glides them home.
+  const LIVE = new Set(["working", "needs-you", "paused"]);
+  const PHASE_WORD = { working: "working", "needs-you": "needs you", paused: "paused" };
+  const hireOf = (f, b) => (f.hires || []).find((x) => x.source === `bead:${f.repo}/${b.id}` && LIVE.has(x.phase));
+  const BEAD_COLS = [["ready", "Ready"], ["active", "In progress"], ["blocked", "Blocked"], ["done", "Done"]];
+  const beadCard = (f, b, st) => {
+    const hire = hireOf(f, b), who = hire ? `${hire.title}, ${PHASE_WORD[hire.phase]}` : b.owner ? ownerName(b.owner) : "";
+    return h("button", { type: "button", class: `bkcard ${st}`, "data-glide": b.id, "data-bead": b.id, "aria-label": `${b.id} ${b.title}, ${STATE_NAME[st]}${who ? `, ${who}` : ""}` },
+      h("span", { class: "h" }, h("span", { "aria-hidden": "true", text: STATE_MARK[st] }), h("span", { text: b.id })),
+      h("span", { class: "t", text: b.title }),
+      who ? h("span", { class: "f" }, h("span", { class: "chip", text: `${hire ? "◉" : "◔"} ${who}` })) : null);
+  };
+  const drawBeads = (f, prev) => {
+    const box = $("beadcols");
+    const lay = (stOf) => clear(box).append(...BEAD_COLS.map(([k, label]) => {
+      const items = f.beads.filter((b) => stOf(b) === k);
+      return h("section", { class: "bcol", "data-col": k, "aria-label": `${label}, ${items.length}` },
+        h("h4", {}, h("span", { text: label }), h("span", { class: "n", text: String(items.length) })),
+        h("ul", {}, ...items.map((b) => h("li", {}, beadCard(f, b, stOf(b))))));
+    }));
+    ds.moved = prev ? f.beads.filter((b) => prev.has(b.id) && prev.get(b.id) !== beadState(b)).map((b) => b.id).join(",") : "";
+    if (!prev) return lay(beadState);
+    lay((b) => prev.get(b.id) || beadState(b));
+    glide(box, () => lay(beadState));
+  };
+  // Lanes: who has each bead (its live hire, else its owner, else nobody)
+  // across its blocker-chain column. Boxes and the connector layer share one
+  // grid of LANE_COL by LANE_ROW rem cells; the layer's viewBox counts cells.
+  const LANE_COL = 12, LANE_ROW = 4.5, BOX_W = 10, BOX_TOP = 0.5, BOX_H = LANE_ROW - 2 * BOX_TOP;
+  const laneModel = (f) => {
+    const lanes = [], at = new Map(), none = { key: "none", name: "Not yet claimed", items: [] };
+    const lane = (key, name, sub) => { if (!at.has(key)) { const l = { key, name, sub, items: [] }; at.set(key, l); lanes.push(l); } return at.get(key); };
+    for (const x of f.hires || []) if (LIVE.has(x.phase) && f.beads.some((b) => x.source === `bead:${f.repo}/${b.id}`)) lane(`hire:${x.id}`, x.title, [x.role, PHASE_WORD[x.phase]].filter(Boolean).join(" · "));
+    for (const b of f.beads) {
+      const hire = hireOf(f, b);
+      const l = hire ? at.get(`hire:${hire.id}`) : b.owner ? lane(`owner:${b.owner}`, ownerName(b.owner)) : none;
+      l.items.push({ b, c: b.layer });
+    }
+    if (none.items.length) lanes.push(none);
+    for (const l of lanes) {
+      const used = new Map();
+      for (const it of l.items) { it.row = used.get(it.c) || 0; used.set(it.c, it.row + 1); }
+      l.items.sort((p, q) => p.c - q.c || p.row - q.row);
+      l.rows = Math.max(1, ...used.values());
+    }
+    const gate = f.needs_you === "gate", off = gate ? 1 : 0;
+    const cols = Math.max(1, off + Math.max(0, ...f.beads.map((b) => b.layer + 1)));
+    const rows = (gate ? 1 : 0) + lanes.reduce((n, l) => n + l.rows, 0);
+    return { lanes, gate, off, cols, rows: Math.max(1, rows) };
+  };
+  const tick = () => {
+    const v = s("svg", { class: "lbox__tick", viewBox: "0 0 12 12", "aria-hidden": "true" });
+    s("path", { class: "kit-is-done", d: "M2 6.5 L5 9 L10 3", pathLength: "1" }, v);
+    return v;
+  };
+  const laneBox = (f, b) => {
+    const st = beadState(b), waits = b.open_blockers;
+    const cls = st === "done" ? "lbox done kit-is-appearing" : st === "active" ? "lbox active kit-is-running" : `lbox ${st}`;
+    return h("button", { type: "button", class: cls, "data-bead": b.id, tabindex: "-1", "aria-label": `${b.id} ${b.title}, ${STATE_NAME[st]}${waits.length ? `, waits on ${waits.join(", ")}` : ""}` },
+      h("span", { class: "h" }, st === "done" ? tick() : h("span", { "aria-hidden": "true", text: STATE_MARK[st] }), h("span", { text: b.id })),
+      h("span", { class: "t", text: b.title }));
+  };
+  const drawLanes = (f) => {
+    const { lanes, gate, off, cols, rows } = laneModel(f);
+    const width = `width:${cols * LANE_COL}rem`, mid = (BOX_TOP + BOX_H / 2) / LANE_ROW, bw = BOX_W / LANE_COL;
+    const svg = s("svg", { class: "lanes__links", "aria-hidden": "true", viewBox: `0 0 ${cols} ${rows}`, preserveAspectRatio: "none", style: `${width};height:${rows * LANE_ROW}rem` });
+    const body = h("div", { class: "lanes__body", role: "group", "aria-label": `Lanes of ${f.title}` }, svg);
+    const pos = new Map();
+    let r0 = 0;
+    if (gate) {
+      body.append(h("section", { class: "ln", "data-gate": "1", "aria-label": "Approval" },
+        h("h4", { class: "ln__name" }, h("span", { text: "You" }), h("span", { class: "ln__sub", text: "approve the design" })),
+        h("div", { class: "ln__beads", style: `${width};height:${LANE_ROW}rem` },
+          h("div", { class: "gate", style: `left:0rem;top:${BOX_TOP}rem` }, h("span", { class: "gate__diamond kit-is-waiting", "aria-hidden": "true" }),
+            HOST ? h("button", { type: "button", class: "act", onclick: () => post({ type: "cos-flows-gate", repo: f.repo, epic: f.id }), text: "Review and approve" }) : h("span", { class: "muted small", text: "Waits for your approval" })))));
+      r0 = 1;
+    }
+    for (const l of lanes) {
+      for (const it of l.items) pos.set(it.b.id, { c: it.c + off, r: r0 + it.row });
+      body.append(h("section", { class: "ln", "data-lane": l.key, "aria-label": l.name },
+        h("h4", { class: "ln__name" }, h("span", { text: l.name }), l.sub ? h("span", { class: "ln__sub", text: l.sub }) : null),
+        h("ol", { class: "ln__beads", style: `${width};height:${l.rows * LANE_ROW}rem` },
+          ...l.items.map((it) => h("li", { "data-col": String(it.c), style: `left:${(it.c + off) * LANE_COL}rem;top:${it.row * LANE_ROW + BOX_TOP}rem` }, laneBox(f, it.b))))));
+      r0 += l.rows;
+    }
+    const curve = (x1, y1, x2, y2) => { const dx = Math.max(0.15, (x2 - x1) / 2); return `M${x1} ${y1} C${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2} ${y2}`; };
+    if (gate) for (const b of f.beads.filter((x) => x.layer === 0)) {
+      const z = pos.get(b.id);
+      s("path", { class: "lanes__gate kit-is-travelling", d: curve(bw, mid, z.c, z.r + mid), pathLength: "1" }, svg);
+    }
+    for (const b of f.beads) for (const x of b.blocked_by) {
+      const a = pos.get(x), z = pos.get(b.id); if (!a || !z) continue;
+      const open = f.beads.find((y) => y.id === x).status !== "done";
+      s("path", { class: `lanes__edge${open ? " open" : ""}`, d: curve(a.c + bw, a.r + mid, z.c, z.r + mid) }, svg);
+    }
+    clear($("lanesview")).append(body);
+    const first = body.querySelector(".lbox");
+    if (first) first.tabIndex = 0;
+  };
+  // Arrow keys move by lane and column, Home and End to a lane's ends; the
+  // focused box is the one tab stop.
+  const laneMove = (cur, key) => {
+    const lanes = [...$("lanesview").querySelectorAll("[data-lane]")].map((l) => [...l.querySelectorAll(".lbox")]).filter((l) => l.length);
+    const li = lanes.findIndex((l) => l.includes(cur)); if (li < 0) return null;
+    const row = lanes[li], i = row.indexOf(cur), col = (e) => +e.parentElement.dataset.col;
+    if (key === "ArrowRight") return row[i + 1] || null;
+    if (key === "ArrowLeft") return row[i - 1] || null;
+    if (key === "Home") return row[0];
+    if (key === "End") return row[row.length - 1];
+    const next = lanes[key === "ArrowDown" ? li + 1 : li - 1];
+    if (!next) return null;
+    return next.reduce((best, e) => (Math.abs(col(e) - col(cur)) < Math.abs(col(best) - col(cur)) ? e : best), next[0]);
+  };
+  $("lanesview").addEventListener("keydown", (e) => {
+    const cur = e.target.closest?.(".lbox");
+    if (!cur || !["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+    const to = laneMove(cur, e.key);
+    e.preventDefault();
+    if (to) to.focus();
+  });
+  $("lanesview").addEventListener("focusin", (e) => {
+    const cur = e.target.closest?.(".lbox"); if (!cur) return;
+    for (const b of $("lanesview").querySelectorAll(".lbox")) b.tabIndex = b === cur ? 0 : -1;
+  });
   const drawFlow = () => {
     const f = byKey.get(S.flow); if (!f) return;
     layout = layoutFlow(f);
     const { pos, start, ext } = layout;
     const crit = S.crit ? critical(f) : new Set();
-    const rail = clear($("steprail")), at = RAIL.indexOf(f.step === "done" ? "reflect" : f.step);
-    for (const [i, st] of RAIL.entries()) {
-      const key = RAIL_FILE[st], has = key && f.markers[key];
-      const li = h("li", { class: i < at ? "past" : "" }, has && HOST ? h("button", { type: "button", "data-file": key, text: STEP_NAME[st] }) : STEP_NAME[st]);
-      if (i === at) li.setAttribute("aria-current", "step");
-      rail.append(li);
-    }
-    if (f.step === "drift") rail.append(h("li", { "aria-current": "step", text: "Drift" }));
+    drawSteps(f);
+    ds.flowView = S.fv;
+    for (const t of document.querySelectorAll(".flowtabs [data-fv]")) t.setAttribute("aria-selected", String(t.dataset.fv === S.fv));
+    $("canvas").hidden = S.fv !== "graph";
+    $("beadsview").hidden = S.fv !== "beads";
+    $("lanesview").hidden = S.fv !== "lanes";
+    if (S.fv === "beads") { drawBeads(f, was); was = null; }
+    if (S.fv === "lanes") drawLanes(f);
     const cards = clear($("cards")), edges = clear($("edges"));
     const bounds = { x1: start.x + start.w, y1: start.y + start.h };
     for (const p of pos.values()) { bounds.x1 = Math.max(bounds.x1, p.x + p.w); bounds.y1 = Math.max(bounds.y1, p.y + p.h); }
@@ -1241,17 +1659,37 @@ fn fs_main(v: VOut) -> @location(0) vec4f {
   const openFlow = (key) => { if (!byKey.has(key)) return; S.flow = key; S.bead = null; S.view = "flow"; render(); commit(true); requestAnimationFrame(fit); };
   // In the app the window rescans and reloads this frame; under `cos dash`
   // the page asks its server for a fresh scan, keeping the view in the hash.
+  // The Beads view also hands its columns over as `was`, so the reloaded page
+  // can glide each bead from where it stood.
+  const WAS_MAX = 1500;
   const rescan = () => {
     const b = document.querySelector('[data-act="rescan"]');
     if (b) { b.disabled = true; b.lastChild.textContent = " Refreshing…"; }
-    if (HOST) return post({ type: "cos-flows-rescan", hash: hashOf() });
-    const q = new URLSearchParams(location.search); q.set("fresh", "1");
-    location.replace(`${location.pathname}?${q}#${hashOf()}`);
+    const p = new URLSearchParams(hashOf()), f = S.flow && byKey.get(S.flow);
+    if (S.view === "flow" && S.fv === "beads" && f) {
+      const was = f.beads.map((x) => `${x.id}.${beadState(x)[0]}`).join(",");
+      if (was.length <= WAS_MAX) p.set("was", was);
+    }
+    if (HOST) return post({ type: "cos-flows-rescan", hash: p.toString() });
+    const q = new URLSearchParams(location.search); q.set("fresh", "1"); q.set("t", String(Date.now()));
+    location.replace(`${location.pathname}?${q}#${p}`);
   };
+  const WAS_STATE = { d: "done", a: "active", r: "ready", b: "blocked" };
+  const readWas = () => {
+    const raw = new URLSearchParams(location.hash.slice(1)).get("was");
+    if (!raw || raw.length > WAS_MAX) return null;
+    const m = new Map();
+    for (const part of raw.split(",")) { const i = part.lastIndexOf("."); if (i > 0 && WAS_STATE[part.slice(i + 1)]) m.set(part.slice(0, i), WAS_STATE[part.slice(i + 1)]); }
+    return m.size ? m : null;
+  };
+  let was = readWas();
 
   let mapReady = false;
   const render = () => {
-    for (const v of ["board", "flow", "map"]) $(v).hidden = S.view !== v;
+    const shown = $(S.view);
+    const leaving = ["board", "flow", "map"].map($).find((n) => n !== shown && !n.hidden && !n.inert) ?? null;
+    for (const n of ["board", "flow", "map"].map($)) if (n !== shown && n !== leaving && !n.inert) n.hidden = true;
+    swapPane(leaving, shown);
     ds.view = S.view;
     drawTop(); drawSide(); drawNeeds();
     if (S.view === "board") drawBoard();
@@ -1271,6 +1709,7 @@ fn fs_main(v: VOut) -> @location(0) vec4f {
     if (d.pin) { const i = prefs.pins.indexOf(d.pin); if (i >= 0) prefs.pins.splice(i, 1); else prefs.pins.push(d.pin); savePrefs(); render(); return; }
     if (d.preset) { S.preset = d.preset; if (S.view === "flow") S.view = "board"; render(); commit(false); return; }
     if (d.view) return go(d.view);
+    if (d.fv) { S.fv = d.fv; render(); commit(true); if (S.fv === "graph") requestAnimationFrame(fit); return; }
     if (d.go === "board") { S.q = ""; $("q").value = ""; S.preset = "all"; for (const k of FACETS) S.facets[k].clear(); return go("board"); }
     if (d.go === "board-repo") { const f = byKey.get(S.flow); S.facets.repo = new Set([f.repo]); return go("board"); }
     if (d.go === "flow") { S.bead = null; $("drawer").hidden = true; return commit(false); }
@@ -1381,7 +1820,7 @@ fn fs_main(v: VOut) -> @location(0) vec4f {
       if (e.key === "+" || e.key === "=") return zoomAt(1.25);
       if (e.key === "-") return zoomAt(0.8);
       if (e.key === "0") { T = { k: 1, x: 40, y: 40 }; return applyT(); }
-      if (e.key.startsWith("Arrow")) {
+      if (S.fv === "graph" && e.key.startsWith("Arrow")) {
         const cur = document.activeElement?.dataset?.bead;
         const f = layout?.f;
         const target = cur ? moveFocus(cur, e.key) : f?.beads.find((b) => b.ready)?.id || f?.beads[0]?.id;
@@ -1401,6 +1840,7 @@ fn fs_main(v: VOut) -> @location(0) vec4f {
   stamp(); drawEngineLine(); drawScanned(); setInterval(drawScanned, 30000);
   render();
   if (S.view === "flow") requestAnimationFrame(fit);
+  if (was || new URLSearchParams(location.hash.slice(1)).has("was")) { was = null; commit(false); }
   // `#pal=<text>` opens the palette with that text typed, e.g. a link to `repo:`.
   const linkedPal = new URLSearchParams(location.hash.slice(1)).get("pal");
   if (linkedPal != null) { palOpen(); $("pal-q").value = linkedPal.slice(0, 100); palRender(); }

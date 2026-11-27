@@ -128,6 +128,12 @@ const STATE = {
   needs_you: ["bell", "warn"],
 };
 const MOVING = ["reading", "refreshing"];
+const SHIMMER = ["reading", "refreshing", "starting"];
+function shimmerRows() {
+  const box = el("div", { className: "state-shimmer" }, ...[0, 1, 2].map(() => el("span", { className: "kit-is-running" })));
+  box.setAttribute("aria-hidden", "true");
+  return box;
+}
 // How long a read may run before its state says what it is waiting on.
 const SLOW_AFTER_MS = 6000;
 
@@ -156,6 +162,7 @@ function stateView(kind, { title, detail, action, line = false, over = false } =
           "div",
           { className: "state-text" },
           el("p", { className: "state-title" }, stateIcon(kind), el("span", { textContent: title })),
+          SHIMMER.includes(kind) ? shimmerRows() : null,
           detail ? el("p", { className: "state-detail", textContent: detail }) : null,
           act,
         ),

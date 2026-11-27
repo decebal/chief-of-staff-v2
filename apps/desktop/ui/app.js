@@ -241,6 +241,7 @@ window.addEventListener("message", (ev) => {
   if (d.type === "cos-report-ready") {
     frame.postMessage({ type: "cos-host", hire: true, runBrief: true }, "*");
     if (briefNow) frame.postMessage(briefNow, "*");
+    tellHires();
     if (d.brief != null) {
       shownBrief.last = { file: d.brief, mtime: d.mtime };
       const args = seenArgs();
@@ -259,6 +260,20 @@ window.addEventListener("message", (ev) => {
   }
 });
 
+// Today's inbox and hero pills follow the hires live: the read-only snapshot
+// (never agents_list, which reconciles) in its own message, so the frame's
+// cos-host state is never touched.
+async function tellHires() {
+  const frame = $("report").contentWindow;
+  if (!frame || !ui.business) return;
+  try {
+    const hires = await invoke("agents_snapshot", { business: ui.business });
+    frame.postMessage({ type: "cos-hires", hires }, "*");
+  } catch (e) {
+    logDev("agents_snapshot", e);
+  }
+}
+
 // A report already shown is swapped without a state over it: runs rewrite it often.
 function reloadReport() {
   const hash = reportState.tab ? `#${reportState.tab}` : "";
@@ -275,7 +290,13 @@ const PANES = ["staff", "role", "runs", "run", "scorecard"];
 
 function showPane(name) {
   ui.pane = name;
-  for (const p of PANES) $(`pane-${p}`).hidden = p !== name;
+  const to = $(`pane-${name}`);
+  const from = PANES.map((p) => $(`pane-${p}`)).find((p) => p !== to && !p.hidden && !p.inert) ?? null;
+  for (const p of PANES) {
+    const pane = $(`pane-${p}`);
+    if (pane !== to && pane !== from && !pane.inert) pane.hidden = true;
+  }
+  swapPane(from, to);
   $("hire-open").hidden = name === "role";
   const tab = name === "role" ? "staff" : name === "run" ? ui.from : name;
   for (const t of $("agent-panes").children) t.setAttribute("aria-selected", String(t.dataset.pane === tab));
@@ -1638,6 +1659,7 @@ listen("report-changed", () => {
 });
 listen("agents-changed", () => {
   refreshAgents();
+  tellHires();
   // A verdict lands in the ledger as the agent ends.
   clearTimeout(staffTimer);
   staffTimer = setTimeout(refreshStaff, 800);
