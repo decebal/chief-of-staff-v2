@@ -279,8 +279,9 @@ impl Policy {
             if req.model.is_none() {
                 req.model = r.model.clone();
             }
-            if !req.prompt.starts_with("Role: ") {
-                req.prompt = format!("{}\n\n{}", preamble(r), req.prompt);
+            let pre = preamble(r);
+            if !req.prompt.starts_with(&format!("{pre}\n\n")) {
+                req.prompt = format!("{pre}\n\n{}", req.prompt);
             }
         }
         if let (false, Some(d)) = (explicit.deadline, t.deadline_secs) {

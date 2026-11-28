@@ -398,6 +398,45 @@ fn a_hand_edited_finish_line_cannot_forge_a_line_in_the_hires_prompt() {
 }
 
 #[test]
+fn a_prompt_that_starts_with_role_still_gets_the_preamble_once() {
+    let mut p = policy::seed();
+    let mut r = specialist();
+    r.repo = Some(false);
+    r.expects = cos::agents::judge::Expects::File;
+    r.output = Some("SECURITY-REVIEW.md".into());
+    p.roles.push(r);
+    let mut req = cos::agents::Request {
+        harness: cos::agents::Harness::Claude,
+        program: None,
+        model: None,
+        repo: None,
+        worktree: false,
+        title: "t".into(),
+        source: "test".into(),
+        prompt: "Role: x. Review the login flow".into(),
+        deadline: std::time::Duration::from_secs(60),
+        slots: None,
+        contract: cos::agents::Contract::default(),
+        explicit: policy::Explicit::default(),
+        role: Some("appsec".into()),
+    };
+    p.apply(&mut req, policy::Explicit::default()).unwrap();
+    assert!(
+        req.prompt.starts_with("Role: Security reviewer."),
+        "{}",
+        req.prompt
+    );
+    assert!(req.prompt.contains("Drafts only:"), "{}", req.prompt);
+    p.apply(&mut req, policy::Explicit::default()).unwrap();
+    assert_eq!(
+        req.prompt.matches("Drafts only:").count(),
+        1,
+        "applied twice, the preamble is added once: {}",
+        req.prompt
+    );
+}
+
+#[test]
 fn the_effective_vocabulary_is_the_files_else_the_templates() {
     let mut p = policy::seed();
     p.fit = None;

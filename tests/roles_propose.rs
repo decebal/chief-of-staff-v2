@@ -78,6 +78,12 @@ fn the_context_carries_goal_titles_repos_and_staff_and_nothing_else() {
     ] {
         assert!(!prompt.contains(never), "{never} leaked into the prompt");
     }
+    for check in &entry().role.checks {
+        assert!(
+            !prompt.contains(check.as_str()),
+            "the entry's check {check} was sent"
+        );
+    }
     assert!(
         ctx.staff.iter().all(|(id, _)| id != "docs-keeper"),
         "retired roles are not staff"

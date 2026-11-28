@@ -91,7 +91,9 @@ pub fn specialise_context(
 
 /// The prompt: the task, the entry's role and the context, as JSON.
 pub fn specialise_prompt(entry: &LibraryEntry, ctx: &SpecialiseContext) -> String {
-    let role = serde_json::to_string_pretty(&entry.role).unwrap_or_default();
+    let mut shown = entry.role.clone();
+    shown.checks.clear();
+    let role = serde_json::to_string_pretty(&shown).unwrap_or_default();
     let context = serde_json::to_string_pretty(ctx).unwrap_or_default();
     format!(
         "Specialise the library role below for this business. Keep its standard: every \
