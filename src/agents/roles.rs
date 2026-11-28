@@ -11,7 +11,12 @@ use super::fit::Vocab;
 use super::judge::Expects;
 use super::policy::{self, Policy, Role};
 
+mod propose;
 mod write;
+pub use propose::{
+    Proposal, ProposalOut, RepoScope, SpecialiseContext, merge, proposal_schema, propose,
+    sent_text, specialise_context, specialise_prompt,
+};
 pub use write::{
     CONTRACT, Change, ContractApproval, FieldDiff, Written, apply, contract_diff, diff, read,
 };

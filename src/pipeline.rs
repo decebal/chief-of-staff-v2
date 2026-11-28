@@ -45,7 +45,9 @@ impl Default for Bins {
     fn default() -> Self {
         let mac = cfg!(target_os = "macos");
         Self {
-            claude: "claude".into(),
+            claude: std::env::var_os("COS_CLAUDE")
+                .filter(|v| !v.is_empty())
+                .map_or_else(|| "claude".into(), PathBuf::from),
             pmset: mac.then(|| "/usr/bin/pmset".into()),
             caffeinate: mac.then(|| "/usr/bin/caffeinate".into()),
         }
@@ -659,6 +661,22 @@ impl Config {
             tools: Toolset::Brain(crate::context::tools(&self.workspace)),
             deadline: Duration::from_secs(300),
             denied: crate::context::denied_servers(&self.home),
+        }
+    }
+
+    /// A role proposal (`roles::propose`): the recruiter with no tools and no
+    /// MCP servers, a closed schema, and a small cap. There is no fallback
+    /// toolset: if this cannot return structured output, proposing fails.
+    pub fn propose_run(&self, prompt: String) -> Run<'static> {
+        Run {
+            agent: "recruiter",
+            model: "sonnet",
+            prompt,
+            json_schema: Some(crate::agents::roles::proposal_schema()),
+            max_budget_usd: self.budget.unwrap_or(1.0).min(1.0),
+            tools: Toolset::None,
+            deadline: Duration::from_secs(180),
+            denied: Vec::new(),
         }
     }
 }
