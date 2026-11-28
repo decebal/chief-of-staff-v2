@@ -50,6 +50,7 @@ fn http_links_go_to_the_browser_and_other_schemes_are_refused() {
     for in_app in [
         "tauri://localhost/index.html",
         "cosreport://localhost/flows",
+        "cosmod://localhost/notes/index.html",
         "http://cosreport.localhost/docs",
         "http://tauri.localhost/",
         "http://127.0.0.1:8501/",
@@ -196,6 +197,7 @@ fn start(root: &Path, pins: Sources) -> Start {
         cos_bin: None,
         slots: Some(1),
         daemon_dir: std::env::temp_dir().join(format!("cosl-{}-none", std::process::id())),
+        mods_dir: root.join("mods"),
     }
 }
 

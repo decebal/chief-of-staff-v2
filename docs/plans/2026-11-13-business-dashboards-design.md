@@ -192,7 +192,7 @@ ready = { path = "/health", contains = "\"status\":\"ok\"" }
 name = "Control room"
 url = "http://127.0.0.1:4777/"
 server = "control-room"
-probe = { path = "/", contains = "<title>Wolven portfolio control room" }
+probe = { path = "/", contains = "<title>Northwind portfolio control room" }
 
 [[business.founding-bets]]
 name = "Salesroom"
@@ -852,7 +852,7 @@ Scope (owner decision 2026-11-14): per file, what changes, public signatures, IP
     *   unknown key refused;
     *   two dashboards with the same `name` in one business refused, with the key path;
     *   a business key that breaks the registry's name rule (`business::valid_name`, `src/business.rs:68-72`), such as `Founding_Bets`, refused;
-    *   marker shorter than 12 characters refused; markers matching `^<[^<>]*>$` after trim refused (`<title>`, `<div class=x>`, the placeholder `<measured in Build>`); `<title>Wolven portfolio control room` and `<script src="/sales.js"` admitted;
+    *   marker shorter than 12 characters refused; markers matching `^<[^<>]*>$` after trim refused (`<title>`, `<div class=x>`, the placeholder `<measured in Build>`); `<title>Northwind portfolio control room` and `<script src="/sales.js"` admitted;
     *   missing file reads as empty;
     *   orphan key reported;
     *   `cos business dashboards` output against a `TcpListener` fixture that answers with and without the marker (`answers`, `answers, marker missing`), against a closed port (`no listener`), and against a listener that accepts the connect and never replies (`no response`);

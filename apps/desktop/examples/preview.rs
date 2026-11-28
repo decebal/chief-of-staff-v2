@@ -138,6 +138,7 @@ fn main() {
         daemon_dir: std::env::var_os("COS_DAEMON_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join(format!("cosp-{}", std::process::id()))),
+        mods_dir: home.join("mods"),
     };
     let mut app = cos_desktop::builder(mock_builder(), Some(start))
         .build(mock_context(noop_assets()))

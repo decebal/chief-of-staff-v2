@@ -205,7 +205,7 @@ ready = { path = "/health", contains = "\"status\":\"ok\"" }
 name = "Control room"
 url = "http://127.0.0.1:4777/"
 server = "control-room"
-probe = { path = "/", contains = "<title>Wolven portfolio control room" }
+probe = { path = "/", contains = "<title>Northwind portfolio control room" }
 
 [[business.founding-bets]]
 name = "Salesroom"
@@ -268,6 +268,7 @@ cos --home /tmp/cos-demo dash
 | [Ritual flows](docs/ritual.md) | the seven steps, the `ritual-*` markers, approval and what it does not stop, how `cos flows` infers a step |
 | [WCAG measurement](docs/wcag.md) | axe-core over every view and page, light and dark: the evaluator in `examples/wcag.rs`, the 2026-11-17 result (42 violation nodes to 0), what axe cannot decide |
 | [Managed staff](docs/managed-staff.md) | configured mandates, AllStack evidence refresh, handoffs and parking |
+| [Local mods](docs/mods.md) | your own pages as tabs in the desktop app: the mods folder, `mod.json`, the message API, per-business data, the sandbox |
 | [Design](docs/design.md) | how it works, and the measurements behind each decision |
 | [Desktop plan](docs/plans/2026-10-21-desktop-app.md) | the workspace split, the agent governor and seeding, and the Tauri app |
 | [Agents tab plan](docs/plans/2026-10-28-agents-tab-design.md) | roles the chief of staff runs, design pack research (shadcn/ui, Basecoat, Geist), the tab redesign |

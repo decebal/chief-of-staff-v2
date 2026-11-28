@@ -20,9 +20,12 @@
       <button class="app-tab" aria-current="page" data-view="today"><i data-icon="sun"></i>Today</button>
       <button class="app-tab" data-view="agents"><i data-icon="users"></i>Agents <span id="agent-count" class="count" hidden></span></button>
       <button class="app-tab" data-view="flows"><i data-icon="workflow"></i>Flows</button>
-      <button class="app-tab" data-view="tax"><i data-icon="coins"></i>Tax</button>
       <button class="app-tab" data-view="docs"><i data-icon="book-open"></i>Docs</button>
     </nav>
+    <div class="dash-group">
+      <div id="mod-notice" hidden></div>
+      <nav id="mod-tabs" class="app-nav" aria-label="Local mods"></nav>
+    </div>
     <div class="dash-group">
       <div id="dash-notice" hidden></div>
       <nav id="dash-tabs" class="app-nav" aria-label="Dashboards"></nav>
@@ -201,32 +204,10 @@
   </dialog>
 
   <main>
-    <section id="view-tax" class="view">
-      <div class="tax-page">
-        <header class="tax-header"><div><p class="tax-eyebrow">FAMILY &amp; COMPANY</p><h1>Tax planning</h1><p class="muted">A working view of income, loan exposure and decisions.</p></div><span class="badge" data-variant="outline">2026 / 27 · UK</span></header>
-        <div class="tax-notice">Planning estimates, not a live tax account. Enter full-year figures for 6 April 2026 to 5 April 2027. Rates and assumptions need review after this period; consult your accountant before acting.</div>
-        <div class="tax-grid" id="tax-metrics" aria-live="polite"></div>
-        <div class="tax-layout">
-          <div class="tax-main">
-            <article class="card tax-card"><header><h2>Income thresholds</h2><p>Forecast income against the limits you want to watch.</p></header><section id="tax-charts"></section></article>
-            <article class="card tax-card"><header><h2>Recommended actions</h2><p>Track decisions and preparation. Nothing is filed or paid here.</p></header><section id="tax-actions"></section></article>
-            <article class="card tax-card"><header><h2>Director’s loan</h2><p>Compare keeping the loan with a proposed repayment.</p></header><section id="tax-loan"></section></article>
-          </div>
-          <aside class="tax-side"><article class="card tax-card"><header><h2>Your projections</h2><p>Annual amounts in pounds. Leave unknown figures blank; enter 0 when confirmed.</p></header><section>
-            <form id="tax-form" class="form-grid">
-              <div class="field"><label for="tax-partner-salary">Partner · salary</label><input id="tax-partner-salary" class="input" type="number" min="0" step="0.01" placeholder="Annual taxable pay"></div>
-              <div class="field"><label for="tax-partner-property">Partner · taxable property profit</label><input id="tax-partner-property" class="input" type="number" min="0" step="0.01" placeholder="After allowable costs"></div>
-              <div class="field"><label for="tax-partner-other">Partner · other taxable income</label><input id="tax-partner-other" class="input" type="number" min="0" step="0.01" placeholder="Excluding dividends"></div>
-              <div class="field"><label for="tax-partner-dividend">Partner · dividends</label><input id="tax-partner-dividend" class="input" type="number" min="0" step="0.01" placeholder="Total planned this tax year"></div>
-              <div class="field"><label for="tax-owner-income">Your adjusted net income</label><input id="tax-owner-income" class="input" type="number" min="0" step="0.01" placeholder="Including dividends, after applicable reliefs"></div>
-              <div class="field"><label for="tax-loan-balance">Loan outstanding</label><input id="tax-loan-balance" class="input" type="number" min="0" step="0.01" placeholder="Principal before new repayment"></div>
-              <div class="field"><label for="tax-repayment">Proposed qualifying repayment</label><input id="tax-repayment" class="input" type="number" min="0" step="0.01" placeholder="Cash or agreed eligible set-off"></div>
-              <div class="field"><label for="tax-rent">Office rent</label><input id="tax-rent" class="input" type="number" min="0" step="0.01" placeholder="Monthly proposed rent"></div>
-              <button class="btn" data-variant="primary" type="submit">Save projections</button><p id="tax-save-status" class="muted small" role="status">Saved privately in this workspace.</p>
-            </form></section></article>
-            <p class="muted small">England, Wales &amp; Northern Ireland assumptions. £50,000 is your target, not a tax-free allowance. Thresholds assume the standard personal allowance and no band extensions. Dividend allowance: £500; dividend basic / higher rates: 10.75% / 35.75%. <a href="https://www.gov.uk/tax-on-dividends" target="_blank" rel="noreferrer">HMRC dividend rates</a> · <a href="https://www.gov.uk/hmrc-internal-manuals/company-taxation-manual/ctm61505" target="_blank" rel="noreferrer">Loan tax rates</a></p>
-          </aside>
-        </div>
+    <section id="view-mod" class="view">
+      <div id="mod-state" class="dash-state"></div>
+      <div class="framed" id="mod-box">
+        <iframe id="mod-frame" aria-label="Local mod" sandbox="allow-scripts allow-popups" hidden></iframe>
       </div>
     </section>
     <section id="view-today" class="view active">
@@ -405,8 +386,8 @@
   <script src="kit.js"></script>
   <script src="command.js"></script>
   <script src="dash.js"></script>
+  <script src="mods.js"></script>
   <script src="assistants.js"></script>
   <script src="app.js"></script>
-  <script src="tax.js"></script>
 </body>
 </html>

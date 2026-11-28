@@ -34,7 +34,7 @@ Referrer-Policy: no-referrer
 
 ## Check 1: an `http://127.0.0.1` frame inside `tauri://localhost`
 
-Capture of the app window (Docs view, overlay at bottom right): the control room frame renders its own page ("Wolven / portfolio, EVIDENCE OPERATIONS" header with the "Ready Play desk", "Sales room" and "Refresh view" links), and the probe frame renders its yellow result strip. The gazette frame is blank (check 4).
+Capture of the app window (Docs view, overlay at bottom right): the control room frame renders its own page ("Northwind / portfolio, EVIDENCE OPERATIONS" header with the "Ready Play desk", "Sales room" and "Refresh view" links), and the probe frame renders its yellow result strip. The gazette frame is blank (check 4).
 
 On-page console, as captured:
 
@@ -117,7 +117,7 @@ Verdict: fail. Fallback: the gazette opens in the browser (Alternative F); the c
 
 ## Identity probe timing with a frame loaded
 
-With the control room framed in the running app, the CLI's own probe (`cos business dashboards founding-bets`, one `PROBE` attempt, 3 s timeout, `src/dashboards.rs:137`), run from `target/debug/cos` against a scratch `COS_DASHBOARDS` file declaring the control room with probe `{ path = "/", contains = "<title>Wolven portfolio control room" }`:
+With the control room framed in the running app, the CLI's own probe (`cos business dashboards founding-bets`, one `PROBE` attempt, 3 s timeout, `src/dashboards.rs:137`), run from `target/debug/cos` against a scratch `COS_DASHBOARDS` file declaring the control room with probe `{ path = "/", contains = "<title>Northwind portfolio control room" }`:
 
 ```
 founding-bets  Control room  http://127.0.0.1:4777/  control-room  answers
