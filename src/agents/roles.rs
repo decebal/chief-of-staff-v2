@@ -11,6 +11,7 @@ use super::fit::Vocab;
 use super::judge::Expects;
 use super::policy::{self, Policy, Role};
 
+pub mod cli;
 mod propose;
 mod write;
 pub use propose::{

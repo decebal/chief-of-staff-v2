@@ -90,6 +90,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AgentCmd,
     },
+    /// The staff agents are hired into: list, propose from the library, add,
+    /// edit, retire and restore roles in context/agents.json.
+    Roles {
+        #[command(subcommand)]
+        cmd: RolesCmd,
+    },
     /// The private workspace state in `<workspace>/.chief-of-staff/`: the same
     /// files and rules as the starter kit's `state.py`.
     State {
@@ -266,6 +272,82 @@ enum RitualCmd {
         repo: Option<PathBuf>,
         #[arg(long, env = "COS_CN", default_value = "cn")]
         cn: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum RolesCmd {
+    /// The staff (or, with --library, the shipped specialist definitions).
+    List {
+        #[arg(long)]
+        library: bool,
+        /// Include retired roles.
+        #[arg(long)]
+        retired: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// One role (or library entry) as JSON, ready to edit and pass to `edit --file`.
+    Show {
+        id: String,
+        #[arg(long)]
+        library: bool,
+    },
+    /// Specialise a library entry to this business (a paid run, no tools).
+    /// Writes only --out; add it with `new --file`. With --dry-run, prints
+    /// exactly what would be sent.
+    Propose {
+        library_id: String,
+        /// The id the role gets on the staff; default the entry's.
+        #[arg(long)]
+        id: Option<String>,
+        /// What to focus on, in your words (at most 1,000 characters).
+        #[arg(long)]
+        brief: Option<String>,
+        /// A new file to save the proposed role to.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a role: a library entry as it is, a role file, or a blank role.
+    New {
+        library_id: Option<String>,
+        #[arg(long, conflicts_with_all = ["library_id", "blank"])]
+        file: Option<PathBuf>,
+        #[arg(long, conflicts_with = "library_id", requires_all = ["title", "mandate"])]
+        blank: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        mandate: Option<String>,
+        /// The id for a library entry's role; default the entry's.
+        #[arg(long, requires = "library_id")]
+        id: Option<String>,
+        /// Write without the terminal prompt. A contract change still needs a
+        /// person typing `contract` at a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Replace a role with the one in a file (see `show`).
+    Edit {
+        id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Keep a role for the record but stop hiring it.
+    Retire {
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Hire a retired role again.
+    Restore {
+        id: String,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -583,6 +665,7 @@ fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<(
         } => runtime()?.block_on(mcp::http(cfg, addr, token, public_host.clone())),
         Cmd::Tunnel { port } => runtime()?.block_on(cos::tunnel::run(cfg, *port)),
         Cmd::Agents { cmd } => agents_cmd(cli, t, cmd),
+        Cmd::Roles { cmd } => roles_cmd(cli, t, &cfg, cmd),
         Cmd::Flows { json, cn } => flows_cmd(&ws, &t.projects, &t.home, cn, *json),
         Cmd::Review { cmd } => review_cmd(&ws, cmd),
         Cmd::Ritual { .. } => unreachable!("run dispatches ritual before a triple resolves"),
@@ -932,6 +1015,64 @@ fn confirm_on_terminal(line: &str) -> Result<bool> {
     let mut answer = String::new();
     std::io::stdin().lock().read_line(&mut answer)?;
     Ok(answer.trim() == "yes")
+}
+
+fn roles_cmd(cli: &Cli, t: &Triple, cfg: &Config, cmd: &RolesCmd) -> Result<()> {
+    use cos::agents::roles::cli;
+    let home = &t.home;
+    match cmd {
+        RolesCmd::List {
+            library,
+            retired,
+            json,
+        } => cli::list(home, *library, *retired, *json),
+        RolesCmd::Show { id, library } => cli::show(home, id, *library),
+        RolesCmd::Propose {
+            library_id,
+            id,
+            brief,
+            out,
+            json,
+        } => cli::propose(
+            cfg,
+            &cli::ProposeArgs {
+                library_id,
+                id: id.as_deref(),
+                brief: brief.as_deref(),
+                out: out.as_deref(),
+                json: *json,
+                dry_run: cli.dry_run,
+                business: t.label(),
+            },
+        ),
+        RolesCmd::New {
+            library_id,
+            file,
+            blank,
+            title,
+            mandate,
+            id,
+            yes,
+        } => {
+            let from = match (library_id, file, blank) {
+                (Some(l), None, None) => cli::NewFrom::Library {
+                    id: l,
+                    new_id: id.as_deref(),
+                },
+                (None, Some(f), None) => cli::NewFrom::File(f),
+                (None, None, Some(b)) => cli::NewFrom::Blank {
+                    id: b,
+                    title: title.as_deref().unwrap_or_default(),
+                    mandate: mandate.as_deref().unwrap_or_default(),
+                },
+                _ => anyhow::bail!("name a library entry, --file <role.json> or --blank <id>"),
+            };
+            cli::new(home, from, *yes)
+        }
+        RolesCmd::Edit { id, file, yes } => cli::edit(home, id, file, *yes),
+        RolesCmd::Retire { id, yes } => cli::set_retired(home, id, true, *yes),
+        RolesCmd::Restore { id, yes } => cli::set_retired(home, id, false, *yes),
+    }
 }
 
 fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
