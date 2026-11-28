@@ -562,6 +562,7 @@ fn start(root: &Path) -> Start {
     Start {
         install,
         user_home: Some(root.join("user")),
+        codex_home: Some(root.join("codex")),
         registry: root.join("businesses.toml"),
         settings_file: root.join("settings.json"),
         data_dir: root.join("data"),
@@ -578,6 +579,7 @@ fn start(root: &Path) -> Start {
         },
         cos_bin: None,
         slots: None,
+        daemon_dir: std::env::temp_dir().join(format!("cosd-srv-{}", std::process::id())),
     }
 }
 

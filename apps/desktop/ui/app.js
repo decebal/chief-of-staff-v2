@@ -187,6 +187,8 @@ async function openFromHash() {
   } else if (VIEWS.includes(tab)) {
     openTab(tab, h.get("pane") ?? "");
     if (tab === "agents" && h.get("run")) openRun(h.get("run"));
+    if (tab === "today" && LINK_RUN.test(h.get("run") ?? "")) showRun(h.get("run"));
+    if (tab === "today" && LINK_DAY.test(h.get("day") ?? "")) showDay(h.get("day"));
   }
   shownBrief.routed = true;
   const args = seenArgs();
@@ -199,7 +201,8 @@ const hireHasEdits = () =>
 let pendingDiscard = null;
 
 // Nothing is written to disk; the reload drops every view and cache of the old one.
-async function switchTo(name) {
+// `hash` lands the reloaded window somewhere else than the view it was on.
+async function switchTo(name, hash) {
   if (name === ui.business) return;
   if (hireHasEdits() && pendingDiscard !== name) {
     pendingDiscard = name;
@@ -211,7 +214,7 @@ async function switchTo(name) {
   const pane = ui.pane === "role" ? "staff" : ui.pane === "run" ? ui.from : ui.pane;
   // Dashboard names contain spaces ("Control room").
   location.hash =
-    tab === "dash" ? `tab=dash&dash=${encodeURIComponent(current.dataset.dash)}` : `tab=${tab}&pane=${pane}`;
+    hash ?? (tab === "dash" ? `tab=dash&dash=${encodeURIComponent(current.dataset.dash)}` : `tab=${tab}&pane=${pane}`);
   location.reload();
 }
 window.switchTo = switchTo;
@@ -277,7 +280,8 @@ async function tellHires() {
 // A report already shown is swapped without a state over it: runs rewrite it often.
 function reloadReport() {
   const hash = reportState.tab ? `#${reportState.tab}` : "";
-  frameLoad("report", `${REPORT}?t=${Date.now()}&y=${reportState.y}${hash}`, {
+  const page = linkRun.day ? `brief/${linkRun.day}` : "";
+  frameLoad("report", `${REPORT}${page}?t=${Date.now()}&y=${reportState.y}${hash}`, {
     title: "Opening today's report",
     waiting: () => "It is put together from the latest brief, the goals and the workspace.",
     quiet: true,
@@ -1382,7 +1386,14 @@ function tellBrief(state, text, title = "") {
   $("report").contentWindow?.postMessage(briefNow, "*");
 }
 
+const BRIEF_ENDED = {
+  stopped: "brief stopped",
+  lost: "brief lost: hover for why",
+};
+
 function renderBrief(s) {
+  // `brief-changed` carries asks too; they have no place on the report's tab bar.
+  if (s?.kind === "ask") return;
   // A run for another business says nothing about this window's report.
   const mine = !s?.business || s.business === ui.business;
   const st = !s || !mine ? "idle" : s.running ? "running" : s.ok === true ? "done" : s.ok === false ? "error" : "idle";
@@ -1395,7 +1406,7 @@ function renderBrief(s) {
         : s.ok === false
           ? s.deferred
             ? "brief put off: the Mac was asleep"
-            : "brief failed: hover for why"
+            : (BRIEF_ENDED[s.state] ?? "brief failed: hover for why")
           : "";
   tellBrief(st, text, mine ? (s?.said ?? "") : "");
   const pill = framePill("report-box", "report-status");
@@ -1421,6 +1432,220 @@ async function runBrief() {
   } catch (e) {
     tellBrief("error", String(e));
   }
+}
+
+// ---- links: a cos:// link opens Today on a run (the run panel, above the
+// report) or on a day's brief. The backend checked the link against its
+// grammar and switched the window when it named another business; a switch
+// still reloads, so the reloaded window lands through the hash.
+
+const LINK_RUN = /^r-[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$/;
+const LINK_DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+const linkRun = { run: null, day: null, timer: null, reloaded: null };
+const RUN_STATE = {
+  queued: ["queued", "info"],
+  running: ["running", "info"],
+  done: ["done", "ok"],
+  failed: ["failed", "bad"],
+  deferred: ["put off", "warn"],
+  stopped: ["stopped", "muted"],
+  lost: ["lost", "bad"],
+};
+const RUN_OWNER = {
+  daemon: "the cos daemon",
+  app: "the Chief of Staff app",
+  mcp: "Claude Desktop or Codex, without the daemon",
+  self: "a terminal or the schedule",
+};
+const isLiveRun = (v) => v.state === "queued" || v.state === "running";
+
+// An answer is model output: rendered as the docs room renders a document,
+// marked then DOMPurify, and a link that is not http, https or mailto loses
+// its target so it cannot move the window.
+const MARKED = window.marked && new window.marked.Marked({ gfm: true, breaks: false, async: false });
+const PURIFY = {
+  RETURN_DOM_FRAGMENT: true,
+  ALLOW_DATA_ATTR: false,
+  FORBID_TAGS: ["style", "form", "button", "textarea", "select", "option", "iframe", "frame", "frameset", "object", "embed", "link", "meta", "base", "video", "audio", "source", "track", "picture", "svg", "math", "dialog", "img"],
+  FORBID_ATTR: ["style", "id", "name", "class", "srcset", "formaction", "ping", "target", "autofocus", "tabindex"],
+};
+function markdown(text) {
+  if (!MARKED || !window.DOMPurify) return el("pre", { className: "run-answer", textContent: text });
+  const frag = window.DOMPurify.sanitize(MARKED.parse(String(text)), PURIFY);
+  for (const a of frag.querySelectorAll("a")) {
+    if (!safeUrl(a.getAttribute("href"))) a.removeAttribute("href");
+  }
+  return el("div", { className: "run-answer" }, frag);
+}
+
+function closeRunPanel() {
+  const day = linkRun.day;
+  clearTimeout(linkRun.timer);
+  Object.assign(linkRun, { run: null, day: null, timer: null });
+  fill($("run-panel"));
+  $("run-panel").hidden = true;
+  if (day) reloadReport();
+}
+
+function panelHead(title, glyph, ...rest) {
+  return el(
+    "div",
+    { className: "run-panel-head" },
+    el("h2", {}, icon(glyph), el("span", { textContent: title })),
+    ...rest,
+    el("div", { className: "run-panel-actions" }, iconButton("x", "Close", { iconOnly: true, onClick: closeRunPanel })),
+  );
+}
+
+function showLinkRefused(reason) {
+  clearTimeout(linkRun.timer);
+  const day = linkRun.day;
+  Object.assign(linkRun, { run: null, day: null });
+  if (day) reloadReport();
+  $("run-panel").hidden = false;
+  fill(
+    $("run-panel"),
+    stateView("unreachable", {
+      title: "This link was not opened",
+      detail: reason,
+      action: { icon: "x", label: "Dismiss", onClick: closeRunPanel },
+    }),
+  );
+}
+
+async function showRun(run) {
+  clearTimeout(linkRun.timer);
+  const day = linkRun.day;
+  Object.assign(linkRun, { run, day: null, reloaded: null });
+  if (day) reloadReport();
+  $("run-panel").hidden = false;
+  fill($("run-panel"), stateView("reading", { title: "Reading the run", line: true }));
+  await refreshRun();
+}
+
+function showDay(day) {
+  clearTimeout(linkRun.timer);
+  Object.assign(linkRun, { run: null, day });
+  $("run-panel").hidden = false;
+  fill($("run-panel"), panelHead(`Brief of ${day}`, "newspaper", iconButton("sun", "Latest brief", { variant: "outline", onClick: closeRunPanel })));
+  reloadReport();
+}
+
+async function refreshRun() {
+  const run = linkRun.run;
+  if (!run) return;
+  clearTimeout(linkRun.timer);
+  let v;
+  try {
+    v = await invoke("run_get", { business: ui.business, run });
+  } catch (e) {
+    if (linkRun.run !== run) return;
+    fill(
+      $("run-panel"),
+      panelHead("Run", "cloud-off", el("span", { className: "id", textContent: run })),
+      stateView("unreachable", {
+        title: "Could not read the run",
+        detail: String(e),
+        action: { icon: "rotate-ccw", label: "Try again", onClick: refreshRun },
+      }),
+    );
+    return;
+  }
+  if (linkRun.run !== run) return;
+  renderRun(v);
+  if (isLiveRun(v)) linkRun.timer = setTimeout(refreshRun, 2000);
+}
+
+function runBody(v) {
+  const said = v.reason ?? undefined;
+  switch (v.state) {
+    case "queued":
+      return stateView("starting", { title: "Waiting to start", line: true });
+    case "running":
+      return stateView("reading", { title: v.kind === "ask" ? "Answering" : "Writing the brief", line: true });
+    case "done":
+      if (v.kind === "ask") return v.answer ? markdown(v.answer) : stateView("empty", { title: "The answer came back empty", line: true });
+      return stateView("clear", { title: "Brief ready: the report below shows it", line: true });
+    case "lost":
+      return stateView("unreachable", { title: "Run lost", detail: said ?? "Its process is gone; nothing more will come of it." });
+    case "deferred":
+      return stateView("asleep", { title: "Put off: the Mac was asleep", detail: said, line: true });
+    default:
+      return stateView("unreachable", { title: v.state === "stopped" ? "Stopped" : "Failed", detail: said, line: true });
+  }
+}
+
+function renderRun(v) {
+  const [word, tone] = RUN_STATE[v.state] ?? [v.state, "muted"];
+  const live = isLiveRun(v);
+  const stop = v.stoppable
+    ? iconButton("square", "Stop", { variant: "outline", onClick: (e) => stopRun(e.currentTarget, v.run) })
+    : null;
+  const head = panelHead(
+    v.kind === "ask" ? "Ask" : "Brief",
+    v.kind === "ask" ? "message-square" : "newspaper",
+    badge(word, tone),
+    el("span", { className: "muted small", textContent: `started ${spanWords(nowSecs() - v.started)} ago` }),
+    el("span", { className: "id", textContent: v.run }),
+    stop,
+  );
+  const where = RUN_OWNER[v.owner] ?? v.owner;
+  const facts = el(
+    "dl",
+    { className: "kv" },
+    ...kv([
+      ["started by", live && !v.stoppable ? `${where}: stop it there` : where],
+      ["reason", v.reason],
+    ]),
+  );
+  fill($("run-panel"), head, facts, runBody(v));
+  if (v.kind === "brief" && v.state === "done" && linkRun.reloaded !== v.run) {
+    linkRun.reloaded = v.run;
+    reloadReport();
+  }
+}
+
+async function stopRun(button, run) {
+  button.disabled = true;
+  setLabel(button, "Stopping…");
+  try {
+    await invoke("run_stop", { business: ui.business, run });
+  } catch (e) {
+    logDev("run_stop", e);
+    button.after(stateView("unreachable", { title: "Could not stop it", detail: String(e), line: true }));
+    button.disabled = false;
+    setLabel(button, "Stop");
+    return;
+  }
+  refreshRun();
+}
+
+async function openLink(nav) {
+  if (!nav) return;
+  if (nav.view === "settings-assistants") {
+    window.openSettings();
+    return;
+  }
+  openTab("today", "");
+  if (!nav.shown) {
+    showLinkRefused(nav.refused ?? "refused");
+    return;
+  }
+  const run = nav.view === "run" && LINK_RUN.test(nav.run ?? "") ? nav.run : null;
+  const day = nav.view === "brief" && LINK_DAY.test(nav.day ?? "") ? nav.day : null;
+  if (!run && !day) return;
+  if (nav.business !== ui.business) {
+    // Only the user's own pick may discard Hire edits; a link never does.
+    if (hireHasEdits()) {
+      showLinkRefused("The Hire dialog has unsaved edits. Save or close it, then open the link again.");
+      return;
+    }
+    const hash = run ? `tab=today&run=${run}` : `tab=today&day=${day}`;
+    await switchTo(nav.business, hash).catch((e) => showLinkRefused(String(e)));
+    return;
+  }
+  if (run) showRun(run);
+  else showDay(day);
 }
 
 // ---- flows: the approval gate. The flows page runs its own script in a
@@ -1665,6 +1890,7 @@ listen("agents-changed", () => {
   staffTimer = setTimeout(refreshStaff, 800);
 });
 listen("brief-changed", (ev) => renderBrief(ev.payload));
+pollBrief();
 // A scan behind a held Flows page: the pill says how far it is, and the
 // page is swapped for the new one when it lands.
 listen("flows-progress", (ev) => {
@@ -1683,12 +1909,18 @@ listen("flows-changed", () => {
 });
 $("biz-open").addEventListener("click", () => openSwitcher(switchTo));
 listen("switch-business", () => openSwitcher(switchTo));
+listen("brief-changed", (ev) => {
+  if (ev.payload?.run && ev.payload.run === linkRun.run) refreshRun();
+});
+listen("link-open", (ev) => openLink(ev.payload));
 render();
 loadPaths()
   .then(() => {
     loadRepos().catch((e) => logDev("repos", e));
     return openFromHash();
   })
+  // A link that launched the app was held until now.
+  .then(async () => openLink(await invoke("link_ready")))
   .then(pollBrief)
   .catch((e) => logDev("paths", e));
 reloadReport();

@@ -206,6 +206,35 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A business's directories must exist and be directories; the message names the repair.
+pub fn check_dirs(name: &str, business: &Business) -> Result<()> {
+    for (label, dir) in [
+        ("home", &business.home),
+        ("workspace", &business.workspace),
+        ("projects", &business.projects),
+    ] {
+        if !dir.is_dir() {
+            bail!(
+                "business {name:?}: {label} {} is not a directory; repair it with `cos business add`",
+                dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Each registered business's home, by name. An unreadable registry has no businesses to watch.
+pub fn registered_homes(registry: &Path) -> BTreeMap<String, PathBuf> {
+    load(registry)
+        .map(|r| {
+            r.businesses
+                .into_iter()
+                .map(|(name, b)| (name, b.home))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Whether the business's directories exist and its workspace has a profile.
 pub fn status(business: &Business) -> String {
     let missing: Vec<&str> = [

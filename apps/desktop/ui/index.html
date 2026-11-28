@@ -32,6 +32,7 @@
         <i data-icon="layers"></i><span class="muted">business</span> <span id="biz-name"></span>
         <span id="biz-attention" hidden><span class="biz-dot" aria-hidden="true"></span><span class="sr-only">another business needs you</span></span>
       </button>
+      <button id="settings-open" class="btn" data-variant="ghost" data-size="icon-sm" type="button" aria-haspopup="dialog" aria-label="Settings" title="Settings"><i data-icon="settings"></i></button>
     </div>
   </header>
 
@@ -153,11 +154,35 @@
       <ul id="switch-list" class="switch-list" role="listbox" aria-label="Businesses"></ul>
       <div id="switch-state"></div>
       <footer class="ws-here">
+        <div class="mcp-default">
+          <p id="mcp-default-now" class="muted small"></p>
+          <button id="mcp-make-default" class="btn" data-variant="outline" data-size="sm" type="button" hidden><i data-icon="check"></i><span id="mcp-make-default-label">Make default</span></button>
+        </div>
         <p id="biz-pin" class="muted small" hidden></p>
         <details class="ws-where">
           <summary><i data-icon="folder"></i><span>This window's business</span><span id="ws-name"></span><span>· its folders</span><i data-icon="chevron-down"></i></summary>
           <dl id="ws-paths" class="kv"></dl>
         </details>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="settings-dialog" class="dialog settings" aria-labelledby="settings-title">
+    <div>
+      <header>
+        <h2 id="settings-title">Settings</h2>
+      </header>
+      <section id="assistants" class="assistants" aria-labelledby="assistants-title">
+        <div class="assistants-head">
+          <h3 id="assistants-title"><i data-icon="bot"></i>Assistants</h3>
+          <button id="assistants-refresh" class="btn" data-variant="ghost" data-size="icon-sm" type="button" aria-label="Check again" title="Check again"><i data-icon="refresh-cw"></i></button>
+        </div>
+        <p class="muted small">Claude Desktop and Codex reach cos through its MCP server. Each needs a <code>cos</code> entry in its own config pointing at this app's version.</p>
+        <div id="assistants-body"></div>
+        <div id="assistants-note"></div>
+      </section>
+      <footer>
+        <button id="settings-close" class="btn" data-variant="outline" type="button"><i data-icon="x"></i>Close</button>
       </footer>
     </div>
   </dialog>
@@ -192,6 +217,7 @@
       </div>
     </section>
     <section id="view-today" class="view active">
+      <section id="run-panel" class="run-panel" aria-label="Run from a link" hidden></section>
       <div class="framed" id="report-box">
         <iframe id="report" aria-label="Today's report" sandbox="allow-scripts allow-popups"></iframe>
       </div>
@@ -354,10 +380,13 @@
   </div>
   <script src="vendor/lucide/icons-0.556.0.js"></script>
   <script src="art/art.js"></script>
+  <script src="vendor/marked/marked-18.1.2.umd.js"></script>
+  <script src="vendor/dompurify/purify-3.4.17.min.js"></script>
   <script src="states.js"></script>
   <script src="kit.js"></script>
   <script src="command.js"></script>
   <script src="dash.js"></script>
+  <script src="assistants.js"></script>
   <script src="app.js"></script>
   <script src="tax.js"></script>
 </body>

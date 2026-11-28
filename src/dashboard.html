@@ -93,7 +93,11 @@
     if (ctx && ctx.theme) document.documentElement.dataset.theme = ctx.theme;
   }
 
-  // A tool result carries { kind: "brief", day, report }; both tabs read it.
+  const FINAL = new Set(["done", "failed", "deferred", "stopped", "lost"]);
+  let following = null;
+
+  // latest_brief carries { kind: "brief", day, report }; brief and run_status carry a
+  // RunView ({ run, state, ... }), which has the same fields once a brief is done.
   function accept(result) {
     const sc = result && result.structuredContent;
     if (result && result.isError) {
@@ -101,14 +105,42 @@
       status.textContent = text || "The tool returned an error.";
       return;
     }
+    if (sc && sc.state) {
+      if (!FINAL.has(sc.state)) {
+        status.textContent = `Running… ${sc.run}${sc.existing ? " (a brief was already running)" : ""}`;
+        follow(sc.run, sc.business);
+        return;
+      }
+      if (sc.state !== "done" || !sc.report) {
+        status.textContent = `Run ${sc.run} ${sc.state}${sc.reason ? `: ${sc.reason}` : ""}.`;
+        return;
+      }
+    }
     if (!sc || !sc.kind) { status.textContent = "No saved output yet. Run one."; render(); return; }
     state.data = sc;
     status.textContent = sc.cost_usd != null ? `Fresh run, $${sc.cost_usd.toFixed(2)}.` : "";
     render();
   }
 
+  // run_status waits up to 45 s a call, inside a client's 60 s tool timeout.
+  async function follow(run, business) {
+    if (following === run) return;
+    following = run;
+    try {
+      for (;;) {
+        const res = await request("tools/call", { name: "run_status", arguments: { run, business, wait_secs: 45 } });
+        if (following !== run) return;
+        const sc = res && res.structuredContent;
+        if ((res && res.isError) || !sc || FINAL.has(sc.state)) { following = null; accept(res); return; }
+        status.textContent = `Running… ${sc.run}`;
+      }
+    } catch (e) {
+      if (following === run) { following = null; status.textContent = `run_status failed: ${e.message}`; }
+    }
+  }
+
   async function call(name) {
-    status.textContent = name.startsWith("latest") ? "Loading…" : "Running — this calls Claude and can take a few minutes…";
+    status.textContent = name.startsWith("latest") ? "Loading…" : "Starting a brief…";
     try { accept(await request("tools/call", { name, arguments: {} })); }
     catch (e) { status.textContent = `${name} failed: ${e.message}`; }
   }

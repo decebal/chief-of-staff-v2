@@ -49,7 +49,9 @@ marked and DOMPurify are the docs room's markdown reader. `src/docs.rs`
 inlines both into the page's one `<script>` (`docs::markdown_js`), dropping
 the source-map comment and writing `<!--`, `<script` and `</script` as
 `\x3C…` so the HTML parser cannot end or derail the script early;
-`tests/docs.rs` checks the result. The desktop window does not load them.
+`tests/docs.rs` checks the result. The desktop window loads both files as
+they are, for the run panel's answers (`app.js`, `markdown`), with the docs
+room's DOMPurify settings.
 
 ## Geist neutrals in `tokens.css`
 

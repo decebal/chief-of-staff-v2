@@ -82,17 +82,24 @@ pub fn latest<T: DeserializeOwned>(home: &Path, kind: Kind) -> Result<Option<Sav
     else {
         return Ok(None);
     };
+    on_day(home, kind, &day).map(Some)
+}
+
+/// The saved `day`.
+pub fn on_day<T: DeserializeOwned>(home: &Path, kind: Kind, day: &str) -> Result<Saved<T>> {
+    anyhow::ensure!(is_day(day), "day {day:?}");
+    let dir = kind.dir(home);
     let json = dir.join(format!("{day}.json"));
     let (bytes, mtime_ms) = read_settled(&json)?;
     let value =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", json.display()))?;
     let markdown = std::fs::read_to_string(dir.join(format!("{day}.md"))).unwrap_or_default();
-    Ok(Some(Saved {
-        day,
+    Ok(Saved {
+        day: day.to_owned(),
         value,
         markdown,
         mtime_ms,
-    }))
+    })
 }
 
 /// `YYYY-MM-DD`, by shape only.
@@ -110,7 +117,8 @@ pub(crate) fn is_day(day: &str) -> bool {
 /// and after the read; a read it changed across is retried from a new handle.
 fn read_settled(path: &Path) -> Result<(Vec<u8>, i64)> {
     for _ in 0..3 {
-        let mut file = std::fs::File::open(path)?;
+        let mut file =
+            std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
         let before = file.metadata()?.modified()?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;

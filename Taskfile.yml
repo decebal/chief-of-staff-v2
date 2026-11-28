@@ -11,7 +11,6 @@ vars:
   # Apps started from the Dock hand MCP servers a minimal PATH; cos needs
   # claude, gh and cn on it.
   TOOL_PATH: "{{.HOME}}/.cargo/bin:{{.HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-  DESKTOP_CONFIG: "{{.HOME}}/Library/Application Support/Claude/claude_desktop_config.json"
 
 tasks:
   setup:
@@ -32,19 +31,21 @@ tasks:
     desc: fmt, clippy, tests
     cmds:
       - timeout 300 cargo fmt --check
-      - timeout 300 cargo clippy --all-targets -- -D warnings
-      - timeout 300 cargo test
+      - timeout 300 cargo clippy --workspace --all-targets --features cos/stand-in -- -D warnings
+      - timeout 300 cargo test --workspace --features cos/stand-in
 
   test-e2e:
-    desc: The Flows page in headless Chrome (tests/flows_page.rs); COS_E2E_CHROME defaults to Google Chrome
+    desc: The Flows page, the kit and the MCP App view in headless Chrome (tests/flows_page.rs, kit_page.rs, mcp_view.rs); COS_E2E_CHROME defaults to Google Chrome
     env:
       COS_E2E_CHROME: '{{.COS_E2E_CHROME | default "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}}'
     cmds:
       # Compile outside the run, so a cold build cannot eat the tests' time.
-      - timeout 300 cargo test --test flows_page --no-run
-      - timeout 300 cargo test --test flows_page -- --include-ignored --test-threads=1
-      - timeout 300 cargo test --test kit_page --no-run
-      - timeout 300 cargo test --test kit_page -- --include-ignored --test-threads=1
+      - timeout 300 cargo test --features stand-in --test flows_page --no-run
+      - timeout 300 cargo test --features stand-in --test flows_page -- --include-ignored --test-threads=1
+      - timeout 300 cargo test --features stand-in --test kit_page --no-run
+      - timeout 300 cargo test --features stand-in --test kit_page -- --include-ignored --test-threads=1
+      - timeout 300 cargo test --features stand-in --test mcp_view --no-run
+      - timeout 300 cargo test --features stand-in --test mcp_view -- --include-ignored --test-threads=1
 
   install:
     desc: cos → ~/.cargo/bin; agents → ~/.claude/agents (for interactive Claude Code)
@@ -55,6 +56,12 @@ tasks:
       # every later exec is SIGKILLed.
       - cp target/release/cos {{.BIN}}.new
       - mv -f {{.BIN}}.new {{.BIN}}
+      # Exit 75: the daemon owns a live run. It is left running and moves to
+      # the new binary when it restarts idle.
+      - >-
+        {{.BIN}} daemon install
+        || { rc=$?; [ "$rc" -eq 75 ] || exit "$rc";
+        echo "cos daemon install refused (above); the running daemon moves to the new binary once its runs end"; }
       - mkdir -p ~/.claude/agents
       # Agents this repo no longer ships; left installed, they delegate to a
       # brain that is gone.
@@ -63,33 +70,26 @@ tasks:
         cmd: sed "s|@COS_HOME@|{{.ROOT_DIR}}|g" .claude/agents/{{.ITEM}}.md > ~/.claude/agents/{{.ITEM}}.md
 
   install-mcp:
-    desc: Register `cos mcp` with Claude Desktop and Codex (backs up the Desktop config)
+    desc: Register `cos mcp` with Claude Desktop and Codex through `cos connect` (keeps each config's original as `<config>.cos.orig`)
     deps: [install]
     cmds:
       - task: install-mcp-desktop
       - task: install-mcp-codex
 
+  # Each status mirrors `cos connect status`'s `installed`, so a client that
+  # is not on this Mac gets no config written.
   install-mcp-desktop:
     status:
-      - test ! -d "$(dirname "{{.DESKTOP_CONFIG}}")"
+      - test ! -d "{{.HOME}}/Library/Application Support/Claude"
     cmds:
-      - test -f "{{.DESKTOP_CONFIG}}" || echo '{}' > "{{.DESKTOP_CONFIG}}"
-      - cp "{{.DESKTOP_CONFIG}}" "{{.DESKTOP_CONFIG}}.bak"
-      - >-
-        jq --arg bin "{{.BIN}}" --arg path "{{.TOOL_PATH}}"
-        '.mcpServers.cos = {command: $bin, args: ["mcp"], env: {PATH: $path}}'
-        "{{.DESKTOP_CONFIG}}.bak" > "{{.DESKTOP_CONFIG}}"
-      - echo "Claude Desktop - restart it to load cos."
+      - "{{.BIN}} connect claude-desktop --repair"
 
   install-mcp-codex:
     status:
+      - test ! -d "${CODEX_HOME:-{{.HOME}}/.codex}"
       - "! command -v codex"
     cmds:
-      - codex mcp remove cos >/dev/null 2>&1 || true
-      - codex mcp add cos --env PATH="{{.TOOL_PATH}}" -- {{.BIN}} mcp
-      - >-
-        echo "Codex - the paid tools (brief, ask) can outlast Codex's 60s tool timeout;
-        add tool_timeout_sec = 320 under [mcp_servers.cos] in ~/.codex/config.toml."
+      - "{{.BIN}} connect codex --repair"
 
   kit:
     desc: Package the starter kit (allowlisted files only, per-file SHA256) to a new ZIP outside the repo
@@ -133,7 +133,13 @@ tasks:
       - rm -rf "{{.APP}}"
       - mv "{{.APP}}.new" "{{.APP}}"
       - codesign --verify --deep --strict "{{.APP}}"
+      # cos:// links open this bundle: LaunchServices learns its URL types
+      # here, and the last step reads the scheme back. A dump line lists every
+      # binding as `<CFBundleURLName> (0x..) (0x..)`, comma-separated, in any order.
+      - /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "{{.APP}}"
       - echo "installed {{.APP}}"
+      - |
+        timeout 60 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -dump URLSchemeBinding | grep -Eq '^cos:([[:space:]]+|.*, )dev\.decebal\.cos \(' || { echo "cos:// is not registered to dev.decebal.cos in LaunchServices" >&2; exit 1; }
 
   desktop-check:
     desc: fmt, clippy and build of the desktop crate

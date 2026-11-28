@@ -297,23 +297,120 @@ to skip the prompt. It does not authenticate you: see
 ### In Claude Desktop and Codex
 
 ```bash
-task install-mcp      # registers `cos mcp` with both (backs up the Desktop config)
+task install-mcp      # cos connect claude-desktop --repair, then cos connect codex --repair
 ```
 
+Each client is registered only when it is installed (below, `installed`).
 Restart Claude Desktop. Both apps then have these tools:
 
 | Tool | Cost | Notes |
 |---|---|---|
 | `latest_brief` | free, instant | read the last saved brief, week part included |
 | `plan`, `handoff` | free, instant | the workspace's open work; a deliverable's handoff |
-| `brief` | paid, minutes | fresh run |
-| `ask` | paid, minutes | the tactician answers a question |
+| `brief` | paid, minutes | starts a fresh brief and answers at once with its run |
+| `ask` | paid, minutes | starts the tactician on a question (1 to 4000 chars) and answers at once with its run |
+| `run_status` | free | a run's state; `wait_secs` (0 to 50) waits for it to end. Once done: the brief (`report`, `markdown`, `day`, `cost_usd`) or the `answer` |
+| `runs` | free | the business's latest runs, newest first (`limit` 1 to 20, default 5) |
+| `businesses` | free | the registered businesses, the default one, and the pin |
+
+`brief`, `ask`, `run_status` and `runs` return a run view: `run` (an id like
+`r-20261125-091502-k3x9`), `business`, `kind`, `state` (`queued`, `running`,
+`done`, `failed`, `deferred`, `stopped`, `lost`), `reason`, and
+`link`, `cos://run/<business>/<run>`, which opens the run in the desktop app
+(present for a registered business only; a server on unregistered
+directories labels its runs `default` or `explicit` and gives no link).
+`brief` while a brief for that business
+is running returns that run with `existing: true` and spends nothing. A
+client follows a run by calling `run_status` with `wait_secs`; 50 s fits
+inside Codex's 60 s tool timeout. The runs are files under
+`<home>/out/run-records/`, so `run_status` and `runs` also show runs started
+from a terminal, the schedule or the app.
+
+**Business per call.** Every tool takes an optional `business`. Without it,
+a `cos mcp` started with `--business`, `COS_BUSINESS`, `COS_HOME` or the
+directory flags acts on that business and refuses any other name; one started
+without them uses the registry's active business, read on each call, so
+`cos business use <name>` takes effect without restarting the client.
 
 In Claude Desktop the brief tools render a **dashboard** (an
 [MCP App](https://modelcontextprotocol.io/docs/extensions/apps)): Today / Week
-tabs over the same brief, reload, and a two-click "run new". For Codex, the paid tools can outlast
-the default 60 s tool timeout; add `tool_timeout_sec = 320` under
-`[mcp_servers.cos]` in `~/.codex/config.toml`.
+tabs over the same brief, reload, and a two-click "run new" that follows the
+run with `run_status` until it ends.
+
+#### `cos daemon`
+
+`task install` loads `cos daemon` under launchd as `cos.daemon`. It owns the
+paid runs MCP clients start, for every registered business, and follows
+every business's hires, so a run outlives the chat that started it.
+
+```bash
+cos daemon install [--force] [--bin <abs>]   # write ~/Library/LaunchAgents/cos.daemon.plist and load it
+cos daemon uninstall                         # boot it out and remove the plist
+cos daemon                                   # run it in the foreground
+```
+
+- It listens on `cos/daemon.sock` under your user temp dir; only you can open
+  it. A second daemon exits 0 with `already running`.
+- One brief per business at a time, whoever starts it: a brief holds
+  `out/run-records/brief.lock`, and a terminal `cos brief` while one runs
+  exits 73 naming the running one. At most 2 asks per business and 4 runs in
+  total run on the daemon; each has 420 s.
+- When the daemon is down, `cos mcp` runs `brief` and `ask` itself, under the
+  same caps, and ends them when the client closes.
+- Its log is `daemon.log` beside the socket.
+- `install` first drains the daemon (`drain`: every later start is refused),
+  so reloading it kills no run. It refuses (exit 75) while the daemon owns a
+  live run; `--force` stops those runs, then drains. A daemon you started
+  from a shell is not stopped by the reload: install fails naming its pid,
+  and the daemon takes runs again. `task install` reports
+  the refusal and goes on; the running daemon moves to the new binary once
+  its runs end.
+- On restart it marks the runs a previous daemon left behind `lost`, after
+  ending their processes.
+
+#### `cos connect`
+
+```bash
+cos connect status [--json]                           # one row per client
+cos connect claude-desktop [--repair] [--bin <abs>]   # register; --repair rewrites the entry
+cos connect codex [--repair] [--bin <abs>]            # register, with tool_timeout_sec = 320
+cos connect remove claude-desktop|codex               # drop only the cos entry
+```
+
+`--bin` defaults to the running `cos` and must be absolute, executable, and
+print `cos <version>` for `--version`. A write touches only the `cos` entry:
+other servers and keys keep their values (Claude Desktop's JSON keeps key
+order; Codex's TOML keeps its comments and other tables as text). The first
+write keeps the file as it was in `<config>.cos.orig`, with its mode, and later
+writes never overwrite that copy. A file that does not parse is left untouched
+and named. A file that changes between the read and the write is left as the
+other writer left it (`changed while writing; try again`). A symlinked config
+stays a link: its target is written, with `.cos.orig` beside the target.
+
+`status --json` prints `{"clients": [row, row]}`, one row per client:
+
+| Key | Meaning |
+|---|---|
+| `client` | `claude-desktop` or `codex` |
+| `config` | the config file: `~/Library/Application Support/Claude/claude_desktop_config.json`, or `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) |
+| `installed` | Claude Desktop: the config's directory exists. Codex: `$CODEX_HOME` exists or `codex` is on `PATH` |
+| `registered` | the `cos` entry is present (`.mcpServers.cos`, `[mcp_servers.cos]`) |
+| `command` | the entry's `command`, or `null` |
+| `command_ok` | `command` is absolute and executable |
+| `version` | the first line `command --version` printed, or `null` |
+| `version_ok` | `version` is `cos <this cos's version>` |
+| `version_stale` | the version check timed out (5 s) and `version` is the last result for that path in this process (the desktop app; a CLI call has none, so it reads `false`) |
+| `timeout_sec` | Codex's `tool_timeout_sec`, or `null` |
+| `daemon` | `unknown` here; the desktop app's Settings → Assistants card probes the daemon itself |
+| `error` | a parse error or failed version check, or `null` |
+| `problems` | the failing fields: `config`, `registered`, `command`, `version`, `timeout` (Codex, below 320) |
+| `ok` | `problems` is empty |
+
+The version check runs the configured binary once per path, size and mtime
+in a process, killed and reaped at 5 s. The cache lives in memory: the
+desktop app's Settings card reuses it, while each `cos connect status` is a
+new process and checks again. A config error names the file, line and column,
+never the file's text: these files hold other servers' secrets.
 
 In Claude Code, `task setup` also installs the `tactician` agent into
 `~/.claude/agents/`, so any session can delegate to it.

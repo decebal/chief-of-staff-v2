@@ -90,6 +90,7 @@ fn start(root: &Path, cos: PathBuf, slots: usize, pins: Sources) -> Start {
     Start {
         install: install.canonicalize().unwrap(),
         user_home: Some(root.join("user")),
+        codex_home: Some(root.join("codex")),
         registry: root.join("businesses.toml"),
         settings_file: root.join("settings.json"),
         data_dir: root.join("data"),
@@ -99,7 +100,20 @@ fn start(root: &Path, cos: PathBuf, slots: usize, pins: Sources) -> Start {
         sources: pins,
         cos_bin: Some(cos),
         slots: Some(slots),
+        daemon_dir: no_daemon(),
     }
+}
+
+/// A socket directory nothing listens in, short enough for `sun_path`: the
+/// window reads its daemon as down and never reaches the user's own.
+fn no_daemon() -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    std::env::temp_dir().join(format!(
+        "cosd-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ))
 }
 
 fn register(start: &Start, name: &str, b: &Business, active: bool) {
@@ -2952,7 +2966,7 @@ fn run_brief_starts_one_owned_brief_for_the_app_business_and_says_when_it_ends()
     let a = dirs(&root, "default");
     let start = start(&root, stub, 1, Sources::default());
     register(&start, "default", &a, true);
-    let (_app, w) = open(start);
+    let (app, w) = open(start);
 
     assert_eq!(
         call(&w, "brief_status", json!({})).unwrap()["running"],
@@ -2966,6 +2980,21 @@ fn run_brief_starts_one_owned_brief_for_the_app_business_and_says_when_it_ends()
     let started = call(&w, "brief_run", json!({ "business": "default" })).unwrap();
     assert_eq!(started["running"], true);
     assert_eq!(started["business"], "default");
+    let run = started["run"].as_str().expect("the run id").to_owned();
+    assert!(cos::runs::is_id(&run), "{started}");
+    let record = cos::runs::read(&a.home, &run)
+        .unwrap()
+        .expect("a run record");
+    assert_eq!(
+        record.owner,
+        cos::runs::Owner::App,
+        "no daemon answers: the window owns the run"
+    );
+    assert_eq!(
+        cos_desktop::owned_runs(app.handle()),
+        vec![run.clone()],
+        "the window keeps its RunChild while the run lives"
+    );
     let twice = call(&w, "brief_run", json!({ "business": "default" })).unwrap_err();
     assert!(error_text(&twice).contains("already running"), "{twice}");
     let until = Instant::now() + Duration::from_secs(20);
@@ -2978,6 +3007,13 @@ fn run_brief_starts_one_owned_brief_for_the_app_business_and_says_when_it_ends()
         std::thread::sleep(Duration::from_millis(100));
     };
     assert_eq!(ended["ok"], true, "{ended}");
+    assert_eq!(ended["run"], run, "{ended}");
+    assert!(
+        cos_desktop::owned_runs(app.handle()).is_empty(),
+        "reaped and dropped from the map"
+    );
+    let record = cos::runs::read(&a.home, &run).unwrap().unwrap();
+    assert!(record.state.is_final(), "{record:?}");
     let said = std::fs::read_to_string(&seen).unwrap();
     let (args, env) = said.split_once('\n').unwrap();
     assert_eq!(
@@ -2994,6 +3030,739 @@ fn run_brief_starts_one_owned_brief_for_the_app_business_and_says_when_it_ends()
         env.trim_end(),
         format!("business= home={}", a.home.display()),
         "the env is pinned to the same business"
+    );
+}
+
+/// A stand-in `cos daemon` on a unix socket in its own directory: answers
+/// `hello`, answers each `start` with `run` after writing its `queued` record
+/// under `home`, and keeps each `subscribe` connection for the test to write
+/// events into. Dropping it closes the listener's thread and the socket.
+struct StandInDaemon {
+    dir: PathBuf,
+    starts: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    /// Each `stop` it was sent; it writes the run `stopped` and replies so.
+    stops: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    subs: std::sync::Arc<std::sync::Mutex<Vec<std::os::unix::net::UnixStream>>>,
+    subscribed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The state of the record each `start` writes before it replies.
+    start_state: std::sync::Arc<std::sync::Mutex<&'static str>>,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// A run record as the daemon's run child writes it, with this test process
+/// as its live run process.
+fn write_record(home: &Path, id: &str, business: &str, kind: &str, state: &str) {
+    write_record_as(home, id, business, kind, state, "daemon");
+}
+
+fn write_record_as(home: &Path, id: &str, business: &str, kind: &str, state: &str, owner: &str) {
+    let me = std::process::id() as i32;
+    let start = cos::proc::start_of(me).expect("this process's start time");
+    let fin = !matches!(state, "queued" | "running");
+    let r = json!({
+        "id": id, "kind": kind, "business": business, "state": state, "owner": owner,
+        "pid": if state == "queued" { Value::Null } else { json!(me) },
+        "start": if state == "queued" { Value::Null } else { json!(start) },
+        "owner_pid": me, "owner_start": start,
+        "started": now_secs(), "ended": if fin { json!(now_secs()) } else { Value::Null },
+        "day": if state == "done" { json!("2026-11-26") } else { Value::Null },
+    });
+    let dir = home.join(cos::runs::DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = dir.join(format!(".{id}.tmp"));
+    std::fs::write(&tmp, r.to_string()).unwrap();
+    std::fs::rename(&tmp, dir.join(format!("{id}.json"))).unwrap();
+}
+
+impl StandInDaemon {
+    fn new(home: &Path, business: &'static str, run: &'static str) -> Self {
+        use std::io::{BufRead, Write};
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::Ordering;
+        let dir = no_daemon();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(dir.join("daemon.sock")).unwrap();
+        let mut d = StandInDaemon {
+            dir,
+            starts: Default::default(),
+            stops: Default::default(),
+            subs: Default::default(),
+            subscribed: Default::default(),
+            start_state: std::sync::Arc::new(std::sync::Mutex::new("queued")),
+            done: Default::default(),
+            thread: None,
+        };
+        let (starts, stops, subs, subscribed, start_state, done) = (
+            d.starts.clone(),
+            d.stops.clone(),
+            d.subs.clone(),
+            d.subscribed.clone(),
+            d.start_state.clone(),
+            d.done.clone(),
+        );
+        let home = home.to_owned();
+        let thread = std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                if done.load(Ordering::SeqCst) {
+                    return;
+                }
+                s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut line = String::new();
+                if std::io::BufReader::new(s.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .is_err()
+                {
+                    continue;
+                }
+                let Ok(req) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                let reply = match req["op"].as_str() {
+                    Some("hello") => json!({ "version": "0.0.0-stand-in", "pid": 1 }),
+                    Some("start") => {
+                        starts.lock().unwrap().push(req.clone());
+                        let state = *start_state.lock().unwrap();
+                        write_record(&home, run, business, "brief", state);
+                        json!({ "run": run, "existing": false })
+                    }
+                    Some("stop") => {
+                        stops.lock().unwrap().push(req.clone());
+                        let id = req["run"].as_str().unwrap_or_default();
+                        write_record(&home, id, business, "brief", "stopped");
+                        json!({ "state": "stopped" })
+                    }
+                    Some("subscribe") => {
+                        subs.lock().unwrap().push(s);
+                        subscribed.fetch_add(1, Ordering::SeqCst);
+                        continue;
+                    }
+                    _ => json!({ "error": "unknown op" }),
+                };
+                let _ = s.write_all(format!("{reply}\n").as_bytes());
+            }
+        });
+        d.thread = Some(thread);
+        d
+    }
+
+    fn wait_subscribed(&self, n: usize, within: Duration) {
+        let until = Instant::now() + within;
+        while self.subscribed.load(std::sync::atomic::Ordering::SeqCst) < n {
+            assert!(
+                Instant::now() < until,
+                "the window never subscribed {n} time(s)"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// One event line to every live subscriber.
+    fn send(&self, event: Value) {
+        use std::io::Write;
+        for s in self.subs.lock().unwrap().iter_mut() {
+            let _ = s.write_all(format!("{event}\n").as_bytes());
+        }
+    }
+
+    /// Closes every subscribe connection, as a daemon that went away.
+    fn hang_up(&self) {
+        for s in self.subs.lock().unwrap().drain(..) {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// Moves the socket aside: a new client reads the daemon as down while the
+    /// subscribe connections it already holds stay open, as a daemon flapping.
+    fn away(&self) {
+        std::fs::rename(self.dir.join("daemon.sock"), self.dir.join("away.sock")).unwrap();
+    }
+}
+
+impl Drop for StandInDaemon {
+    fn drop(&mut self) {
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.hang_up();
+        for sock in ["daemon.sock", "away.sock"] {
+            let _ = std::os::unix::net::UnixStream::connect(self.dir.join(sock));
+        }
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn with_the_daemon_up_the_window_starts_its_brief_there_and_follows_runs_it_streams() {
+    let root = scratch("daemon-up");
+    let a = dirs(&root, "acme");
+    const RUN: &str = "r-20261126-090000-ab12";
+    let daemon = StandInDaemon::new(&a.home, "acme", RUN);
+    let mut start = start(&root, cos_bin(), 1, Sources::default());
+    start.daemon_dir = daemon.dir.clone();
+    register(&start, "acme", &a, true);
+    let (app, w, rx) = open_listening(start, &["brief-changed", "report-changed"]);
+
+    let started = call(&w, "brief_run", json!({ "business": "acme" })).unwrap();
+    assert_eq!(started["running"], true, "{started}");
+    assert_eq!(started["run"], RUN, "the run id from the daemon's reply");
+    let sent = daemon.starts.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["kind"], "brief");
+    assert_eq!(sent[0]["business"], "acme");
+    let req = sent[0]["client_req"].as_str().unwrap();
+    assert!(
+        req.len() == 16 && req.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{req}"
+    );
+    assert!(
+        cos_desktop::owned_runs(app.handle()).is_empty(),
+        "the daemon owns the run, not the window"
+    );
+
+    daemon.wait_subscribed(1, Duration::from_secs(10));
+    write_record(&a.home, RUN, "acme", "brief", "running");
+    daemon.send(json!({ "run": RUN, "business": "acme", "kind": "brief", "state": "running" }));
+    let seen = std::cell::RefCell::new(Vec::new());
+    let running = next_event(&rx, "brief-changed", Duration::from_secs(5), |p| {
+        seen.borrow_mut().push(p.clone());
+        p["run"] == RUN && p["state"] == "running"
+    })
+    .expect("brief-changed for the running record");
+    assert_eq!(running["business"], "acme");
+    assert_eq!(running["running"], true);
+
+    const ASK: &str = "r-20261126-090005-qq77";
+    write_record(&a.home, ASK, "acme", "ask", "running");
+    daemon.send(json!({ "run": ASK, "business": "acme", "kind": "ask", "state": "running" }));
+    let ask = next_event(&rx, "brief-changed", Duration::from_secs(5), |p| {
+        seen.borrow_mut().push(p.clone());
+        p["run"] == ASK
+    })
+    .expect("an ask carries its run id too");
+    assert_eq!(ask["kind"], "ask");
+    assert_eq!(
+        call(&w, "brief_status", json!({})).unwrap()["run"],
+        RUN,
+        "an ask leaves the window's brief as it was"
+    );
+
+    daemon.send(json!({ "run": "r-20261126-090001-zz99", "business": "zeta", "kind": "brief", "state": "done" }));
+    write_record(&a.home, RUN, "acme", "brief", "done");
+    daemon.send(json!({ "run": RUN, "business": "acme", "kind": "brief", "state": "done" }));
+    let done = next_event(&rx, "brief-changed", Duration::from_secs(5), |p| {
+        seen.borrow_mut().push(p.clone());
+        p["run"] == RUN && p["running"] == false
+    })
+    .expect("brief-changed for the done record");
+    assert_eq!(done["ok"], true, "{done}");
+    assert_eq!(done["state"], "done");
+    assert!(
+        seen.borrow().iter().all(|p| p["business"] == "acme"),
+        "another business's run never reaches this window: {:?}",
+        seen.borrow()
+    );
+    next_event(&rx, "report-changed", Duration::from_secs(5), |p| {
+        p["run"] == RUN
+    })
+    .expect("report-changed once the run is final");
+    let status = call(&w, "brief_status", json!({})).unwrap();
+    assert_eq!(status["running"], false, "{status}");
+    assert_eq!(status["ok"], true, "{status}");
+
+    daemon.hang_up();
+    daemon.wait_subscribed(2, Duration::from_secs(6));
+}
+
+/// A window on `acme` with `daemon` as its daemon, listening for run events.
+fn open_on_daemon(
+    root: &Path,
+    a: &Business,
+    daemon: &StandInDaemon,
+    cos: PathBuf,
+) -> (tauri::App<MockRuntime>, Win, Events) {
+    let mut start = start(root, cos, 1, Sources::default());
+    start.daemon_dir = daemon.dir.clone();
+    register(&start, "acme", a, true);
+    open_listening(start, &["brief-changed", "report-changed"])
+}
+
+#[test]
+fn a_brief_that_ends_while_no_stream_is_open_is_read_again() {
+    let root = scratch("daemon-gap");
+    let a = dirs(&root, "acme");
+    const RUN: &str = "r-20261126-091000-cd34";
+    let daemon = StandInDaemon::new(&a.home, "acme", RUN);
+    let (_app, w, rx) = open_on_daemon(&root, &a, &daemon, cos_bin());
+
+    call(&w, "brief_run", json!({ "business": "acme" })).unwrap();
+    daemon.wait_subscribed(1, Duration::from_secs(10));
+    write_record(&a.home, RUN, "acme", "brief", "running");
+    daemon.send(json!({ "run": RUN, "business": "acme", "kind": "brief", "state": "running" }));
+    next_event(&rx, "brief-changed", Duration::from_secs(5), |p| {
+        p["run"] == RUN && p["state"] == "running"
+    })
+    .expect("brief-changed for the running record");
+
+    daemon.hang_up();
+    write_record(&a.home, RUN, "acme", "brief", "done");
+    daemon.wait_subscribed(2, Duration::from_secs(6));
+    let done = next_event(&rx, "brief-changed", Duration::from_secs(5), |p| {
+        p["run"] == RUN && p["running"] == false
+    })
+    .expect("the final state written while no stream was open, read on reconnect");
+    assert_eq!(done["state"], "done", "{done}");
+    next_event(&rx, "report-changed", Duration::from_secs(5), |p| {
+        p["run"] == RUN
+    })
+    .expect("report-changed for it too");
+    assert_eq!(
+        call(&w, "brief_status", json!({})).unwrap()["running"],
+        false
+    );
+
+    const NEXT: &str = "r-20261126-091500-cd35";
+    write_record(&a.home, NEXT, "acme", "brief", "running");
+    daemon.send(json!({ "run": NEXT, "business": "acme", "kind": "brief", "state": "running" }));
+    next_event(&rx, "brief-changed", Duration::from_secs(5), |p| {
+        p["run"] == NEXT && p["running"] == true
+    })
+    .expect("brief-changed for the next brief");
+    drop(daemon);
+    write_record(&a.home, NEXT, "acme", "brief", "failed");
+    let status = call(&w, "brief_status", json!({})).unwrap();
+    assert_eq!(
+        status["running"], false,
+        "with no daemon to reconnect to, the status reads the record: {status}"
+    );
+    assert_eq!(status["state"], "failed", "{status}");
+}
+
+#[test]
+fn a_daemon_brief_already_final_at_start_is_not_shown_running() {
+    let root = scratch("daemon-fast-fail");
+    let a = dirs(&root, "acme");
+    const RUN: &str = "r-20261126-092000-ef56";
+    let daemon = StandInDaemon::new(&a.home, "acme", RUN);
+    *daemon.start_state.lock().unwrap() = "failed";
+    let (_app, w, _rx) = open_on_daemon(&root, &a, &daemon, cos_bin());
+
+    let started = call(&w, "brief_run", json!({ "business": "acme" })).unwrap();
+    assert_eq!(started["run"], RUN, "{started}");
+    assert_eq!(started["running"], false, "{started}");
+    assert_eq!(started["state"], "failed", "{started}");
+    let status = call(&w, "brief_status", json!({})).unwrap();
+    assert_eq!(status["running"], false, "{status}");
+}
+
+#[test]
+fn a_brief_already_running_for_the_business_switched_to_is_shown_running() {
+    let root = scratch("brief-after-switch");
+    let (a, b) = (dirs(&root, "acme"), dirs(&root, "beta"));
+    seed(&a.workspace, None);
+    seed(&b.workspace, None);
+    let start = start(&root, cos_bin(), 1, Sources::default());
+    register(&start, "acme", &a, true);
+    register(&start, "beta", &b, false);
+    let (_app, w) = open(start);
+    assert_eq!(
+        call(&w, "brief_status", json!({})).unwrap()["running"],
+        false
+    );
+
+    const RUN: &str = "r-20261126-094000-bb01";
+    write_record(&b.home, RUN, "beta", "brief", "running");
+    let cos::runs::Taken::Held(_lock) = cos::runs::take_brief_lock(&b.home, RUN).unwrap() else {
+        panic!("lock busy in a fresh home");
+    };
+    switch(&w, "beta").unwrap();
+    let status = call(&w, "brief_status", json!({})).unwrap();
+    assert_eq!(status["run"], RUN, "{status}");
+    assert_eq!(status["business"], "beta", "{status}");
+    assert_eq!(status["running"], true, "{status}");
+}
+
+#[test]
+fn an_owned_brief_refuses_a_second_after_a_streamed_brief_replaces_the_shown_one() {
+    let root = scratch("daemon-flap");
+    let stub = root.join("cos-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\nsleep 4\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let a = dirs(&root, "acme");
+    const OTHER: &str = "r-20261126-093000-gh78";
+    let daemon = StandInDaemon::new(&a.home, "acme", OTHER);
+    let (app, w, rx) = open_on_daemon(&root, &a, &daemon, stub);
+    daemon.wait_subscribed(1, Duration::from_secs(10));
+
+    daemon.away();
+    let owned = call(&w, "brief_run", json!({ "business": "acme" })).unwrap();
+    let mine = owned["run"].as_str().unwrap().to_owned();
+    assert_eq!(cos_desktop::owned_runs(app.handle()), vec![mine.clone()]);
+
+    write_record(&a.home, OTHER, "acme", "brief", "running");
+    daemon.send(json!({ "run": OTHER, "business": "acme", "kind": "brief", "state": "running" }));
+    next_event(&rx, "brief-changed", Duration::from_secs(5), |p| {
+        p["run"] == OTHER
+    })
+    .expect("the streamed brief is shown");
+
+    let twice = call(&w, "brief_run", json!({ "business": "acme" })).unwrap_err();
+    assert!(error_text(&twice).contains("already running"), "{twice}");
+    assert_eq!(
+        cos_desktop::owned_runs(app.handle()),
+        vec![mine],
+        "no second owned brief child"
+    );
+}
+
+/// Rewrites fields of a record the test planted, as its run process would.
+fn patch_record(home: &Path, id: &str, patch: Value) {
+    let path = cos::runs::path(home, id);
+    let mut r: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for (k, v) in patch.as_object().unwrap() {
+        r[k] = v.clone();
+    }
+    std::fs::write(&path, r.to_string()).unwrap();
+}
+
+#[test]
+fn run_get_shows_queued_running_reader_lost_and_done_runs() {
+    let root = scratch("run-get");
+    let a = dirs(&root, "acme");
+    let start = start(&root, cos_bin(), 1, Sources::default());
+    register(&start, "acme", &a, true);
+    let (_app, w) = open(start);
+    let get = |run: &str| call(&w, "run_get", json!({ "business": "acme", "run": run }));
+
+    const QUEUED: &str = "r-20261126-100000-aa01";
+    write_record(&a.home, QUEUED, "acme", "brief", "queued");
+    let q = get(QUEUED).unwrap();
+    assert_eq!(q["state"], "queued", "{q}");
+    assert_eq!(q["kind"], "brief");
+    assert_eq!(q["owner"], "daemon");
+    assert_eq!(q["link"], format!("cos://run/acme/{QUEUED}"));
+    assert!(q["started"].as_i64().is_some(), "{q}");
+    assert_eq!(
+        q["stoppable"], true,
+        "a live daemon run can be stopped: {q}"
+    );
+
+    const RUNNING: &str = "r-20261126-100100-aa02";
+    write_record(&a.home, RUNNING, "acme", "ask", "running");
+    let r = get(RUNNING).unwrap();
+    assert_eq!(r["state"], "running", "{r}");
+    assert_eq!(r["kind"], "ask");
+    assert!(r.get("answer").is_none(), "no answer while it runs: {r}");
+
+    const LOST: &str = "r-20261126-100200-aa03";
+    write_record(&a.home, LOST, "acme", "brief", "running");
+    patch_record(&a.home, LOST, json!({ "start": "1.000001" }));
+    let before = std::fs::read(cos::runs::path(&a.home, LOST)).unwrap();
+    let l = get(LOST).unwrap();
+    assert_eq!(l["state"], "lost", "its process is gone: {l}");
+    assert_eq!(l["stoppable"], false, "{l}");
+    assert_eq!(
+        std::fs::read(cos::runs::path(&a.home, LOST)).unwrap(),
+        before,
+        "a reader never writes the record"
+    );
+
+    const BRIEF: &str = "r-20261126-100300-aa04";
+    cos::store::save(
+        &a.home,
+        cos::store::Kind::Briefs,
+        "2026-11-26",
+        &cos::reports::Brief {
+            headline: "Ship the north-wind pilot".into(),
+            needs_you: vec![],
+            what_changed: vec![],
+            week: Default::default(),
+            calendar: vec![],
+            backlog: vec![],
+            coverage: vec![],
+            gaps: vec![],
+            upcoming: vec![],
+            tickets: vec![],
+        },
+        "# acme brief\n",
+    )
+    .unwrap();
+    write_record(&a.home, BRIEF, "acme", "brief", "done");
+    let b = get(BRIEF).unwrap();
+    assert_eq!(b["state"], "done", "{b}");
+    assert_eq!(b["day"], "2026-11-26");
+    assert_eq!(b["report"]["headline"], "Ship the north-wind pilot", "{b}");
+    assert_eq!(b["markdown"], "# acme brief\n");
+    assert_eq!(b["stoppable"], false);
+
+    const ASK: &str = "r-20261126-100400-aa05";
+    write_record(&a.home, ASK, "acme", "ask", "done");
+    patch_record(
+        &a.home,
+        ASK,
+        json!({ "answer": "## Pilot\n\n- **ready** on Friday" }),
+    );
+    let k = get(ASK).unwrap();
+    assert_eq!(k["state"], "done", "{k}");
+    assert_eq!(k["answer"], "## Pilot\n\n- **ready** on Friday");
+
+    let missing = get("r-20261126-235959-zz99").unwrap_err();
+    assert!(error_text(&missing).contains("no run"), "{missing}");
+    let bad = get("../etc/passwd").unwrap_err();
+    assert!(error_text(&bad).contains("not a run id"), "{bad}");
+    let stale = call(&w, "run_get", json!({ "business": "beta", "run": QUEUED })).unwrap_err();
+    assert!(
+        error_text(&stale).contains("nothing written, run or killed"),
+        "{stale}"
+    );
+}
+
+#[test]
+fn run_get_on_an_unregistered_window_home_carries_no_link() {
+    let root = scratch("run-get-unregistered");
+    let other = dirs(&root, "other");
+    let start = start(&root, cos_bin(), 1, Sources::default());
+    // A registry with no active business keeps the first start from
+    // registering the install as `default`: the window is the defaults layer.
+    register(&start, "other", &other, false);
+    let install = start.install.clone();
+    let (_app, w) = open(start);
+    let paths = call(&w, "paths", json!({})).unwrap();
+    assert_eq!(paths["home"], json!(install), "{paths}");
+    assert_eq!(paths["business"], "default", "{paths}");
+
+    const RUN: &str = "r-20261126-101000-ab01";
+    write_record(&install, RUN, "default", "ask", "running");
+    let got = call(&w, "run_get", json!({ "business": "default", "run": RUN })).unwrap();
+    assert_eq!(got["state"], "running", "{got}");
+    assert!(got.get("link").is_none(), "{got}");
+    assert_eq!(got["stoppable"], false, "{got}");
+}
+
+#[test]
+fn run_stop_asks_the_daemon_for_its_runs_and_refuses_runs_started_elsewhere() {
+    let root = scratch("run-stop-daemon");
+    let a = dirs(&root, "acme");
+    const RUN: &str = "r-20261126-110000-bb01";
+    let daemon = StandInDaemon::new(&a.home, "acme", RUN);
+    let (_app, w, _rx) = open_on_daemon(&root, &a, &daemon, cos_bin());
+    let stop = |run: &str| call(&w, "run_stop", json!({ "business": "acme", "run": run }));
+
+    write_record(&a.home, RUN, "acme", "brief", "running");
+    let stopped = stop(RUN).unwrap();
+    assert_eq!(stopped["state"], "stopped", "{stopped}");
+    let sent = daemon.stops.lock().unwrap().clone();
+    assert_eq!(
+        sent,
+        vec![json!({ "op": "stop", "run": RUN, "business": "acme" })],
+        "one stop, on the run.stop binding"
+    );
+
+    for (id, owner) in [
+        ("r-20261126-110100-bb02", "self"),
+        ("r-20261126-110200-bb03", "mcp"),
+        ("r-20261126-110300-bb04", "app"),
+    ] {
+        write_record_as(&a.home, id, "acme", "ask", "running", owner);
+        assert_eq!(
+            call(&w, "run_get", json!({ "business": "acme", "run": id })).unwrap()["stoppable"],
+            false,
+            "{owner}"
+        );
+        let refused = stop(id).unwrap_err();
+        assert!(
+            error_text(&refused).contains(&format!("not stoppable here: started by {owner}")),
+            "{owner}: {refused}"
+        );
+        assert_eq!(
+            cos::runs::read(&a.home, id).unwrap().unwrap().state,
+            cos::runs::State::Running,
+            "{owner}: a refused stop touches nothing"
+        );
+    }
+    assert_eq!(daemon.stops.lock().unwrap().len(), 1, "no stop for them");
+    let stale = call(&w, "run_stop", json!({ "business": "beta", "run": RUN })).unwrap_err();
+    assert!(
+        error_text(&stale).contains("nothing written, run or killed"),
+        "{stale}"
+    );
+}
+
+#[test]
+fn run_stop_stops_a_run_this_window_owns() {
+    let root = scratch("run-stop-app");
+    let stub = root.join("cos-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\nsleep 30\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let a = dirs(&root, "acme");
+    let start = start(&root, stub, 1, Sources::default());
+    register(&start, "acme", &a, true);
+    let (app, w) = open(start);
+
+    let run = call(&w, "brief_run", json!({ "business": "acme" })).unwrap()["run"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = call(&w, "run_get", json!({ "business": "acme", "run": run })).unwrap();
+    assert_eq!(shown["owner"], "app", "{shown}");
+    assert_eq!(shown["stoppable"], true, "this window owns it: {shown}");
+    let began = Instant::now();
+    let stopped = call(&w, "run_stop", json!({ "business": "acme", "run": run })).unwrap();
+    assert_eq!(stopped["state"], "stopped", "{stopped}");
+    assert!(began.elapsed() < Duration::from_secs(15));
+    assert!(
+        cos_desktop::owned_runs(app.handle()).is_empty(),
+        "reaped and dropped"
+    );
+    assert_eq!(
+        cos::runs::read(&a.home, &run).unwrap().unwrap().state,
+        cos::runs::State::Stopped
+    );
+    let until = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let s = call(&w, "brief_status", json!({})).unwrap();
+        if s["running"] == false || Instant::now() > until {
+            break s;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status["running"], false, "{status}");
+    assert_eq!(status["state"], "stopped", "{status}");
+}
+
+/// Whether the stand-in Herdr was asked `get` for `address`.
+fn got(herdr: &fake_herdr::Fake, address: &str) -> bool {
+    herdr
+        .calls()
+        .lines()
+        .any(|l| l == format!("get | {address} | --json"))
+}
+
+/// A business's directories with a committed repo under its projects.
+fn with_repo(root: &Path, name: &str) -> (Business, PathBuf) {
+    let b = dirs(root, name);
+    seed(&b.workspace, None);
+    let repo = b.projects.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "demo\n").unwrap();
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    (b, repo)
+}
+
+#[test]
+fn while_the_daemon_answers_the_window_follows_only_the_hires_it_does_not() {
+    let root = scratch("daemon-follow");
+    let herdr = fake_herdr::fake(&root);
+    std::fs::write(herdr.state.join("next"), "7300").unwrap();
+    let (a, a_repo) = with_repo(&root, "acme");
+    let (u, u_repo) = with_repo(&root, "loose");
+    let daemon = StandInDaemon::new(&a.home, "acme", "r-20261126-094000-ij90");
+
+    let mut base = start(&root, cos_bin(), 1, Sources::default());
+    base.daemon_dir = daemon.dir.clone();
+    register(&base, "acme", &a, true);
+    let (_app, w) = open(base.clone());
+    let mut loose = base.clone();
+    loose.sources = Sources {
+        dirs: Dirs {
+            home: Some(u.home.clone()),
+            workspace: Some(u.workspace.clone()),
+            projects: Some(u.projects.clone()),
+        },
+        ..Default::default()
+    };
+    let (_app_u, wu) = open(loose);
+    let explicit = call(&wu, "paths", json!({})).unwrap()["business"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let id = hire(&w, "acme", hire_args(&a_repo, json!({ "prompt": "edit" })));
+    let t = address(&w, &id);
+    let id_u = hire(
+        &wu,
+        &explicit,
+        hire_args(&u_repo, json!({ "prompt": "edit" })),
+    );
+    let t_u = address(&wu, &id_u);
+    std::fs::write(herdr.state.join("calls.log"), "").unwrap();
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(
+        !got(&herdr, &t),
+        "a registered home's hire is the daemon's to follow:\n{}",
+        herdr.calls()
+    );
+    assert!(
+        got(&herdr, &t_u),
+        "the window's unregistered home has no daemon following it:\n{}",
+        herdr.calls()
+    );
+
+    drop(daemon);
+    let until = Instant::now() + Duration::from_secs(10);
+    while !got(&herdr, &t) {
+        assert!(
+            Instant::now() < until,
+            "the window never took the hire back once the daemon went"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    for (win, business, run) in [(&w, "acme", &id), (&wu, explicit.as_str(), &id_u)] {
+        call(
+            win,
+            "agents_stop",
+            json!({ "business": business, "id": run }),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn make_default_sets_the_registry_business_mcp_clients_use_and_the_picker_marks_it() {
+    let root = scratch("make-default");
+    let a = dirs(&root, "acme");
+    let z = dirs(&root, "zeta");
+    let start = start(&root, cos_bin(), 1, Sources::default());
+    register(&start, "acme", &a, true);
+    register(&start, "zeta", &z, false);
+    let registry = start.registry.clone();
+    let (_app, w) = open(start);
+
+    let made = call(&w, "business_make_default", json!({ "name": "zeta" })).unwrap();
+    assert_eq!(made, json!({ "active": "zeta" }));
+    assert_eq!(
+        cos::business::load(&registry).unwrap().active.as_deref(),
+        Some("zeta")
+    );
+    let rows = call(&w, "businesses", json!({})).unwrap();
+    assert_eq!(row(&rows, "zeta")["active"], true, "{rows}");
+    assert_eq!(row(&rows, "acme")["active"], false, "{rows}");
+    assert_eq!(
+        row(&rows, "acme")["app"],
+        true,
+        "the window stays on its own business"
+    );
+    assert_eq!(call(&w, "paths", json!({})).unwrap()["business"], "acme");
+
+    let refused = call(&w, "business_make_default", json!({ "name": "nope" })).unwrap_err();
+    assert!(error_text(&refused).contains("nope"), "{refused}");
+    assert_eq!(
+        cos::business::load(&registry).unwrap().active.as_deref(),
+        Some("zeta"),
+        "a refused name changes nothing"
     );
 }
 
@@ -3332,4 +4101,277 @@ fn only_the_report_frame_runs_a_brief_and_passes_it_nothing() {
         "the window names its own business; nothing comes from the page"
     );
     assert!(body.contains(r#"if (briefNow?.state === "running") return;"#));
+}
+
+/// A temp `HOME` where both clients count as installed, and a `CODEX_HOME`
+/// beside it; nothing under the real home is read or written.
+fn assistants_start(root: &Path) -> Start {
+    let mut s = start(root, cos_bin(), 1, Sources::default());
+    let user = root.join("user");
+    std::fs::create_dir_all(user.join("Library/Application Support/Claude")).unwrap();
+    let codex = root.join("codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    s.codex_home = Some(codex);
+    s
+}
+
+fn client_row<'a>(status: &'a Value, client: &str) -> &'a Value {
+    status["clients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["client"] == client)
+        .unwrap_or_else(|| panic!("no {client} row in {status}"))
+}
+
+/// A `cos` that prints an older version than this app's.
+fn old_cos(root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = root.join("old-cos");
+    std::fs::write(&p, "#!/bin/sh\necho 'cos 0.0.9'\n").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+#[test]
+fn connect_status_and_apply_on_a_temp_home_name_version_skew() {
+    let root = scratch("assistants");
+    let a = dirs(&root, "acme");
+    let daemon = StandInDaemon::new(&a.home, "acme", "r-20261126-090000-ab12");
+    let mut start = assistants_start(&root);
+    start.daemon_dir = daemon.dir.clone();
+    let desktop = root.join("user/Library/Application Support/Claude/claude_desktop_config.json");
+    let codex = root.join("codex/config.toml");
+    let (_app, w) = open(start);
+    let app_version = cos::connect::VERSION;
+
+    let s = call(&w, "connect_status", json!({})).unwrap();
+    assert_eq!(s["app_version"], app_version, "{s}");
+    for client in ["claude-desktop", "codex"] {
+        let r = client_row(&s, client);
+        assert_eq!(r["installed"], true, "{r}");
+        assert_eq!(r["registered"], false, "{r}");
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(
+            r["problems"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("registered")),
+            "{r}"
+        );
+    }
+    assert_eq!(client_row(&s, "claude-desktop")["label"], "Claude Desktop");
+    assert_eq!(client_row(&s, "codex")["label"], "Codex");
+    assert_eq!(client_row(&s, "codex")["config"], json!(codex));
+    assert_eq!(s["daemon"]["state"], "up", "{s}");
+    assert_eq!(s["daemon"]["version"], "0.0.0-stand-in");
+    let skew = s["daemon"]["skew"]
+        .as_str()
+        .expect("the daemon's skew named");
+    assert!(
+        skew.contains("0.0.0-stand-in") && skew.contains(app_version),
+        "{skew}"
+    );
+
+    let r = call(
+        &w,
+        "connect_apply",
+        json!({ "client": "claude-desktop", "action": "register" }),
+    )
+    .unwrap();
+    assert_eq!(r["outcome"], "registered", "{r}");
+    assert_eq!(
+        r["restart"], true,
+        "a Claude Desktop write asks for a restart"
+    );
+    let cd = client_row(&r["status"], "claude-desktop");
+    assert_eq!(cd["ok"], true, "{cd}");
+    let cos = cos_bin().canonicalize().unwrap();
+    assert_eq!(cd["command"], json!(cos));
+    assert!(cd["skew"].is_null(), "{cd}");
+    let cfg: Value = serde_json::from_slice(&std::fs::read(&desktop).unwrap()).unwrap();
+    assert_eq!(cfg["mcpServers"]["cos"]["args"], json!(["mcp"]));
+
+    let r = call(
+        &w,
+        "connect_apply",
+        json!({ "client": "codex", "action": "register" }),
+    )
+    .unwrap();
+    assert_eq!(r["outcome"], "registered", "{r}");
+    assert_eq!(r["restart"], false, "only Claude Desktop needs a restart");
+    let cx = client_row(&r["status"], "codex");
+    assert_eq!(cx["ok"], true, "{cx}");
+    assert_eq!(cx["timeout_sec"], 320);
+    let toml = std::fs::read_to_string(&codex).unwrap();
+    assert!(toml.contains("[mcp_servers.cos]"), "{toml}");
+
+    let r = call(
+        &w,
+        "connect_apply",
+        json!({ "client": "codex", "action": "register" }),
+    )
+    .unwrap();
+    assert_eq!(r["outcome"], "already-registered", "{r}");
+
+    // The configured binary is an older cos: red, the version named.
+    let old = old_cos(&root);
+    let text = std::fs::read_to_string(&desktop).unwrap();
+    std::fs::write(
+        &desktop,
+        text.replace(cos.to_str().unwrap(), old.to_str().unwrap()),
+    )
+    .unwrap();
+    let s = call(&w, "connect_status", json!({})).unwrap();
+    let cd = client_row(&s, "claude-desktop");
+    assert_eq!(cd["ok"], false, "{cd}");
+    assert!(
+        cd["problems"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("version")),
+        "{cd}"
+    );
+    let skew = cd["skew"].as_str().expect("the client's skew named");
+    assert!(
+        skew.contains("0.0.9") && skew.contains(app_version) && skew.contains("Claude Desktop"),
+        "{skew}"
+    );
+
+    let r = call(
+        &w,
+        "connect_apply",
+        json!({ "client": "claude-desktop", "action": "repair" }),
+    )
+    .unwrap();
+    assert_eq!(r["outcome"], "repaired", "{r}");
+    assert_eq!(r["restart"], true);
+    let cd = client_row(&r["status"], "claude-desktop");
+    assert_eq!(cd["ok"], true, "{cd}");
+    assert!(cd["skew"].is_null(), "{cd}");
+
+    let r = call(
+        &w,
+        "connect_apply",
+        json!({ "client": "claude-desktop", "action": "remove" }),
+    )
+    .unwrap();
+    assert_eq!(r["outcome"], "removed", "{r}");
+    assert_eq!(r["restart"], true);
+    assert_eq!(
+        client_row(&r["status"], "claude-desktop")["registered"],
+        false
+    );
+    assert!(
+        desktop.with_extension("json.cos.orig").exists(),
+        "the pre-cos original kept"
+    );
+
+    for bad in [
+        json!({ "client": "cursor", "action": "register" }),
+        json!({ "client": "codex", "action": "upgrade" }),
+    ] {
+        let e = call(&w, "connect_apply", bad.clone()).unwrap_err();
+        assert!(e.as_str().is_some_and(|m| !m.is_empty()), "{bad}: {e}");
+    }
+}
+
+#[test]
+fn connect_status_with_the_daemon_down_names_no_skew_and_a_bad_config_by_file() {
+    let root = scratch("assistants-down");
+    let start = assistants_start(&root);
+    let codex = root.join("codex/config.toml");
+    std::fs::write(&codex, "[mcp_servers.cos\n").unwrap();
+    let (_app, w) = open(start);
+
+    let s = call(&w, "connect_status", json!({})).unwrap();
+    assert_eq!(s["daemon"]["state"], "down", "{s}");
+    assert!(s["daemon"]["version"].is_null(), "{s}");
+    assert!(s["daemon"]["skew"].is_null(), "{s}");
+    let cx = client_row(&s, "codex");
+    assert_eq!(cx["ok"], false, "{cx}");
+    assert!(
+        cx["problems"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("config")),
+        "{cx}"
+    );
+    assert!(
+        cx["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("config.toml"),
+        "{cx}"
+    );
+    let e = call(
+        &w,
+        "connect_apply",
+        json!({ "client": "codex", "action": "register" }),
+    )
+    .unwrap_err();
+    assert!(
+        e.as_str().unwrap_or_default().contains("config.toml"),
+        "{e}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&codex).unwrap(),
+        "[mcp_servers.cos\n",
+        "a file that does not parse is left as it was"
+    );
+}
+
+#[test]
+fn a_configured_binary_that_is_not_cos_names_no_skew() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = scratch("assistants-not-cos");
+    let start = assistants_start(&root);
+    let desktop = root.join("user/Library/Application Support/Claude/claude_desktop_config.json");
+    let (_app, w) = open(start);
+    call(
+        &w,
+        "connect_apply",
+        json!({ "client": "claude-desktop", "action": "register" }),
+    )
+    .unwrap();
+    let other = root.join("other-bin");
+    std::fs::write(&other, "#!/bin/sh\necho 'claude 1.2.3'\n").unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cos = cos_bin().canonicalize().unwrap();
+    let text = std::fs::read_to_string(&desktop).unwrap();
+    std::fs::write(
+        &desktop,
+        text.replace(cos.to_str().unwrap(), other.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let s = call(&w, "connect_status", json!({})).unwrap();
+    let cd = client_row(&s, "claude-desktop");
+    assert_eq!(cd["ok"], false, "{cd}");
+    assert!(
+        cd["problems"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("version")),
+        "{cd}"
+    );
+    assert!(
+        cd["skew"].is_null(),
+        "not cos, so no other cos version: {cd}"
+    );
+}
+
+#[test]
+fn a_daemon_socket_that_cannot_be_probed_is_an_error_naming_the_socket() {
+    let root = scratch("assistants-daemon-error");
+    let mut start = assistants_start(&root);
+    start.daemon_dir = root.join("d".repeat(120));
+    let (_app, w) = open(start);
+
+    let s = call(&w, "connect_status", json!({})).unwrap();
+    assert_eq!(s["daemon"]["state"], "error", "{s}");
+    assert!(s["daemon"]["version"].is_null(), "{s}");
+    assert!(s["daemon"]["skew"].is_null(), "{s}");
+    let e = s["daemon"]["error"].as_str().expect("the error named");
+    assert!(e.contains("daemon.sock"), "{e}");
 }
