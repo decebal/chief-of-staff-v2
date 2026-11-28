@@ -5,6 +5,7 @@
 #[path = "common/prime.rs"]
 mod stand_in;
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -123,6 +124,57 @@ fn show_prints_the_skill_set_a_role_would_get() {
 
     let o = cos(&root, &p, &["skills", "show", "--role", "chief-of-staff"]);
     assert!(!o.status.success());
+}
+
+#[test]
+fn show_with_a_repo_lists_the_repos_role_skills_as_repo_role() {
+    let (root, p) = machine("show-repo");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(repo.join(".allsource")).unwrap();
+    std::fs::write(
+        repo.join(".allsource/roles.toml"),
+        "version = 1\n\n[roles.builder]\nskills = [\"tdd\"]\n",
+    )
+    .unwrap();
+    let bin = root.join("tool/allsource-skills");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-allsource-skills.sh"),
+        &bin,
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(bin.parent().unwrap().join("skills"), "tdd").unwrap();
+    let built = Command::new(&bin)
+        .args(["install", "--repo"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "install: {built:?}");
+
+    let o = Command::new(COS)
+        .arg("--home")
+        .arg(root.join("home"))
+        .args(["skills", "show", "--role", "builder", "--repo"])
+        .arg(&repo)
+        .env("COS_SKILLS_HOME", root.join("user"))
+        .env("COS_PRIME_URL", p.url())
+        .env("COS_ALLSOURCE_SKILLS", &bin)
+        .env_remove("COS_RUN_ID")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let (out, err) = text(&o);
+    assert!(o.status.success(), "{err}");
+    let set: Value = serde_json::from_str(&out).unwrap();
+    let tdd = set["picked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "tdd")
+        .unwrap_or_else(|| panic!("tdd picked: {set}"));
+    assert_eq!(tdd["why"], "repo-role", "{set}");
+    assert_eq!(tdd["root"], "repo", "{set}");
 }
 
 #[test]

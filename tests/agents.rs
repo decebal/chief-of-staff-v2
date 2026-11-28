@@ -414,7 +414,10 @@ fn the_deadline_interrupts_then_kills_and_the_judge_runs_once() {
         "{}",
         f.calls()
     );
-    assert!(!f.calls().contains("kill"), "the stop key first");
+    assert!(
+        !f.calls().contains(&format!("kill | {t}")),
+        "the stop key first"
+    );
     assert_eq!(st.status, Status::Running);
     assert!(st.herdr.as_ref().unwrap().interrupted.is_some());
 

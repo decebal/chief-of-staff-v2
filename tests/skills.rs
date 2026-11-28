@@ -85,7 +85,20 @@ fn names(set: &SkillSet) -> Vec<(String, Why)> {
 }
 
 fn resolve(g: &Graph, c: &Catalog, role: Option<&str>, asked: Asked) -> SkillSet {
-    skills::resolve(g, c, role, &asked, Unreviewed::On, &BTreeSet::new())
+    skills::resolve(g, c, role, &asked, Unreviewed::On, &BTreeSet::new(), &[])
+}
+
+/// A `repo` root at `dir` holding `names`, ahead of `roots`.
+fn with_repo(dir: &Path, names: &[&str], roots: Vec<Root>) -> Vec<Root> {
+    for n in names {
+        skill(&dir.join(n), &format!("{n} from the repo"));
+    }
+    let mut all = vec![Root {
+        label: "repo".into(),
+        dir: dir.to_path_buf(),
+    }];
+    all.extend(roots);
+    all
 }
 
 #[test]
@@ -334,6 +347,7 @@ fn hidden_holds_irrelevant_claude_skills_and_the_claude_originals_of_bundled_one
         &Asked::default(),
         Unreviewed::Off,
         &BTreeSet::new(),
+        &[],
     );
     assert_eq!(off.hidden, ["ritual", "rust-perf", "seo-audit", "tdd"]);
 }
@@ -354,6 +368,7 @@ fn a_project_skill_wins_it_is_neither_bundled_nor_hidden() {
         &Asked::default(),
         Unreviewed::Off,
         &project,
+        &[],
     );
     assert_eq!(names(&set), [("ritual".into(), Why::Project)]);
     assert!(set.picked[0].digest.is_none() && set.picked[0].path.is_none());
@@ -422,10 +437,161 @@ fn the_codex_prompt_block_strips_control_characters_and_caps_each_line() {
         unreviewed: 0,
         graph: GraphState::Fresh,
         warnings: Vec::new(),
+        inputs: None,
     };
     let block = set.codex_block().unwrap();
     let line = block.lines().nth(1).unwrap();
     assert!(!block.contains('\x1b'), "{block:?}");
     assert_eq!(line.chars().count(), 300);
     assert!(line.starts_with("- rust-perf: [2Jwipe x"), "{line}");
+}
+
+#[test]
+fn a_repo_root_copy_wins_over_the_user_copy_and_is_picked_as_repo_role() {
+    let (b, roots) = machine("repo-first");
+    let all = with_repo(&b.join("export/claude"), &["tdd"], roots);
+    let c = skills::catalog(&all);
+    assert_eq!(
+        c.skills["tdd"][0].root, "repo",
+        "the repo root is listed first"
+    );
+    let g = graph(vec![fact(
+        "rust-perf",
+        Verdict::Relevant,
+        &["builder"],
+        &[],
+    )]);
+    let set = skills::resolve(
+        &g,
+        &c,
+        Some("builder"),
+        &Asked::default(),
+        Unreviewed::On,
+        &BTreeSet::new(),
+        &["tdd".into()],
+    );
+    let tdd = set
+        .picked
+        .iter()
+        .find(|p| p.name == "tdd")
+        .expect("tdd picked");
+    assert_eq!(tdd.why, Why::RepoRole);
+    assert_eq!(tdd.root.as_deref(), Some("repo"));
+    assert!(
+        tdd.path.as_ref().unwrap().ends_with("export/claude/tdd"),
+        "{:?}",
+        tdd.path
+    );
+    assert!(
+        set.warnings
+            .iter()
+            .any(|w| w.contains("tdd") && w.contains("the repo copy is used")),
+        "{:?}",
+        set.warnings
+    );
+}
+
+#[test]
+fn the_repo_role_reason_is_written_as_repo_role() {
+    assert_eq!(
+        serde_json::to_string(&Why::RepoRole).unwrap(),
+        "\"repo-role\""
+    );
+}
+
+#[test]
+fn names_the_tool_generated_are_not_the_repos_own_project_skills() {
+    let base = scratch("generated");
+    std::fs::create_dir_all(base.join(".allsource")).unwrap();
+    skill(&base.join(".claude/skills/gen"), "generated");
+    skill(&base.join(".claude/skills/mine"), "tracked");
+    std::fs::write(
+        base.join(".allsource/generated.json"),
+        r#"{"version":1,"files":[{"path":".claude/skills/gen/SKILL.md","sha256":"00","mode":420}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        skills::project_skills(Some(&base)),
+        BTreeSet::from(["mine".to_string()])
+    );
+}
+
+#[test]
+fn repo_root_skills_are_not_counted_as_unreviewed() {
+    let (b, roots) = machine("repo-unreviewed");
+    let all = with_repo(&b.join("export/claude"), &["gen", "extra"], roots);
+    let c = skills::catalog(&all);
+    let g = graph(vec![
+        fact("rust-perf", Verdict::Relevant, &["builder"], &[]),
+        fact("seo-audit", Verdict::Irrelevant, &[], &[]),
+        fact("review", Verdict::Relevant, &["reviewer"], &[]),
+    ]);
+    let set = skills::resolve(
+        &g,
+        &c,
+        Some("builder"),
+        &Asked::default(),
+        Unreviewed::On,
+        &BTreeSet::new(),
+        &["gen".into()],
+    );
+    assert_eq!(
+        set.unreviewed, 2,
+        "ritual and tdd; gen and extra are the repo's"
+    );
+}
+
+#[test]
+fn a_role_less_hire_with_no_repo_names_says_nothing_about_repo_skills() {
+    let c = skills::catalog(&[]);
+    let g = Graph {
+        facts: BTreeMap::new(),
+        state: GraphState::Fresh,
+        warnings: Vec::new(),
+    };
+    let set = skills::resolve(
+        &g,
+        &c,
+        None,
+        &Asked::default(),
+        Unreviewed::Off,
+        &BTreeSet::new(),
+        &[],
+    );
+    assert!(set.picked.is_empty());
+    assert!(set.warnings.is_empty(), "{:?}", set.warnings);
+}
+
+#[test]
+fn the_codex_index_reads_the_agents_export_for_a_skill_that_targets_agents() {
+    let base = scratch("codex-index");
+    let claude = base.join("export/claude");
+    skill(&claude.join("tdd"), "test first");
+    skill(&claude.join("ritual"), "ritual");
+    skill(&base.join("export/agents/tdd"), "test first");
+    let pick = |name: &str| skills::Picked {
+        name: name.into(),
+        why: Why::RepoRole,
+        root: Some("repo".into()),
+        path: Some(claude.join(name)),
+        digest: Some("0".repeat(64)),
+        description: "d".into(),
+    };
+    let set = SkillSet {
+        picked: vec![pick("tdd"), pick("ritual")],
+        hidden: Vec::new(),
+        hidden_codex: Vec::new(),
+        unreviewed: 0,
+        graph: GraphState::Fresh,
+        warnings: Vec::new(),
+        inputs: None,
+    };
+    let block = set.codex_block().unwrap();
+    let agents_tdd = base.join("export/agents/tdd/SKILL.md");
+    assert!(block.contains(&agents_tdd.display().to_string()), "{block}");
+    let claude_ritual = claude.join("ritual/SKILL.md");
+    assert!(
+        block.contains(&claude_ritual.display().to_string()),
+        "{block}"
+    );
 }

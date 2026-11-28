@@ -11,6 +11,8 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::repo_skills::LABEL;
+
 /// The most a skill tree may hold and still be bundled.
 pub const TREE_MAX: u64 = 20 * 1024 * 1024;
 
@@ -228,13 +230,26 @@ pub enum GraphState {
     None,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Graph {
     pub facts: BTreeMap<String, Fact>,
     pub state: GraphState,
     /// Facts ignored and roles dropped while reading, in words.
     #[serde(default)]
     pub warnings: Vec<String>,
+}
+
+/// What a set was resolved from, so a launch can resolve it again against
+/// the seeded worktree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolveInputs {
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub asked: Asked,
+    #[serde(default)]
+    pub unreviewed: Unreviewed,
+    pub graph: Graph,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -263,6 +278,9 @@ pub enum Why {
     Requires,
     /// The hire's repo holds its own copy; that one is used.
     Project,
+    /// The hired repo's own role set, from its export root.
+    #[serde(rename = "repo-role")]
+    RepoRole,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -291,6 +309,10 @@ pub struct SkillSet {
     pub unreviewed: usize,
     pub graph: GraphState,
     pub warnings: Vec<String>,
+    /// The inputs this set resolved from; `None` for a set from before a
+    /// launch could resolve again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<ResolveInputs>,
 }
 
 impl SkillSet {
@@ -306,23 +328,34 @@ impl SkillSet {
         let lines: Vec<String> = self
             .bundled()
             .filter_map(|p| {
-                let md = p.path.as_ref()?.join("SKILL.md");
+                let md = codex_path(p)?.join("SKILL.md");
                 let line = format!("- {}: {} ({})", p.name, p.description, md.display());
                 Some(line.chars().filter(|c| !c.is_control()).take(300).collect())
             })
             .collect();
-        (!lines.is_empty()).then(|| {
-            format!(
-                "Skills for this work: read a skill's SKILL.md before the step it covers.\n{}",
-                lines.join("\n")
-            )
-        })
+        (!lines.is_empty()).then(|| format!("{CODEX_HEAD}\n{}", lines.join("\n")))
+    }
+}
+
+const CODEX_HEAD: &str = "Skills for this work: read a skill's SKILL.md before the step it covers.";
+
+/// `prompt` with its skill index replaced by `set`'s, or without one when
+/// `set` has no bundled pick. The index is always the prompt's last part.
+pub fn with_codex_block(prompt: &str, set: Option<&SkillSet>) -> String {
+    let base = prompt
+        .find(&format!("\n\n{CODEX_HEAD}"))
+        .map_or(prompt, |i| &prompt[..i]);
+    match set.and_then(SkillSet::codex_block) {
+        Some(block) => format!("{base}\n\n{block}"),
+        None => base.to_owned(),
     }
 }
 
 /// The skill names a repo holds in its own `.claude/skills/` or
-/// `.agents/skills/`.
+/// `.agents/skills/`, tracked ones only: names the tool wrote there (its
+/// manifest, `.allsource/generated.json`) are the repo's export, not its own.
 pub fn project_skills(repo: Option<&Path>) -> BTreeSet<String> {
+    let generated = repo.map(generated_names).unwrap_or_default();
     repo.into_iter()
         .flat_map(|r| [r.join(".claude/skills"), r.join(".agents/skills")])
         .filter_map(|d| std::fs::read_dir(d).ok())
@@ -330,13 +363,63 @@ pub fn project_skills(repo: Option<&Path>) -> BTreeSet<String> {
         .flatten()
         .filter(|e| e.path().join("SKILL.md").is_file())
         .filter_map(|e| e.file_name().to_str().map(str::to_owned))
-        .filter(|n| valid_name(n))
+        .filter(|n| valid_name(n) && !generated.contains(n))
         .collect()
 }
 
-/// The skill set for one hire: the role's relevant skills, plus `asked.add`,
-/// minus `asked.remove`, closed over `requires`; the repo's own skills
-/// (`project`) are used in place and never hidden.
+#[derive(Deserialize)]
+struct Manifest {
+    files: Vec<ManifestFile>,
+}
+
+#[derive(Deserialize)]
+struct ManifestFile {
+    path: String,
+}
+
+/// The skill names `allsource-skills resolve` wrote under `.claude/skills/`
+/// or `.agents/skills/` in `repo`, per its manifest. An unreadable manifest
+/// names none.
+fn generated_names(repo: &Path) -> BTreeSet<String> {
+    let Ok(text) = std::fs::read_to_string(repo.join(".allsource/generated.json")) else {
+        return BTreeSet::new();
+    };
+    let Ok(manifest) = serde_json::from_str::<Manifest>(&text) else {
+        return BTreeSet::new();
+    };
+    manifest
+        .files
+        .iter()
+        .filter_map(|f| {
+            let parts: Vec<&str> = f.path.split('/').collect();
+            match parts.as_slice() {
+                [".claude" | ".agents", "skills", name, _, ..] => Some((*name).to_owned()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The file a Codex prompt points at for a pick: a repo pick's `agents`
+/// export when the skill has one (Codex reads `.agents/skills`), else its own
+/// path.
+fn codex_path(p: &Picked) -> Option<PathBuf> {
+    let path = p.path.as_ref()?;
+    if p.why == Why::RepoRole
+        && let Some(export) = path.parent().and_then(Path::parent)
+    {
+        let agents = export.join("agents").join(&p.name);
+        if agents.join("SKILL.md").is_file() {
+            return Some(agents);
+        }
+    }
+    Some(path.clone())
+}
+
+/// The skill set for one hire: the hired repo's role set (`repo_names`), then
+/// the role's relevant skills, plus `asked.add`, minus `asked.remove`, closed
+/// over `requires`; the repo's own skills (`project`) are used in place and
+/// never hidden. A repo entry is never an unreviewed global skill.
 pub fn resolve(
     graph: &Graph,
     catalog: &Catalog,
@@ -344,6 +427,7 @@ pub fn resolve(
     asked: &Asked,
     unreviewed: Unreviewed,
     project: &BTreeSet<String>,
+    repo_names: &[String],
 ) -> SkillSet {
     let mut warnings = graph.warnings.clone();
     match &graph.state {
@@ -357,6 +441,13 @@ pub fn resolve(
     }
     let removed: BTreeSet<&str> = asked.remove.iter().map(String::as_str).collect();
     let mut queue: VecDeque<(String, Why)> = VecDeque::new();
+    for name in repo_names {
+        if valid_name(name) {
+            queue.push_back((name.clone(), Why::RepoRole));
+        } else {
+            warnings.push(format!("{name:?} is not a skill name"));
+        }
+    }
     if let Some(role) = role {
         for f in graph.facts.values() {
             if f.verdict == Verdict::Relevant && f.roles.iter().any(|r| r == role) {
@@ -438,7 +529,7 @@ pub fn resolve(
     let mut hidden_codex = Vec::new();
     let mut unreviewed_on = 0;
     for (name, entries) in &catalog.skills {
-        if project.contains(name) {
+        if project.contains(name) || entries.iter().all(|e| e.root == LABEL) {
             continue;
         }
         let fact = graph.facts.get(name);
@@ -478,5 +569,6 @@ pub fn resolve(
         unreviewed: unreviewed_on,
         graph: graph.state.clone(),
         warnings,
+        inputs: None,
     }
 }
