@@ -104,11 +104,14 @@ fn run_brief_sits_on_the_tab_bar_and_shows_only_for_the_desktop_host() {
     assert!(run.contains(r#"<span id="brief-state" class="small muted" role="status"></span>"#));
 
     // Revealed only by the parent window saying it can run a brief.
-    let host = &html[html.find("let canHire = false;").unwrap()..];
+    let host = &html[html
+        .find("let canHire = false, canSources = false;")
+        .unwrap()..];
     let host = &host[..host.find("const hostRef").unwrap()];
     assert!(host.contains("if (e.source !== window.parent) return;"));
     assert!(host.contains("if (d.type === \"cos-host\") {"));
     assert!(host.contains(r#"$("host-run").hidden = d.runBrief !== true;"#));
+    assert!(host.contains("canSources = d.sources === true;"));
     assert_eq!(host.matches(r#"$("host-run").hidden"#).count(), 1);
     // The click asks; it sends nothing the run could use.
     assert!(host.contains(r#"tellHost({ type: "cos-run-brief" });"#));

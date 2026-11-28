@@ -151,8 +151,12 @@ and what brings it back. Then:
 - **gaps**: anything else not read: missing context, a failed step. A failed
   read is never "nothing there".
 - **upcoming**: dated milestones (`YYYY-MM-DD`) from calendar, mail and goals.
-- **headline**: one sentence. The head of the brief (headline, needs_you,
-  what_changed) targets 100–150 words of substance; the week sits behind it.
+- **headline**: one sentence stating the goal-level finding: what moved, what
+  is at risk, what needs the user. It never names a source that was not read,
+  a connection failure or an "on state alone" hedge; coverage and gaps carry
+  those, and the page shows them beside the brief. The head of the brief
+  (headline, needs_you, what_changed) targets 100–150 words of substance; the
+  week sits behind it.
 
 ## Answering a question
 

@@ -47,7 +47,7 @@ priorities → delegation, kept in a private journaled workspace
 
 | | Horizon | You get |
 |---|---|---|
-| **Today** · tactician | today | at most 3 actions (decide / do / delegate / batch) with a handoff each, what changed, meeting prep, a backlog, what each source actually covered |
+| **Today** · tactician | today | at most 3 actions (decide / do / delegate / batch) with a handoff each, what changed, meeting prep, a backlog, what each source actually covered; a source not read in full offers Connect (claude.ai connectors) or Not needed (takes it out of the reads) |
 | **Plan** · the workspace | this week | goals with finish lines and KPIs, deliverables with owners and dates (and whether those are confirmed), "Delegate this" on each |
 | **Steering** · the brief's week | this week against your goals | each goal as rock / sand / water with a steer, proposed deliverables, decisions only you can take |
 | **History** | every run | a year of shipped work, trends, and an archive of daily reports |

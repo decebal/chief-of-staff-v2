@@ -530,6 +530,55 @@ fn the_actions_come_before_every_other_section() {
 }
 
 #[test]
+fn a_source_not_read_in_full_offers_connect_and_not_needed() {
+    let mut brief = full_brief();
+    brief["coverage"] = json!([
+        { "source": "email", "health": "auth_failed", "review": "not_reviewed", "window_start": "", "window_end": "", "note": "401" },
+        { "source": "code", "health": "unavailable", "review": "not_reviewed", "window_start": "", "window_end": "", "note": "gh failed" },
+        { "source": "calendar", "health": "healthy", "review": "complete", "window_start": "", "window_end": "", "note": "all" }
+    ]);
+    let mut d = data(brief);
+    d["profile_sources"] = json!([
+        { "id": "email", "service": "mail" },
+        { "id": "code", "service": "github" },
+        { "id": "calendar", "service": "calendar" }
+    ]);
+    let m = markup(&d);
+    assert_eq!(
+        m.matches("href=\"https://claude.ai/settings/connectors\"")
+            .count(),
+        1
+    );
+    assert!(m.contains("aria-label=\"Connect Gmail\""));
+    assert!(m.contains(
+        "data-source-id=\"email\" aria-label=\"Mark email not needed for this business\" hidden>Not needed"
+    ));
+    assert!(m.contains("data-source-id=\"code\""));
+    assert!(
+        !m.contains("data-source-id=\"calendar\""),
+        "read in full: no actions"
+    );
+    let text = visible(&m);
+    assert!(!text.contains("claude.ai"), "{text}");
+}
+
+#[test]
+fn a_coverage_row_named_by_its_service_still_offers_connect() {
+    let mut brief = full_brief();
+    brief["coverage"] = json!([
+        { "source": "mail", "health": "auth_failed", "review": "not_reviewed", "window_start": "", "window_end": "", "note": "401" }
+    ]);
+    let mut d = data(brief);
+    d["profile_sources"] = json!([{ "id": "email", "service": "mail" }]);
+    let m = markup(&d);
+    assert!(m.contains("aria-label=\"Connect Gmail\""), "{m}");
+    assert!(
+        !m.contains("data-source-id=\"mail\""),
+        "no profile source has the id mail"
+    );
+}
+
+#[test]
 fn no_raw_url_is_shown_as_text() {
     let m = markup(&data(full_brief()));
     let text = visible(&m);

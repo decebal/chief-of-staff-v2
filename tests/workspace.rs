@@ -78,6 +78,24 @@ fn config_reads_workspace_profile() {
 }
 
 #[test]
+fn the_headline_rule_is_in_the_prompt_and_the_agent_spec() {
+    let (home, ws) = (dir("home-f"), seeded("ws-f"));
+    let config = pipeline::Config {
+        home: home.0.clone(),
+        install: home.0.clone(),
+        workspace: ws.0.clone(),
+        projects: home.0.clone(),
+        budget: None,
+        bins: pipeline::Bins::default(),
+    };
+    let rule = "never names a source that was not read";
+    let run = config.brief_run(&gather::Facts::default());
+    assert!(run.prompt.contains(rule), "{}", run.prompt);
+    let spec = include_str!("../.claude/agents/tactician.md");
+    assert!(spec.contains(rule), "tactician.md headline rule");
+}
+
+#[test]
 fn dash_version_ignores_agent_writes() {
     let (home, ws) = (dir("home-d"), seeded("ws-d"));
     let before = cos::dash::version(&home.0, &ws.0);

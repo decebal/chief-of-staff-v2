@@ -158,3 +158,48 @@ fn every_approved_source_gets_a_coverage_row() {
     assert_eq!(row("tasks").health, Health::Unavailable);
     assert_eq!(b.gaps.len(), 4);
 }
+
+#[test]
+fn not_needed_takes_a_source_out_of_the_reads() {
+    let h = workspace(
+        "not-needed",
+        json!([
+            source("email", "mail", true),
+            source("calendar", "calendar", true)
+        ]),
+    );
+    state::set_source_not_needed(&h.0, "email").unwrap();
+    let profile = state::profile(&h.0).unwrap();
+    assert_eq!(profile["sources"][0]["readsApproved"], json!(false));
+    assert_eq!(profile["sources"][0]["notNeeded"], json!(true));
+    let left: Vec<String> = state::approved_sources(&profile)
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(left, ["calendar"]);
+
+    let e = state::set_source_not_needed(&h.0, "nope").unwrap_err();
+    assert!(e.to_string().contains("\"nope\""), "{e}");
+}
+
+#[test]
+fn not_needed_waits_for_the_write_lock() {
+    let h = workspace("not-needed-lock", json!([source("email", "mail", true)]));
+    let lock = state::runtime_dir(&h.0).unwrap().join("write.lock");
+    std::fs::write(&lock, "held").unwrap();
+    assert!(state::set_source_not_needed(&h.0, "email").is_err());
+    let profile = state::profile(&h.0).unwrap();
+    assert_eq!(profile["sources"][0]["readsApproved"], json!(true));
+    assert!(lock.exists(), "a held lock is never stolen");
+}
+
+#[test]
+fn connectors_name_the_claude_ai_connector_per_service() {
+    assert_eq!(context::connector("Mail").map(|c| c.name), Some("Gmail"));
+    assert_eq!(
+        context::connector("jira").map(|c| c.name),
+        Some("Atlassian Rovo")
+    );
+    assert_eq!(context::connector("github"), None);
+    assert!(context::service_tools("github").is_empty());
+}

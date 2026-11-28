@@ -866,6 +866,34 @@ const COLUMN_OF: &str = "(id) => document.querySelector(`#hires [data-glide=\"${
 
 #[test]
 #[ignore = "needs COS_E2E_CHROME"]
+fn not_needed_shows_only_for_a_host_and_says_what_the_window_answered() {
+    let mut data = today_data();
+    data["brief"]["report"]["coverage"] = json!([
+        { "source": "email", "health": "auth_failed", "review": "not_reviewed", "window_start": "", "window_end": "", "note": "401" }
+    ]);
+    data["profile_sources"] = json!([{ "id": "email", "service": "mail" }]);
+    let mut c = report("today-not-needed", &data, FIXED_CLOCK);
+    let row = "(() => { const b = document.querySelector('[data-source-id=\"email\"]'); return [b.hidden, b.closest('.src-row').querySelector('.src-say').textContent]; })()";
+    assert_eq!(
+        c.eval(row),
+        json!([true, ""]),
+        "unframed: no host, no button"
+    );
+    c.eval("window.postMessage({ type: 'cos-host', hire: true, sources: true }, '*'); true");
+    c.wait_for("document.querySelector('[data-source-id=\"email\"]').hidden === false");
+    c.eval("window.postMessage({ type: 'cos-source-state', id: 'email', ok: false, error: 'profile is gone' }, '*'); true");
+    c.wait_for("document.querySelector('[data-source-id=\"email\"]').closest('.src-row').querySelector('.src-say').textContent !== ''");
+    assert_eq!(c.eval(row), json!([false, "Not saved: profile is gone"]));
+    c.eval("window.postMessage({ type: 'cos-source-state', id: 'email', ok: true }, '*'); true");
+    c.wait_for("document.querySelector('[data-source-id=\"email\"]').hidden === true");
+    assert_eq!(
+        c.eval(row),
+        json!([true, "Not needed — left out from the next brief"])
+    );
+}
+
+#[test]
+#[ignore = "needs COS_E2E_CHROME"]
 fn a_hires_message_moves_cards_between_columns_and_leaves_the_host_state() {
     let mut c = report("today-hires", &today_data(), FIXED_CLOCK);
     c.eval(&format!("window.__col = {COLUMN_OF}; true"));
