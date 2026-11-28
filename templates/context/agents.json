@@ -156,7 +156,12 @@
       "spec-review": ["design review", "review the design", "spec review", "goldfish"],
       "research": ["research", "one page", "compare", "options for", "summarise", "summarize"],
       "locate": ["where does", "where is", "locate", "map the"],
-      "release": ["release notes", "changelog", "release checklist"]
+      "release": ["release notes", "changelog", "release checklist"],
+      "security": ["security", "vulnerability", "threat model", "appsec", "cve", "secrets"],
+      "performance": ["performance", "latency", "throughput", "benchmark", "slow"],
+      "accessibility": ["accessibility", "a11y", "wcag", "screen reader", "contrast"],
+      "analysis": ["analysis", "analyse", "analyze", "experiment", "a/b test", "metric"],
+      "reliability": ["reliability", "slo", "incident", "outage", "error budget"]
     },
     "needs": {
       "network": {

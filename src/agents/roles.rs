@@ -120,7 +120,53 @@ pub struct LibraryEntry {
 
 /// Every file under `templates/roles/`, compiled in. `tests/roles.rs` fails
 /// when a file there is missing from this list.
-pub const LIBRARY_FILES: &[(&str, &str)] = &[];
+pub const LIBRARY_FILES: &[(&str, &str)] = &[
+    (
+        "staff-engineer.json",
+        include_str!("../../templates/roles/staff-engineer.json"),
+    ),
+    (
+        "principal-reviewer.json",
+        include_str!("../../templates/roles/principal-reviewer.json"),
+    ),
+    (
+        "appsec-reviewer.json",
+        include_str!("../../templates/roles/appsec-reviewer.json"),
+    ),
+    ("sre.json", include_str!("../../templates/roles/sre.json")),
+    (
+        "test-engineer.json",
+        include_str!("../../templates/roles/test-engineer.json"),
+    ),
+    (
+        "performance-engineer.json",
+        include_str!("../../templates/roles/performance-engineer.json"),
+    ),
+    (
+        "technical-writer.json",
+        include_str!("../../templates/roles/technical-writer.json"),
+    ),
+    (
+        "release-manager.json",
+        include_str!("../../templates/roles/release-manager.json"),
+    ),
+    (
+        "accessibility-auditor.json",
+        include_str!("../../templates/roles/accessibility-auditor.json"),
+    ),
+    (
+        "data-analyst.json",
+        include_str!("../../templates/roles/data-analyst.json"),
+    ),
+    (
+        "product-researcher.json",
+        include_str!("../../templates/roles/product-researcher.json"),
+    ),
+    (
+        "debugger.json",
+        include_str!("../../templates/roles/debugger.json"),
+    ),
+];
 
 /// The library, parsed once. An entry that does not parse is left out here
 /// and fails `tests/roles.rs`.
