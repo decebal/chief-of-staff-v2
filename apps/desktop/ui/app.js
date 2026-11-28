@@ -298,6 +298,7 @@ function showPane(name) {
   }
   swapPane(from, to);
   $("hire-open").hidden = name === "role";
+  $("role-new").hidden = name !== "staff";
   const tab = name === "role" ? "staff" : name === "run" ? ui.from : name;
   for (const t of $("agent-panes").children) t.setAttribute("aria-selected", String(t.dataset.pane === tab));
   render();
@@ -391,6 +392,10 @@ async function refreshStaff() {
   if (roles.status === "fulfilled") {
     ui.roles = roles.value.roles;
     ui.defaults = roles.value.defaults ?? {};
+    ui.digest = roles.value.digest;
+    ui.library = roles.value.library ?? [];
+    $("policy-note").dataset.variant = "destructive";
+    $("policy-note").querySelector("h2").textContent = "Hiring policy not used";
     $("policy-note").hidden = !roles.value.note;
     $("policy-note-text").textContent = roles.value.note
       ? `${roles.value.note}. Agents are hired on the built-in defaults until the file is fixed.`
@@ -417,6 +422,18 @@ const ROLE_ICON = {
   "docs-keeper": "file-text",
   "release-clerk": "package",
   tester: "flask-conical",
+  "staff-engineer": "code",
+  "principal-reviewer": "search-check",
+  "appsec-reviewer": "shield",
+  sre: "activity",
+  "test-engineer": "flask-conical",
+  "performance-engineer": "gauge",
+  "technical-writer": "pencil",
+  "release-manager": "tag",
+  "accessibility-auditor": "eye",
+  "data-analyst": "chart-column",
+  "product-researcher": "users",
+  debugger: "bug",
 };
 const roleIcon = (id) => (id == null ? "inbox" : (ROLE_ICON[id] ?? "bot"));
 function roleGlyph(id) {
@@ -476,18 +493,61 @@ function renderStaff() {
     return;
   }
 
-  const cards = ui.roles.filter((r) => !r.role.head).map(({ role }) => roleCard(role.id, role.title, role.mandate));
+  const cards = ui.roles.filter((r) => !r.role.head && !r.role.retired).map(({ role, problems }) => roleCard(role.id, role.title, role.mandate, problems));
   const unassigned = ui.agents.filter((a) => a.spec.role == null).length;
   const legacy = ui.scores.roles.find((r) => r.role == null);
   if (unassigned || legacy) cards.push(roleCard(null, "Unassigned", "Agents hired before roles, or without one."));
   $("roles").replaceChildren(...cards);
+  renderRetired();
+}
+
+function renderRetired() {
+  const retired = ui.roles.filter((r) => r.role.retired).map((r) => r.role);
+  $("retired-roles").hidden = !retired.length;
+  $("retired-count").textContent = retired.length ? String(retired.length) : "";
+  $("retired-list").replaceChildren(
+    ...retired.map((role) =>
+      el(
+        "li",
+        {},
+        el("span", { className: "with-icon" }, roleGlyph(role.id), role.title),
+        el("code", { textContent: role.id }),
+        iconButton("rotate-ccw", "Restore", { variant: "outline", size: "sm", onClick: () => setRetired(role, false) }),
+      ),
+    ),
+  );
+}
+
+// Retire and Restore change no contract, so neither needs the contract step.
+async function setRetired(role, retired) {
+  try {
+    const w = await invoke("roles_save", {
+      business: ui.business,
+      change: retired ? { retire: role.id } : { restore: role.id },
+      digest: ui.digest,
+      allowContract: false,
+    });
+    ui.digest = w.digest;
+    if (retired && ui.pane === "role") showPane("staff");
+    await refreshStaff();
+  } catch (e) {
+    roleNotice(String(e));
+  }
+}
+
+function roleNotice(text, { saved = false } = {}) {
+  const note = $("policy-note");
+  note.hidden = false;
+  note.dataset.variant = saved ? "" : "destructive";
+  note.querySelector("h2").textContent = saved ? "Saved" : "The staff was not changed";
+  $("policy-note-text").textContent = text;
 }
 
 function stat(value, label, glyph) {
   return el("li", {}, el("b", { className: "num", textContent: String(value ?? "—") }), el("span", { className: "with-icon" }, glyph ? icon(glyph, { className: "xs" }) : null, label));
 }
 
-function roleCard(id, title, mandate) {
+function roleCard(id, title, mandate, problems = []) {
   const mine = ui.agents.filter((a) => (a.spec.role ?? null) === id);
   const running = mine.filter((a) => a.spec.terminal && isLive(a)).length;
   const waiting = mine.filter((a) => a.state.herdr?.live && a.state.herdr.word === "blocked").length;
@@ -495,6 +555,7 @@ function roleCard(id, title, mandate) {
   const now = [];
   if (running) now.push(badge(`${running} in Herdr`, "info"));
   if (waiting) now.push(badge(`${waiting} waiting on you in Herdr`, "warn"));
+  if (problems.length) now.push(badge(`${problems.length} to fix: ${problems[0].field}`, "warn"));
   const record = sc
     ? el(
         "ul",
@@ -546,7 +607,17 @@ function renderRole() {
   const title = role?.title ?? "Unassigned";
   const head = el("div", { className: "pane-head" }, back, el("h2", { className: "with-icon" }, roleGlyph(role?.id ?? null), title));
   if (role) {
-    head.append(el("div", { className: "actions" }, iconButton("user-plus", "Hire", { variant: "primary", onClick: () => openHire({ role: role.id }) })));
+    const actions = el("div", { className: "actions" });
+    if (!role.head) {
+      actions.append(
+        iconButton("pencil", "Edit", { variant: "outline", onClick: () => openRoleDialog({ role }) }),
+        retireButton(role),
+      );
+    }
+    if (!role.retired && !role.head) {
+      actions.append(iconButton("user-plus", "Hire", { variant: "primary", onClick: () => openHire({ role: role.id }) }));
+    }
+    head.append(actions);
   }
 
   const mine = ui.agents.filter((a) => (a.spec.role ?? null) === ui.role);
@@ -598,6 +669,8 @@ function renderRole() {
       )
     : null;
 
+  const playbook = role ? playbookCard(role) : null;
+
   const scoreTable = scores.length
     ? table(["harness", "model", "repo", "runs", "accepted", "needs you", "rejected", "overclaimed", "cost", "time"], scores.map((s) => [s.harness, s.model ?? "default", s.repo ?? "(scratch)", s.runs, s.accepted, s.needs_you, s.rejected, s.overclaimed, cost(s), duration(s.median_secs)]), 3)
     : stateView("empty", { title: "No verdicts in this role yet.", line: true });
@@ -643,11 +716,59 @@ function renderRole() {
     pane,
     head,
     el("div", { className: "run-grid" }, about, contract),
+    playbook,
     section("Scorecard", scoreTable),
     section("On it now", liveList),
     section("Recent verdicts", verdicts),
     waiting ? section("Open deliverables", waiting) : null,
   );
+}
+
+// The five sections every hire reads in its preamble, in the same order.
+const PLAYBOOK = [
+  ["principles", "Principles", "list"],
+  ["method", "Method", "ordered"],
+  ["anti_patterns", "Never", "list"],
+  ["output_format", "Hand back", "text"],
+  ["escalation", "Escalates when", "list"],
+];
+
+function playbookCard(role) {
+  const parts = PLAYBOOK.filter(([k]) => (Array.isArray(role[k]) ? role[k].length : role[k])).map(([k, title, kind]) => {
+    const body =
+      kind === "text"
+        ? el("p", { textContent: role[k] })
+        : el(kind === "ordered" ? "ol" : "ul", { className: "playbook-list" }, ...role[k].map((x) => el("li", { textContent: x })));
+    return el("div", { className: "playbook-part" }, el("h4", { textContent: title }), body);
+  });
+  if (!parts.length) return null;
+  const from = role.from ? el("p", { className: "muted small", textContent: `Made from the library entry ${role.from}.` }) : null;
+  return el(
+    "article",
+    { className: "card playbook" },
+    el("header", {}, el("h3", { textContent: "How it works" }), el("p", { textContent: "Every hire in this role reads these, in this order, before its task." }), from),
+    el("section", {}, ...parts),
+  );
+}
+
+// Two presses: the first arms it for a few seconds, the second retires.
+function retireButton(role) {
+  if (role.retired) return iconButton("rotate-ccw", "Restore", { variant: "outline", onClick: () => setRetired(role, false) });
+  const b = iconButton("archive", "Retire", { variant: "outline" });
+  let armed = null;
+  b.addEventListener("click", () => {
+    if (armed) {
+      clearTimeout(armed);
+      setRetired(role, true);
+      return;
+    }
+    setLabel(b, "Retire: press again");
+    armed = setTimeout(() => {
+      armed = null;
+      setLabel(b, "Retire");
+    }, 4000);
+  });
+  return b;
 }
 
 // ---- runs
@@ -1303,7 +1424,7 @@ async function openHire({ role, deliverable, brief, bead } = {}) {
   }
   $("h-msg").replaceChildren();
   $("h-title").value = "";
-  $("h-role").replaceChildren(...ui.roles.filter((r) => !r.role.head).map((r) => el("option", { value: r.role.id, textContent: r.role.title })));
+  $("h-role").replaceChildren(...ui.roles.filter((r) => !r.role.head && !r.role.retired).map((r) => el("option", { value: r.role.id, textContent: r.role.title })));
   if (role) $("h-role").value = role;
   $("h-deliverable").replaceChildren(
     ...(ui.deliverables.length
@@ -1371,6 +1492,254 @@ $("hire-form").addEventListener("submit", async (ev) => {
     $("h-go").disabled = Boolean(hire.plan?.refused) || hire.herdr === false;
   }
 });
+
+// ---- role dialog: start from the library or blank, optionally propose a
+// version for this business, review every field, save through roles_save.
+
+const TEXT_FIELDS = ["title", "mandate", "serves", "sandbox", "judged", "done_when", "output_format"];
+const LIST_FIELDS = ["principles", "method", "anti_patterns", "escalation"];
+// What a hire runs, may touch and is judged on; the same list as roles::CONTRACT.
+const CONTRACT_FIELDS = ["checks", "scope", "harness", "model", "repo", "expects", "output", "deadline_secs", "work", "drafts"];
+
+const rd = { mode: "new", entry: null, base: null, before: null, changed: new Set(), timer: null };
+
+function rdStep(step) {
+  for (const s of ["start", "specialise"]) $(`rd-step-${s}`).hidden = step !== s;
+  $("rd-form").hidden = step !== "review";
+  $("rd-back").hidden = step === "start" || rd.mode === "edit";
+  $("rd-skip").hidden = step !== "specialise";
+  $("rd-propose").hidden = step !== "specialise";
+  $("rd-stop").hidden = true;
+  $("rd-save").hidden = step !== "review";
+  rd.step = step;
+}
+
+const rdLines = (s) =>
+  s
+    .split("\n")
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+const same =(a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+function rdFill(role, changed = new Set()) {
+  rd.changed = changed;
+  $("rd-f-id").value = role.id ?? "";
+  $("rd-f-id").disabled = rd.mode === "edit";
+  for (const k of TEXT_FIELDS) $(`rd-f-${k}`).value = role[k] ?? "";
+  for (const k of LIST_FIELDS) $(`rd-f-${k}`).value = (role[k] ?? []).join("\n");
+  $("rd-f-checks").value = (role.checks ?? []).join("\n");
+  $("rd-f-scope").value = (role.scope ?? []).join("\n");
+  $("rd-edit-contract").checked = false;
+  $("rd-f-checks").disabled = $("rd-f-scope").disabled = true;
+  $("rd-expects").textContent = `${EXPECTS[role.expects ?? "diff"]}${role.output ? `: ${role.output}` : ""}`;
+  for (const k of [...TEXT_FIELDS, ...LIST_FIELDS]) {
+    const label = document.querySelector(`label[for="rd-f-${k}"]`);
+    label.querySelector(".badge")?.remove();
+    if (changed.has(k)) label.append(" ", badge("changed", "info"));
+  }
+  $("rd-problems").hidden = true;
+  $("rd-msg").replaceChildren();
+  rdContract();
+}
+
+function rdRole() {
+  const r = structuredClone(rd.base);
+  r.id = $("rd-f-id").value.trim();
+  for (const k of TEXT_FIELDS) {
+    const v = $(`rd-f-${k}`).value.trim();
+    if (k === "done_when" || k === "output_format") r[k] = v || null;
+    else r[k] = v;
+  }
+  for (const k of LIST_FIELDS) r[k] = rdLines($(`rd-f-${k}`).value);
+  if ($("rd-edit-contract").checked) {
+    r.checks = rdLines($("rd-f-checks").value);
+    r.scope = rdLines($("rd-f-scope").value);
+  }
+  return r;
+}
+
+function rdContract() {
+  const after = rdRole();
+  const diff = CONTRACT_FIELDS.filter((k) => !same(rd.before?.[k] ?? (Array.isArray(after[k]) ? [] : null), after[k]));
+  $("rd-confirm").hidden = !diff.length;
+  $("rd-confirm-ok").checked = false;
+  $("rd-confirm-list").replaceChildren(
+    ...diff.map((k) => el("li", { textContent: `${k}: ${JSON.stringify(rd.before?.[k] ?? null)} → ${JSON.stringify(after[k] ?? null)}` })),
+  );
+  return diff;
+}
+
+async function openRoleDialog({ role } = {}) {
+  rd.mode = role ? "edit" : "new";
+  rd.entry = null;
+  $("rd-rationale").hidden = true;
+  $("rd-title").textContent = role ? `Edit ${role.title}` : "New role";
+  $("rd-lede").textContent = role
+    ? "Change any field. Contract changes need your separate approval."
+    : "Start from a specialist definition in the library, or from a blank role.";
+  if (role) {
+    rd.base = structuredClone(role);
+    rd.before = role;
+    rdFill(role);
+    rdStep("review");
+  } else {
+    $("rd-library").replaceChildren(...ui.library.map(libraryCard));
+    rdStep("start");
+  }
+  $("role-dialog").showModal();
+}
+
+function libraryCard(e) {
+  const sources = el(
+    "p",
+    { className: "small muted" },
+    ...e.sources.flatMap((s, i) => [i ? "; " : "", el("a", { href: s.url, textContent: s.title, target: "_blank", rel: "noopener" })]),
+  );
+  const pick = iconButton(roleIcon(e.id), "Start from this", { variant: "outline", onClick: () => pickEntry(e.id) });
+  return el("li", { className: "card rd-entry" }, el("header", {}, el("h3", { className: "with-icon" }, roleGlyph(e.id), e.title), el("p", { textContent: e.summary })), el("section", {}, sources, pick));
+}
+
+async function pickEntry(id) {
+  fill($("rd-run"), stateView("reading", { title: "Reading the library entry…", line: true }));
+  rdStep("specialise");
+  try {
+    rd.entry = await invoke("roles_library_entry", { id });
+  } catch (e) {
+    fill($("rd-run"), stateView("unreachable", { title: `The entry could not be read: ${e}`, line: true, action: { icon: "rotate-ccw", label: "Try again", onClick: () => pickEntry(id) } }));
+    return;
+  }
+  const taken = ui.roles.some((r) => r.role.id === id);
+  $("rd-id").value = taken ? `${id}-2` : id;
+  $("rd-brief").value = "";
+  $("rd-run").replaceChildren();
+  await showSent();
+}
+
+async function showSent() {
+  if (!rd.entry) return;
+  try {
+    $("rd-sent").textContent = await invoke("roles_propose_prompt", { business: ui.business, id: rd.entry.id, brief: $("rd-brief").value || null });
+  } catch (e) {
+    $("rd-sent").textContent = `Not available: ${e}`;
+  }
+}
+
+function fromEntry() {
+  const r = structuredClone(rd.entry.role);
+  r.id = $("rd-id").value.trim() || rd.entry.id;
+  r.from = `${rd.entry.id}@${rd.entry.version}`;
+  return r;
+}
+
+function skipToReview() {
+  const r = fromEntry();
+  rd.base = r;
+  rd.before = rd.entry.role;
+  rdFill(r);
+  rdStep("review");
+}
+
+function stopSlow() {
+  clearTimeout(rd.timer);
+  rd.timer = null;
+}
+
+async function propose() {
+  const run = $("rd-run");
+  fill(run, stateView("reading", { title: `Proposing ${rd.entry.role.title} for ${ui.business}…`, line: true }));
+  $("rd-propose").hidden = $("rd-skip").hidden = true;
+  $("rd-stop").hidden = false;
+  stopSlow();
+  rd.timer = setTimeout(() => fill(run, stateView("slow", { title: "Still proposing: a run takes up to three minutes.", line: true })), 6000);
+  try {
+    await invoke("roles_propose", { business: ui.business, id: rd.entry.id, newId: $("rd-id").value.trim() || null, brief: $("rd-brief").value || null });
+  } catch (e) {
+    proposed({ ok: false, error: String(e) });
+  }
+}
+
+function proposed(p) {
+  if (!$("role-dialog").open || rd.step !== "specialise") return;
+  stopSlow();
+  $("rd-stop").hidden = true;
+  $("rd-propose").hidden = $("rd-skip").hidden = false;
+  const run = $("rd-run");
+  if (p.cancelled) return void fill(run, stateView("empty", { title: "Proposal cancelled: nothing was saved.", line: true }));
+  if (!p.ok) return void fill(run, stateView("unreachable", { title: `No proposal: ${p.error}`, line: true, action: { icon: "rotate-ccw", label: "Try again", onClick: propose } }));
+  run.replaceChildren();
+  rd.base = p.proposal.role;
+  rd.before = rd.entry.role;
+  rdFill(p.proposal.role, new Set(p.proposal.diff.map((d) => d.field)));
+  $("rd-rationale").textContent = p.proposal.rationale;
+  $("rd-rationale").hidden = !p.proposal.rationale;
+  rdStep("review");
+}
+
+listen("role-proposal", (ev) => proposed(ev.payload));
+
+async function saveRole(ev) {
+  ev.preventDefault();
+  const diff = rdContract();
+  if (diff.length && !$("rd-confirm-ok").checked) {
+    $("rd-confirm-ok").checked = false;
+    fill($("rd-msg"), stateView("needs_you", { title: "Tick the box to approve the contract changes, or undo them.", line: true }));
+    return;
+  }
+  const role = rdRole();
+  const change = rd.mode === "edit" ? { replace: { id: rd.before.id, role } } : { add: role };
+  $("rd-save").disabled = true;
+  fill($("rd-msg"), stateView("reading", { title: "Saving…", line: true }));
+  try {
+    const w = await invoke("roles_save", { business: ui.business, change, digest: ui.digest, allowContract: diff.length > 0 });
+    ui.digest = w.digest;
+    $("role-dialog").close();
+    await refreshStaff();
+    openRole(role.id);
+    if (w.notes.length) roleNotice(w.notes.join(" "), { saved: true });
+  } catch (e) {
+    const text = String(e);
+    if (text.includes("changed since you read it")) {
+      fill($("rd-msg"), stateView("unreachable", { title: "The staff changed since you opened this. Your edits are kept here.", line: true, action: { icon: "rotate-ccw", label: "Reload", onClick: reloadDigest } }));
+    } else {
+      $("rd-problems").hidden = false;
+      $("rd-problems").replaceChildren(...text.replace(/^not written: /, "").split("; ").map((p) => el("li", { textContent: p })));
+      $("rd-msg").replaceChildren();
+    }
+  } finally {
+    $("rd-save").disabled = false;
+  }
+}
+
+async function reloadDigest() {
+  await refreshStaff();
+  fill($("rd-msg"), stateView("clear", { title: "Reloaded. Save again to apply your edits to the current staff.", line: true }));
+}
+
+$("role-new").addEventListener("click", () => openRoleDialog());
+$("rd-blank").addEventListener("click", () => {
+  rd.entry = null;
+  rd.base = { id: "", title: "", mandate: "", expects: "diff" };
+  rd.before = { expects: "diff" };
+  rdFill(rd.base);
+  rdStep("review");
+});
+$("rd-skip").addEventListener("click", skipToReview);
+$("rd-propose").addEventListener("click", propose);
+$("rd-stop").addEventListener("click", () => invoke("roles_propose_cancel").catch((e) => logDev("roles_propose_cancel", e)));
+$("rd-back").addEventListener("click", () => rdStep(rd.step === "review" && rd.entry ? "specialise" : "start"));
+$("rd-cancel").addEventListener("click", () => {
+  if (rd.step === "specialise" && !$("rd-stop").hidden) invoke("roles_propose_cancel").catch((e) => logDev("roles_propose_cancel", e));
+  stopSlow();
+  $("role-dialog").close();
+});
+$("rd-brief").addEventListener("change", showSent);
+$("rd-edit-contract").addEventListener("change", (ev) => {
+  $("rd-f-checks").disabled = $("rd-f-scope").disabled = !ev.target.checked;
+  rdContract();
+});
+for (const id of ["rd-f-checks", "rd-f-scope"]) $(id).addEventListener("input", rdContract);
+$("rd-form").addEventListener("submit", saveRole);
 
 // ---- run brief: one at a time, owned by the app; Today refreshes when it writes.
 // The button sits on the report's tab bar; the window tells the frame the state.

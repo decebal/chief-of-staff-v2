@@ -1535,6 +1535,8 @@ fn every_state_renders_through_state_view_with_an_icon_and_art() {
         "function renderScores(",
         "  async refresh() {",
         "function frameLoad(",
+        "async function pickEntry(",
+        "async function propose(",
     ] {
         assert!(
             body(&js, loader).contains("stateView("),

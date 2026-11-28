@@ -142,6 +142,86 @@
     </div>
   </dialog>
 
+  <dialog id="role-dialog" class="dialog role-editor" aria-labelledby="rd-title">
+    <div>
+      <header>
+        <h2 id="rd-title">New role</h2>
+        <p id="rd-lede">Start from a specialist definition in the library, or from a blank role.</p>
+      </header>
+      <section>
+        <div id="rd-step-start" class="rd-step">
+          <ul id="rd-library" class="rd-library"></ul>
+          <button id="rd-blank" class="btn" data-variant="outline" type="button"><i data-icon="plus"></i>Blank role</button>
+        </div>
+
+        <div id="rd-step-specialise" class="rd-step" hidden>
+          <div class="field">
+            <label for="rd-id">Id on the staff</label>
+            <input id="rd-id" class="input mono" type="text" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="rd-brief">What to focus on (optional)</label>
+            <textarea id="rd-brief" class="textarea" rows="3" maxlength="1000" placeholder="e.g. our Rust services and their p99 latency"></textarea>
+          </div>
+          <details id="rd-sent-box">
+            <summary>What is sent</summary>
+            <p class="muted small">Proposing sends only this to Anthropic: the library role, goal titles, repo names and scopes, staff titles and your brief. No repo checks, mail, calendar or tickets. The run has no tools.</p>
+            <pre id="rd-sent" class="mono small"></pre>
+          </details>
+          <div id="rd-run" aria-live="polite"></div>
+        </div>
+
+        <form id="rd-form" class="rd-step form-grid" hidden>
+          <p id="rd-rationale" class="rd-rationale" hidden></p>
+          <div class="row">
+            <div class="field"><label for="rd-f-title">Title</label><input id="rd-f-title" class="input" type="text" maxlength="60" required></div>
+            <div class="field"><label for="rd-f-id">Id</label><input id="rd-f-id" class="input mono" type="text" required></div>
+          </div>
+          <div class="field"><label for="rd-f-mandate">Mandate</label><textarea id="rd-f-mandate" class="textarea" rows="3" maxlength="600" required></textarea></div>
+          <div class="row">
+            <div class="field"><label for="rd-f-serves">Serves</label><input id="rd-f-serves" class="input" type="text" maxlength="300"></div>
+            <div class="field"><label for="rd-f-done_when">Done when</label><input id="rd-f-done_when" class="input" type="text" maxlength="300"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label for="rd-f-sandbox">Works in</label><input id="rd-f-sandbox" class="input" type="text" maxlength="300"></div>
+            <div class="field"><label for="rd-f-judged">Judged by</label><input id="rd-f-judged" class="input" type="text" maxlength="300"></div>
+          </div>
+          <div class="field"><label for="rd-f-principles">Principles, one per line (at most 8)</label><textarea id="rd-f-principles" class="textarea" rows="5"></textarea></div>
+          <div class="field"><label for="rd-f-method">Method, one step per line (at most 10)</label><textarea id="rd-f-method" class="textarea" rows="5"></textarea></div>
+          <div class="field"><label for="rd-f-anti_patterns">Never, one per line (at most 8)</label><textarea id="rd-f-anti_patterns" class="textarea" rows="4"></textarea></div>
+          <div class="field"><label for="rd-f-output_format">Hand back</label><textarea id="rd-f-output_format" class="textarea" rows="3" maxlength="1200"></textarea></div>
+          <div class="field"><label for="rd-f-escalation">Escalates when, one per line (at most 6)</label><textarea id="rd-f-escalation" class="textarea" rows="3"></textarea></div>
+
+          <details id="rd-contract" class="contract">
+            <summary>Contract: what a hire runs, may touch and is judged on</summary>
+            <dl class="kv"><dt>expects</dt><dd id="rd-expects"></dd></dl>
+            <label class="choice"><input id="rd-edit-contract" class="input" type="checkbox"> Edit contract</label>
+            <div class="row">
+              <div class="field"><label for="rd-f-checks">Checks, one per line</label><textarea id="rd-f-checks" class="textarea mono" rows="2" disabled></textarea></div>
+              <div class="field"><label for="rd-f-scope">Scope, one path per line</label><textarea id="rd-f-scope" class="textarea mono" rows="2" disabled></textarea></div>
+            </div>
+          </details>
+
+          <section id="rd-confirm" class="rd-confirm" hidden aria-labelledby="rd-confirm-title">
+            <h3 id="rd-confirm-title">Contract changes need your approval</h3>
+            <ul id="rd-confirm-list" class="codes"></ul>
+            <label class="choice"><input id="rd-confirm-ok" class="input" type="checkbox"> I approve these contract changes</label>
+          </section>
+          <ul id="rd-problems" class="reasons" hidden></ul>
+          <div id="rd-msg" class="muted" role="status"></div>
+        </form>
+      </section>
+      <footer>
+        <button id="rd-back" class="btn" data-variant="ghost" type="button" hidden><i data-icon="arrow-left"></i>Back</button>
+        <button id="rd-cancel" class="btn" data-variant="outline" type="button"><i data-icon="x"></i>Cancel</button>
+        <button id="rd-skip" class="btn" data-variant="outline" type="button" hidden><span>Skip</span></button>
+        <button id="rd-propose" class="btn" data-variant="primary" type="button" hidden><i data-icon="send"></i><span>Propose</span></button>
+        <button id="rd-stop" class="btn" data-variant="outline" type="button" hidden><i data-icon="x"></i><span>Cancel proposal</span></button>
+        <button id="rd-save" class="btn" data-variant="primary" type="submit" form="rd-form" hidden><i data-icon="check"></i><span>Save</span></button>
+      </footer>
+    </div>
+  </dialog>
+
   <dialog id="switch-dialog" class="dialog switch" aria-labelledby="switch-title">
     <div>
       <header>
@@ -230,6 +310,7 @@
           </div>
           <div class="agents-bar-end">
             <span id="slots" class="badge num" data-variant="outline" hidden></span>
+            <button id="role-new" class="btn" data-variant="outline" type="button"><i data-icon="plus"></i>New role</button>
             <button id="hire-open" class="btn" data-variant="primary" type="button"><i data-icon="user-plus"></i>Hire</button>
           </div>
         </div>
@@ -242,6 +323,11 @@
         <div id="pane-staff" class="pane">
           <article id="head-card" class="card head"></article>
           <div id="roles" class="role-grid"></div>
+          <details id="retired-roles" class="retired" hidden>
+            <summary><i data-icon="archive"></i>Retired <span id="retired-count" class="num"></span></summary>
+            <p class="muted small">Kept so their runs and scores still name them; never offered for hire.</p>
+            <ul id="retired-list" class="retired-list"></ul>
+          </details>
         </div>
 
         <div id="pane-role" class="pane" hidden></div>

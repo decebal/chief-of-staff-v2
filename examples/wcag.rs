@@ -425,6 +425,31 @@ fn states(port: u16, work: &Path) -> Vec<State> {
             "#hire-dialog[open]",
         ),
         state(
+            "window-role-dialog-library",
+            0,
+            "/#tab=agents&pane=staff",
+            Some("document.querySelector('#role-new').click()"),
+            "#role-dialog[open] #rd-step-start:not([hidden])",
+        ),
+        state(
+            "window-role-dialog-specialise",
+            0,
+            "/#tab=agents&pane=staff",
+            Some(
+                "(document.querySelector('#role-new').click(), setTimeout(() => document.querySelector('#rd-library .rd-entry button').click(), 300))",
+            ),
+            "#role-dialog[open] #rd-step-specialise:not([hidden])",
+        ),
+        state(
+            "window-role-dialog-review",
+            0,
+            "/#tab=agents&pane=staff",
+            Some(
+                "(document.querySelector('#role-new').click(), setTimeout(() => document.querySelector('#rd-library .rd-entry button').click(), 300), setTimeout(() => document.querySelector('#rd-skip').click(), 1500))",
+            ),
+            "#role-dialog[open] #rd-form:not([hidden])",
+        ),
+        state(
             "window-switch-dialog",
             0,
             "/#tab=today",

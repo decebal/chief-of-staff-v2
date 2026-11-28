@@ -45,6 +45,11 @@ tasks:
       - timeout 300 cargo test --test flows_page -- --include-ignored --test-threads=1
       - timeout 300 cargo test --test kit_page --no-run
       - timeout 300 cargo test --test kit_page -- --include-ignored --test-threads=1
+      # The role dialog drives the preview server, which drives the cos binary.
+      - timeout 300 cargo build --bin cos
+      - timeout 300 cargo build -p cos-desktop --example preview
+      - timeout 300 cargo test -p cos-desktop --test roles_page --no-run
+      - timeout 300 cargo test -p cos-desktop --test roles_page -- --include-ignored --test-threads=1
 
   install:
     desc: cos → ~/.cargo/bin; agents → ~/.claude/agents (for interactive Claude Code)

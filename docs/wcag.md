@@ -58,7 +58,8 @@ number.
    scheme and reduced motion emulated before the page loads; switching the
    scheme under a rendered page leaves some `light-dark()` colours stale.
 
-States: Today, Agents (staff, runs, scorecard, a run, the hire dialog), the
+States: Today, Agents (staff, runs, scorecard, a run, the hire dialog, the
+role dialog's library, specialise and review steps), the
 business switcher with its directories, Flows, Docs and every dashboard the
 window lists; Today and runs over an empty home; the report's tabs; the Flows
 page's board, a flow with a bead's drawer open, the Map and the palette; the
