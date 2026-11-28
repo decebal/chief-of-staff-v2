@@ -13,6 +13,12 @@
 //! (`tests/fixtures/fake-hc.sh` over `<home>/.herdr-demo`) unless `COS_HC`
 //! names another, so a preview never reaches your herdr-core.
 //! `COS_PREVIEW_HARNESS=<path>` names the program each hire's terminal runs.
+//! Run brief spawns `COS_BIN` (default the debug `cos`; point it at
+//! `cos-stand-in` so a preview never starts a paid run). The daemon socket is
+//! looked for in `COS_DAEMON_DIR`, default an empty temp directory, so a
+//! preview never reaches your daemon. Settings' Assistants card reads and
+//! writes client configs under `COS_PREVIEW_HOME` (its `.codex` for Codex),
+//! default `<home>/preview-home`, never your `HOME` or `CODEX_HOME`.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -71,6 +77,7 @@ const EVENTS: &[&str] = &[
     "businesses-changed",
     "dashboards-changed",
     "dashboard-exited",
+    "link-open",
 ];
 
 type Feed = std::sync::Arc<std::sync::Mutex<Vec<(u64, String, Value)>>>;
@@ -91,7 +98,9 @@ fn main() {
             std::env::set_var("FAKE_HC_STATE", &state);
         }
     }
-    let cos = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/cos");
+    let cos = std::env::var_os("COS_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/cos"));
     let projects = home.join("projects");
     std::fs::create_dir_all(&projects).expect("the projects directory");
     let registry = home.join("businesses.toml");
@@ -103,9 +112,20 @@ fn main() {
     cos::business::add(&registry, "demo", demo, true).expect("register the demo business");
     cos::business::set_active(&registry, "demo").expect("activate the demo business");
     let install = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let user_home = match std::env::var_os("COS_PREVIEW_HOME") {
+        Some(h) => PathBuf::from(h),
+        None => {
+            let h = home.join("preview-home");
+            std::fs::create_dir_all(h.join("Library/Application Support/Claude"))
+                .expect("the preview's Claude Desktop directory");
+            std::fs::create_dir_all(h.join(".codex")).expect("the preview's Codex directory");
+            h
+        }
+    };
     let start = cos_desktop::Start {
         install: install.canonicalize().unwrap_or(install),
-        user_home: std::env::var_os("HOME").map(PathBuf::from),
+        codex_home: Some(user_home.join(".codex")),
+        user_home: Some(user_home),
         registry,
         settings_file: home.join("settings.json"),
         data_dir: home.join("data"),
@@ -115,6 +135,9 @@ fn main() {
         sources: Sources::default(),
         cos_bin: cos.is_file().then_some(cos),
         slots: Some(2),
+        daemon_dir: std::env::var_os("COS_DAEMON_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("cosp-{}", std::process::id()))),
     };
     let mut app = cos_desktop::builder(mock_builder(), Some(start))
         .build(mock_context(noop_assets()))
@@ -269,6 +292,10 @@ fn serve(
             "application/json".into(),
             serde_json::to_vec(&list).unwrap(),
         )
+    } else if let Some(url) = path.strip_prefix("/__link/") {
+        // `/__link/cos://run/demo/<id>`: as the OS hands the app a link.
+        cos_desktop::open_link(app, url);
+        (200, "text/plain".into(), b"sent".to_vec())
     } else if path == "/__preview.js" {
         (200, "text/javascript".into(), SHIM.as_bytes().to_vec())
     } else {

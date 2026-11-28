@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::claude::{self, Run, Toolset};
 use crate::context::{self, Local};
 use crate::gather::{self, Facts};
+use crate::proc::{self, Group};
 use crate::reports::{self, Brief, Completeness, Coverage, Health, MAX_ACTIONS, MAX_CHANGES};
+use crate::runs;
 use crate::store::{self, Kind};
 use crate::track::{self, Recorded};
 use crate::wake::{self, Wake};
@@ -42,11 +44,14 @@ pub struct Bins {
 }
 
 impl Default for Bins {
+    /// `COS_CLAUDE` names a stand-in for `claude`, `COS_PMSET` one for `pmset`.
     fn default() -> Self {
         let mac = cfg!(target_os = "macos");
+        let named = |var: &str| std::env::var_os(var).filter(|v| !v.is_empty());
         Self {
-            claude: "claude".into(),
-            pmset: mac.then(|| "/usr/bin/pmset".into()),
+            claude: named("COS_CLAUDE").map_or_else(|| "claude".into(), PathBuf::from),
+            pmset: mac
+                .then(|| named("COS_PMSET").map_or_else(|| "/usr/bin/pmset".into(), PathBuf::from)),
             caffeinate: mac.then(|| "/usr/bin/caffeinate".into()),
         }
     }
@@ -678,43 +683,249 @@ pub struct BriefOutcome {
 }
 
 /// Runs `cos brief` on `home`, `workspace` and `projects` as a child the
-/// caller owns: its own process group, `BRIEF_CHILD` as its one deadline,
-/// killed and reaped on expiry. The directories go in as flags and the env is
-/// pinned to them, so an inherited `COS_BUSINESS` cannot send the run to
-/// another business. The child runs the same sleep-safe brief the CLI and
-/// launchd run, and never opens the report (`--no-open`).
+/// caller owns (`spawn_run`, owner `app`), `BRIEF_CHILD` as its one
+/// deadline. The child runs the same sleep-safe brief the CLI and launchd
+/// run, and never opens the report (`--no-open`).
 pub fn brief_child(
     cos: &Path,
+    business: &str,
     home: &Path,
     workspace: &Path,
     projects: &Path,
 ) -> Result<BriefOutcome> {
-    let mut cmd = std::process::Command::new(cos);
+    let mut run = spawn_run(
+        cos,
+        &RunSpec {
+            kind: runs::Kind::Brief,
+            business,
+            home,
+            workspace,
+            projects,
+            question: None,
+            owner: runs::Owner::App,
+            env: Vec::new(),
+            client_req: None,
+            budget: None,
+        },
+    )?;
+    let ended = run
+        .wait_until(BRIEF_CHILD)
+        .with_context(|| format!("cos brief did not finish in {}s", BRIEF_CHILD.as_secs()))?;
+    Ok(BriefOutcome {
+        ok: ended.status.success(),
+        deferred: ended.status.code() == Some(75),
+        said: ended.said,
+    })
+}
+
+/// A paid run to start as a child process.
+pub struct RunSpec<'a> {
+    pub kind: runs::Kind,
+    pub business: &'a str,
+    pub home: &'a Path,
+    pub workspace: &'a Path,
+    pub projects: &'a Path,
+    /// The question of an `ask`; one argv element after `--`.
+    pub question: Option<&'a str>,
+    pub owner: runs::Owner,
+    /// Added to the child's environment after the pinned values.
+    pub env: Vec<(String, std::ffi::OsString)>,
+    /// The client's retry key, kept on the record.
+    pub client_req: Option<&'a str>,
+    /// `--budget` for the run, in USD; `None` keeps the run's default.
+    pub budget: Option<f64>,
+}
+
+/// A run child this process owns: waited for, stopped and reaped only
+/// through it. Dropped while running, it is stopped.
+pub struct RunChild {
+    id: String,
+    home: PathBuf,
+    pid: libc::pid_t,
+    own: Option<Group>,
+    child: Option<std::process::Child>,
+    stderr: std::sync::mpsc::Receiver<String>,
+}
+
+/// How a run child ended.
+pub struct Ended {
+    pub status: std::process::ExitStatus,
+    /// The record's state after the reap.
+    pub state: runs::State,
+    /// The last 12 lines the child printed to stderr.
+    pub said: String,
+}
+
+/// How long a stopped run has to end itself before SIGKILL.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// Writes the run's `queued` record with this process as owner, then spawns
+/// `program` with the run child's argv in a group of its own. The
+/// directories go in as flags and the env is pinned to them, so an inherited
+/// `COS_BUSINESS` cannot send the run to another business.
+pub fn spawn_run(program: &Path, spec: &RunSpec) -> Result<RunChild> {
+    let id = runs::new_id();
+    let me = std::process::id() as libc::pid_t;
+    let me_start = proc::start_of(me).context("this process's start time")?;
+    let queued = runs::update(spec.home, &id, |_| {
+        Some(runs::Record {
+            owner_pid: Some(me),
+            owner_start: Some(me_start.clone()),
+            client_req: spec.client_req.map(str::to_owned),
+            ..runs::Record::new(&id, spec.kind, spec.business, spec.owner)
+        })
+    })?;
+    anyhow::ensure!(
+        matches!(queued, runs::Write::Written(_)),
+        "run {id}: queued record not written"
+    );
+    let mut cmd = std::process::Command::new(program);
     cmd.arg("--home")
-        .arg(home)
+        .arg(spec.home)
         .arg("--workspace")
-        .arg(workspace)
+        .arg(spec.workspace)
         .arg("--projects")
-        .arg(projects)
-        .args(["--no-open", "brief"])
-        .env_remove("COS_BUSINESS")
-        .env("COS_HOME", home)
-        .env("COS_WORKSPACE", workspace)
-        .env("COS_PROJECTS", projects)
+        .arg(spec.projects);
+    if let Some(budget) = spec.budget {
+        cmd.arg("--budget").arg(budget.to_string());
+    }
+    match spec.kind {
+        runs::Kind::Brief => cmd.args(["--no-open", "brief"]),
+        runs::Kind::Ask => cmd
+            .args(["ask", "--"])
+            .arg(spec.question.unwrap_or_default()),
+    };
+    cmd.env_remove("COS_BUSINESS")
+        .env("COS_HOME", spec.home)
+        .env("COS_WORKSPACE", spec.workspace)
+        .env("COS_PROJECTS", spec.projects)
+        .env(runs::RUN_RECORD_ENV, &id)
+        .env(runs::OWNER_ENV, format!("{me}/{me_start}"))
+        .envs(spec.env.iter().map(|(k, v)| (k, v)))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    let mut child = crate::proc::spawn_grouped(&mut cmd)?;
-    let err = crate::proc::lines(child.stderr.take().context("stderr not piped")?);
-    let until = crate::proc::Deadline::capped(BRIEF_CHILD, BRIEF_CHILD);
-    let status = crate::proc::wait_until(&mut child, &until)
-        .with_context(|| format!("cos brief did not finish in {}s", BRIEF_CHILD.as_secs()))?;
-    crate::proc::kill_group(crate::proc::group_of(&child));
-    std::thread::sleep(Duration::from_millis(50));
-    let lines: Vec<String> = err.try_iter().collect();
-    let said = lines[lines.len().saturating_sub(12)..].join("\n");
-    Ok(BriefOutcome {
-        ok: status.success(),
-        deferred: status.code() == Some(75),
-        said,
+    let mut child = match proc::spawn_grouped(&mut cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = runs::update(spec.home, &id, |cur| {
+                let mut r = cur?.clone();
+                r.state = runs::State::Failed;
+                r.reason = Some("spawn failed".into());
+                Some(r)
+            });
+            return Err(e);
+        }
+    };
+    let pid = proc::group_of(&child);
+    let own = proc::start_of(pid).map(|start| Group { pgid: pid, start });
+    let stderr = proc::lines(child.stderr.take().context("stderr not piped")?);
+    Ok(RunChild {
+        id,
+        home: spec.home.to_owned(),
+        pid,
+        own,
+        child: Some(child),
+        stderr,
     })
+}
+
+impl RunChild {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn pid(&self) -> libc::pid_t {
+        self.pid
+    }
+
+    /// Whether the child has been reaped, by `wait_until`, `try_end` or a stop.
+    pub fn is_reaped(&self) -> bool {
+        self.child.is_none()
+    }
+
+    /// Waits for the child to exit and reaps the run. Past `deadline` the run
+    /// is stopped, its record `failed` with reason `deadline` unless it wrote
+    /// its own, and this returns an error.
+    pub fn wait_until(&mut self, deadline: Duration) -> Result<Ended> {
+        let until = proc::Deadline::capped(deadline, deadline);
+        loop {
+            let child = self.child.as_mut().context("run already reaped")?;
+            if let Some(status) = child.try_wait()? {
+                return self.reaped(status, None);
+            }
+            if until.expired() {
+                self.stop_as(runs::State::Failed, "deadline")?;
+                anyhow::bail!("run {} did not finish in {}s", self.id, deadline.as_secs());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The run reaped if its child has exited, without waiting.
+    pub fn try_end(&mut self) -> Result<Option<Ended>> {
+        let child = self.child.as_mut().context("run already reaped")?;
+        match child.try_wait()? {
+            Some(status) => self.reaped(status, None).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// SIGTERM, then SIGKILL after `STOP_GRACE`, then the reap, writing
+    /// `stopped` unless the run wrote its own final state.
+    pub fn kill(&mut self) -> Result<Ended> {
+        self.stop_as(runs::State::Stopped, "stopped")
+    }
+
+    /// `kill`, ending the run as `state` with `reason`: the run writes it if
+    /// it ends itself on the SIGTERM, the reap otherwise.
+    pub fn stop_as(&mut self, state: runs::State, reason: &str) -> Result<Ended> {
+        let child = self.child.as_mut().context("run already reaped")?;
+        if let Err(e) = runs::ask_to_end(&self.home, &self.id, state, reason) {
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
+                "cos: run {}: ending not recorded: {e:#}",
+                self.id
+            );
+        }
+        proc::signal_pid(self.pid, libc::SIGTERM);
+        let grace = proc::Deadline::after(STOP_GRACE);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if grace.expired() {
+                let _ = child.kill();
+                break child.wait()?;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        self.reaped(status, Some((state, reason)))
+    }
+
+    fn reaped(
+        &mut self,
+        status: std::process::ExitStatus,
+        ending: Option<(runs::State, &str)>,
+    ) -> Result<Ended> {
+        self.child = None;
+        let state = runs::reap(&self.home, &self.id, self.own.clone(), status, ending)?;
+        std::thread::sleep(Duration::from_millis(50));
+        let lines: Vec<String> = self.stderr.try_iter().collect();
+        Ok(Ended {
+            status,
+            state,
+            said: lines[lines.len().saturating_sub(12)..].join("\n"),
+        })
+    }
+}
+
+impl Drop for RunChild {
+    fn drop(&mut self) {
+        if self.child.is_some()
+            && let Err(e) = self.kill()
+        {
+            eprintln!("cos: run {}: {e:#}", self.id);
+        }
+    }
 }

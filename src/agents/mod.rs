@@ -40,7 +40,7 @@ pub mod slots;
 pub mod timeline;
 pub mod view;
 
-pub use follow::{mark_done, open_in_herdr, pause, say, screen, tick};
+pub use follow::{Follow, mark_done, open_in_herdr, pause, say, screen, tick};
 pub use judge::{Contract, Expects, Outcome, Verdict};
 
 /// No agent runs longer than this, whatever it asks for.

@@ -121,13 +121,11 @@ pub fn run_input(cmd: &mut Command, input: &[u8], deadline: Duration) -> Result<
     use std::io::Write;
     const LIMIT: usize = 128 * 1024;
     let until = Deadline::after(deadline);
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .with_context(|| format!("spawn {:?}", cmd.get_program()))?;
+    let mut child = spawn_tracked(
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )?;
     let pgid = group_of(&child);
     let out = Drain::start_limited(child.stdout.take(), LIMIT);
     let err = Drain::start_limited(child.stderr.take(), LIMIT);
@@ -206,10 +204,22 @@ pub fn stream_lines_on(
 }
 
 /// Spawns `cmd` as the leader of a new process group, stdin closed, so one
-/// signal to the group reaches everything it starts.
+/// signal to the group reaches everything it starts. While a run tracks its
+/// groups (`track`), the child goes through the spawn gate.
 pub fn spawn_grouped(cmd: &mut Command) -> Result<Child> {
-    cmd.stdin(Stdio::null()).process_group(0);
-    cmd.spawn()
+    cmd.stdin(Stdio::null());
+    spawn_tracked(cmd)
+}
+
+fn spawn_tracked(cmd: &mut Command) -> Result<Child> {
+    if tracking() {
+        for name in tracker().strip {
+            cmd.env_remove(name);
+        }
+        return spawn_gated(cmd, register);
+    }
+    cmd.process_group(0)
+        .spawn()
         .with_context(|| format!("spawn {:?}", cmd.get_program()))
 }
 
@@ -406,3 +416,324 @@ pub fn group_alive(pgid: libc::pid_t) -> bool {
     // SAFETY: signal 0 only checks for existence and permission.
     pgid > 0 && unsafe { libc::kill(-pgid, 0) } == 0
 }
+
+/// `start_time` as a run record writes it: `"<sec>.<usec>"`.
+pub fn start_of(pid: libc::pid_t) -> Option<String> {
+    start_time(pid).map(|(s, u)| format!("{s}.{u:06}"))
+}
+
+/// A process group a run created: its pgid and its leader's start.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Group {
+    pub pgid: libc::pid_t,
+    pub start: String,
+}
+
+/// How long a writer of a final state waits for a run's groups to be gone.
+pub const GONE_BOUND: Duration = Duration::from_secs(2);
+
+/// The recorded group has ended: no member is left, or its pgid now leads
+/// another process (the group ended and the pid was reused).
+pub fn group_gone(g: &Group) -> bool {
+    !group_alive(g.pgid) || start_of(g.pgid).is_some_and(|s| s != g.start)
+}
+
+/// Group identity: alive, and its leader either has the recorded start or is
+/// gone. A pgid stays reserved while any member lives, so a live group with
+/// no leader is still the recorded one, unless the pgid was freed and a new
+/// group led by that exact pid has since lost its leader; that case is
+/// accepted.
+pub fn may_kill(g: &Group) -> bool {
+    g.pgid > 1 && group_alive(g.pgid) && start_of(g.pgid).is_none_or(|s| s == g.start)
+}
+
+/// SIGKILL to a recorded group, only under `may_kill`. Whether it was sent.
+pub fn kill_recorded(g: &Group) -> bool {
+    let ok = may_kill(g);
+    if ok {
+        kill_group(g.pgid);
+    }
+    ok
+}
+
+/// Waits up to `bound` for every group to be gone, reaping a leader that is
+/// this process's own child. Returns the groups still not gone.
+pub fn wait_gone(groups: &[Group], bound: Duration) -> Vec<Group> {
+    wait_gone_with(groups, bound, |g| {
+        reap_if_child(g.pgid);
+        group_gone(g)
+    })
+}
+
+/// Reaps `pid` if it is this process's child and has exited, so a killed
+/// leader does not keep its group alive as a zombie.
+pub fn reap_if_child(pid: libc::pid_t) {
+    if pid > 0 {
+        // SAFETY: a non-blocking wait on one pid; ECHILD when it is not ours.
+        unsafe {
+            libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG);
+        }
+    }
+}
+
+pub fn wait_gone_with(
+    groups: &[Group],
+    bound: Duration,
+    gone: impl Fn(&Group) -> bool,
+) -> Vec<Group> {
+    let until = Instant::now() + bound;
+    loop {
+        let left: Vec<Group> = groups.iter().filter(|g| !gone(g)).cloned().collect();
+        if left.is_empty() || Instant::now() >= until {
+            return left;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Called with the run's live groups each time one is added; an error
+/// refuses the spawn that added it.
+pub type Hook = Box<dyn Fn(&[Group]) -> Result<()> + Send + Sync>;
+
+struct Tracker {
+    hook: Option<Hook>,
+    groups: Vec<Group>,
+    closed: bool,
+    strip: &'static [&'static str],
+}
+
+static TRACKER: std::sync::Mutex<Tracker> = std::sync::Mutex::new(Tracker {
+    hook: None,
+    groups: Vec::new(),
+    closed: false,
+    strip: &[],
+});
+
+fn tracker() -> std::sync::MutexGuard<'static, Tracker> {
+    TRACKER.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn tracking() -> bool {
+    let t = tracker();
+    t.hook.is_some() || t.closed
+}
+
+/// From now on every child this process puts in a group of its own goes
+/// through the spawn gate and into the set `hook` sees, with the variables
+/// named in `strip` removed from its environment.
+pub fn track(hook: Hook, strip: &'static [&'static str]) {
+    let mut t = tracker();
+    *t = Tracker {
+        hook: Some(hook),
+        groups: Vec::new(),
+        closed: false,
+        strip,
+    };
+}
+
+/// Refuses every further tracked spawn and returns the set, for cleanup.
+pub fn close_tracking() -> Vec<Group> {
+    let mut t = tracker();
+    t.closed = true;
+    t.groups.clone()
+}
+
+/// Whether `close_tracking` has run: this process is ending its groups, so a
+/// child that ended meanwhile may have been killed rather than finished.
+pub fn tracking_closed() -> bool {
+    tracker().closed
+}
+
+/// Back to plain spawns, after the run's final state is written. Never on a
+/// path that exits next: until then a closed tracker refuses every spawn.
+pub fn untrack() {
+    let mut t = tracker();
+    *t = Tracker {
+        hook: None,
+        groups: Vec::new(),
+        closed: false,
+        strip: &[],
+    };
+}
+
+fn register(g: &Group) -> Result<()> {
+    let mut t = tracker();
+    if t.closed {
+        bail!("the run is ending: no new process starts");
+    }
+    t.groups.retain(|x| !group_gone(x));
+    t.groups.push(g.clone());
+    let result = match &t.hook {
+        Some(hook) => hook(&t.groups),
+        None => Ok(()),
+    };
+    if result.is_err() {
+        t.groups.pop();
+    }
+    result
+}
+
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Spawns `cmd` as the leader of a new group, held before `exec` until
+/// `register` has accepted the group. If `register`
+/// fails, the child is killed before it runs anything; if this process dies
+/// first, the child reads EOF on the gate and exits without exec.
+///
+/// `Command::spawn` returns only once the child has exec'd, so the spawn
+/// runs on a scoped thread while this one learns the pid from the child
+/// itself, registers it, then opens the gate.
+pub fn spawn_gated(
+    cmd: &mut Command,
+    register: impl FnOnce(&Group) -> Result<()>,
+) -> Result<Child> {
+    use std::os::fd::AsRawFd;
+
+    let _one = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    settle_fork_handlers();
+    cmd.process_group(0);
+    let (gate_r, gate_w) = std::io::pipe().context("gate pipe")?;
+    let (pid_r, pid_w) = std::io::pipe().context("gate pipe")?;
+    let fds = (
+        gate_r.as_raw_fd(),
+        gate_w.as_raw_fd(),
+        pid_r.as_raw_fd(),
+        pid_w.as_raw_fd(),
+    );
+    // SAFETY: the hook calls only close, getpid, write and read, all
+    // async-signal-safe, on descriptors this function keeps open until the
+    // spawn returns.
+    unsafe {
+        cmd.pre_exec(move || hold_at_gate(fds.0, fds.1, fds.2, fds.3));
+    }
+    let program = format!("{:?}", cmd.get_program());
+    thread::scope(|s| {
+        let spawning = s.spawn(|| cmd.spawn());
+        let pid = read_pid(fds.2, &spawning);
+        let registered = match pid {
+            Some(pid) => match start_of(pid) {
+                Some(start) => {
+                    let g = Group { pgid: pid, start };
+                    register(&g).inspect_err(|_| kill_group(pid))
+                }
+                None => {
+                    kill_group(pid);
+                    Err(anyhow::anyhow!("gated child {pid} has no start time"))
+                }
+            },
+            None => Err(anyhow::anyhow!("gated child reported no pid")),
+        };
+        if registered.is_ok() {
+            use std::io::Write;
+            let _ = (&gate_w).write_all(&[1]);
+        }
+        drop(gate_w);
+        let spawned = spawning
+            .join()
+            .map_err(|_| anyhow::anyhow!("spawn thread panicked"))?;
+        match (registered, spawned) {
+            (Ok(()), Ok(child)) => Ok(child),
+            (Ok(()), Err(e)) => Err(e).with_context(|| format!("spawn {program}")),
+            (Err(e), Ok(mut child)) => {
+                let ended = child.try_wait().ok().flatten();
+                kill_and_reap(&mut child);
+                Err(match ended {
+                    Some(status) => e.context(format!("the child had already ended: {status}")),
+                    None => e,
+                })
+            }
+            (Err(e), Err(se)) => Err(e.context(format!("spawn {program}: {se}"))),
+        }
+    })
+}
+
+/// libSystem's fork-child handler finishes libnotify's one-time setup, and
+/// aborts the child (SIGKILL, `_os_once_gate_corruption_abort`) when another
+/// thread was inside that setup at the fork. Completing it once before the
+/// first fork leaves no setup in flight to inherit.
+#[cfg(target_os = "macos")]
+fn settle_fork_handlers() {
+    unsafe extern "C" {
+        fn notify_is_valid_token(val: libc::c_int) -> bool;
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: a pure query on libnotify's process-wide state.
+    ONCE.call_once(|| unsafe {
+        notify_is_valid_token(0);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn settle_fork_handlers() {}
+
+/// The pid the gated child writes before it blocks, or `None` when the spawn
+/// ended without one.
+fn read_pid(
+    fd: std::os::fd::RawFd,
+    spawning: &thread::ScopedJoinHandle<'_, std::io::Result<Child>>,
+) -> Option<libc::pid_t> {
+    let mut buf = [0u8; 4];
+    let mut got = 0;
+    loop {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd.
+        let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
+        if ready > 0 {
+            // SAFETY: reads into the unfilled tail of `buf`.
+            let n = unsafe { libc::read(fd, buf[got..].as_mut_ptr().cast(), buf.len() - got) };
+            match n {
+                n if n > 0 => {
+                    got += n as usize;
+                    if got == buf.len() {
+                        return Some(libc::pid_t::from_ne_bytes(buf));
+                    }
+                }
+                0 => return None,
+                _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {}
+                _ => return None,
+            }
+        } else if spawning.is_finished() {
+            return None;
+        }
+    }
+}
+
+/// Runs in the child between fork and exec.
+fn hold_at_gate(
+    gate_r: libc::c_int,
+    gate_w: libc::c_int,
+    pid_r: libc::c_int,
+    pid_w: libc::c_int,
+) -> std::io::Result<()> {
+    // SAFETY: async-signal-safe calls on descriptors inherited from the parent.
+    unsafe {
+        libc::close(gate_w);
+        libc::close(pid_r);
+        let me = libc::getpid().to_ne_bytes();
+        if libc::write(pid_w, me.as_ptr().cast(), me.len()) != me.len() as isize {
+            return Err(std::io::Error::last_os_error());
+        }
+        libc::close(pid_w);
+        let mut byte = 0u8;
+        loop {
+            match libc::read(gate_r, (&mut byte as *mut u8).cast(), 1) {
+                1 => {
+                    libc::close(gate_r);
+                    return Ok(());
+                }
+                n if n < 0
+                    && std::io::Error::last_os_error().kind()
+                        == std::io::ErrorKind::Interrupted => {}
+                _ => return Err(std::io::Error::from_raw_os_error(libc::ECANCELED)),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

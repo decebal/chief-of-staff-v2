@@ -30,13 +30,23 @@
     li.id = `switch-row-${i}`;
     li.setAttribute("role", "option");
     li.setAttribute("aria-selected", String(i === at));
+    const top = document.createElement("span");
+    top.className = "top";
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = r.app ? `${r.name} (app business)` : r.name;
+    top.append(name);
+    if (r.active) {
+      const mark = document.createElement("span");
+      mark.className = "badge";
+      mark.dataset.tone = "info";
+      mark.textContent = "MCP default";
+      top.append(mark);
+    }
     const home = document.createElement("span");
     home.className = "home";
     home.textContent = r.triple?.home ?? "";
-    li.append(name, home);
+    li.append(top, home);
     if (r.missing) {
       const gone = document.createElement("span");
       gone.className = "muted small";
@@ -62,6 +72,7 @@
     at = Math.min(at, Math.max(shown.length - 1, 0));
     list.replaceChildren(...shown.map(row));
     list.setAttribute("aria-activedescendant", shown.length ? `switch-row-${at}` : "");
+    footer();
     if (!read) return;
     say(
       shown.length
@@ -80,7 +91,49 @@
     for (const [i, li] of [...list.children].entries()) li.setAttribute("aria-selected", String(i === at));
     list.setAttribute("aria-activedescendant", `switch-row-${at}`);
     list.children[at]?.scrollIntoView({ block: "nearest" });
+    footer();
   }
+
+  // The MCP default is the registry's active business; a window switch never moves it.
+  const now = document.getElementById("mcp-default-now");
+  const make = document.getElementById("mcp-make-default");
+  const makeLabel = document.getElementById("mcp-make-default-label");
+
+  function footer() {
+    const def = rows.find((r) => r.active);
+    now.textContent = !read
+      ? ""
+      : def
+        ? `Claude Desktop and Codex use ${def.name} when a call names no business.`
+        : "Claude Desktop and Codex have no default business.";
+    const r = shown[at];
+    make.hidden = !read || !r;
+    make.disabled = !r || r.active;
+    makeLabel.textContent = r ? (r.active ? `${r.name} is the default` : `Make ${r.name} the default`) : "Make default";
+  }
+
+  async function makeDefault() {
+    const r = shown[at];
+    if (!r || r.active) return;
+    make.disabled = true;
+    say(null);
+    try {
+      await invoke("business_make_default", { name: r.name });
+      rows = await invoke("businesses");
+      render();
+    } catch (e) {
+      say(
+        stateView("unreachable", {
+          title: `${r.name} is not the default`,
+          detail: e instanceof Error ? e.message : String(e),
+          line: true,
+          action: { icon: "rotate-ccw", label: "Try again", onClick: makeDefault },
+        }),
+      );
+      footer();
+    }
+  }
+  make.addEventListener("click", makeDefault);
 
   async function choose(i) {
     const r = shown[i];
@@ -158,6 +211,7 @@
     read = false;
     say(null);
     list.replaceChildren();
+    footer();
     dialog.showModal();
     filter.focus();
     loadRows();

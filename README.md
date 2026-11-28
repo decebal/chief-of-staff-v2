@@ -157,7 +157,8 @@ Full flags: [Usage › Spin off agents](docs/usage.md#spin-off-agents).
 | **Terminal** | `cos brief` · `cos ask "release review or bug fix today?"` · `cos state …` · `cos handoff D-1` · `cos report` · `cos agents spawn` / `watch` / `show` / `judge` / `scorecard` · `cos staff-sync` · `cos review` |
 | **Browser, live** | `cos dash` → `127.0.0.1:8790`, reloads after every run or state change; `/agents` for running agents; localhost only |
 | **Desktop** | `task desktop`: the report plus an agent launcher (any number, any repo, Claude Code or Codex) with live status, logs, stop and clean, in one Tauri window ([apps/desktop](apps/desktop/README.md)) |
-| **Claude Desktop · Codex** | `task install-mcp` registers `cos mcp`: `latest_brief` / `plan` / `handoff` / `agents` (free), `brief` / `ask` / `spin_off` (paid), `stop_agent` |
+| **Claude Desktop · Codex** | `task install-mcp` registers `cos mcp` through `cos connect`: `latest_brief` / `plan` / `handoff` / `agents` / `runs` / `run_status` / `businesses` (free), `brief` / `ask` / `spin_off` (paid), `stop_agent`. `brief` and `ask` answer at once with a run id and, for a registered business, a `cos://run/<business>/<run>` link that opens the run in the desktop app; `run_status` returns the result. Each tool takes an optional `business`. `cos connect status` checks both registrations |
+| **Daemon** | `cos daemon`, loaded under launchd by `task install`: owns the paid runs MCP clients start, for every registered business, on a socket only you can open, and follows every business's hires |
 | **claude.ai** | `cos tunnel`: a Cloudflare quick tunnel to a read-only server that can't start paid runs or read the workspace |
 | **Claude Code · Codex skill** | the starter skill, from `.claude-plugin/` or `.agents/plugins/` in this repo; the `tactician` agent is installed into `~/.claude/agents/` |
 
@@ -265,6 +266,10 @@ cos --home /tmp/cos-demo dash
 | [Flows and Today in motion plan](docs/plans/2026-11-26-flows-today-motion-plan.md) | gates, the testing trophy and 14 stories |
 | [Flows and Today in motion code reviews](docs/plans/2026-11-26-flows-today-motion-code-review.md) | two fresh-context prove-it reviews ([second](docs/plans/2026-11-26-flows-today-motion-code-review-2.md)) and what was left to check by hand |
 | [Flows and Today in motion evidence](docs/reports/2026-11-27-flows-today-motion.html) | before and after, every new view in light and dark, the no-writes proof, and what was not checked |
+| [MCP client bridge brief](docs/plans/2026-11-25-mcp-client-bridge-brief.md) | why the app, Claude Desktop and Codex drift apart, and the decisions taken |
+| [MCP client bridge design](docs/plans/2026-11-25-mcp-client-bridge-design.md) | the cos daemon, run ids, business per call, `cos connect`, `cos://` links and the Semantic ISA |
+| [MCP client bridge plan](docs/plans/2026-11-25-mcp-client-bridge-plan.md) | quality gates, testing trophy and 11 stories, the process-cleanup spike first |
+| [MCP client bridge cleanup spike](docs/plans/2026-11-25-mcp-client-bridge-cleanup-spike.md) | US-001: the group list stands, five design text changes for owner approval, orphan-group measurements |
 
 ## License
 

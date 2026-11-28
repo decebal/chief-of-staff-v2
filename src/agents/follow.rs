@@ -15,9 +15,10 @@
 //! terminals it started.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -64,6 +65,72 @@ pub(crate) fn seen(t: &Term, prev: Option<&Seen>) -> Seen {
             .or_else(|| prev.and_then(|p| p.first_message.clone())),
         at: jiff::Timestamp::now().to_string(),
         interrupted: prev.and_then(|p| p.interrupted.clone()),
+    }
+}
+
+/// What `follow_all` keeps between passes, per home: its runs' stamp at the
+/// last scan, and the runs that scan found waiting on a person when some run
+/// was in Herdr.
+#[derive(Default)]
+pub struct Follow {
+    seen: BTreeMap<PathBuf, (String, Option<Vec<String>>)>,
+}
+
+impl Follow {
+    /// One pass over the hires of every business in `registry`, and of
+    /// `also`: polls each live terminal (`tick`: one bounded `hc get` per
+    /// run), stops runs at their deadline and judges each once. A home whose
+    /// stamp has not moved and had nothing in Herdr is not read again; one
+    /// with no run in Herdr is read from its files alone and left as it is.
+    pub fn follow_all(&mut self, registry: &Path, also: Option<&Path>) {
+        let mut homes: Vec<PathBuf> = crate::business::registered_homes(registry)
+            .into_values()
+            .collect();
+        if let Some(home) = also
+            && !homes.iter().any(|h| h == home)
+        {
+            homes.push(home.to_owned());
+        }
+        self.follow_homes(&homes);
+    }
+
+    /// `follow_all` over exactly `homes`; homes it followed before and not
+    /// now are forgotten.
+    pub fn follow_homes(&mut self, homes: &[PathBuf]) {
+        self.seen.retain(|h, _| homes.contains(h));
+        for home in homes {
+            let stamp = crate::dash::stamp([super::root(home)]);
+            if self
+                .seen
+                .get(home)
+                .is_some_and(|(s, live)| *s == stamp && live.is_none())
+            {
+                continue;
+            }
+            let live = super::in_herdr(home);
+            if !live.is_empty()
+                && let Err(e) = tick(home)
+            {
+                eprintln!("cos: following hires in Herdr: {e:#}");
+            }
+            let blocked = (!live.is_empty()).then(|| {
+                super::in_herdr(home)
+                    .into_iter()
+                    .filter(|(_, st)| st.herdr.as_ref().and_then(|h| h.blocked()).is_some())
+                    .map(|(spec, _)| spec.id)
+                    .collect()
+            });
+            self.seen.insert(
+                home.clone(),
+                (crate::dash::stamp([super::root(home)]), blocked),
+            );
+        }
+    }
+
+    /// The runs of `home` the last pass found waiting on a person; `None`
+    /// when none of its runs was in Herdr.
+    pub fn blocked(&self, home: &Path) -> Option<&[String]> {
+        self.seen.get(home).and_then(|(_, b)| b.as_deref())
     }
 }
 
@@ -551,6 +618,12 @@ fn judge_locked(home: &Path, spec: &Spec, why: &str, again: bool) -> Result<Verd
         &as_judged,
         (!state.shimmed.is_empty()).then_some(bin.as_path()),
     );
+    if crate::proc::tracking_closed() {
+        bail!(
+            "{} is not judged: this process is stopping and may have killed its checks",
+            spec.id
+        );
+    }
     state.verdict = Some(v.clone());
     state.judged_on = Some(why.to_owned());
     write_state(home, &spec.id, &state)?;

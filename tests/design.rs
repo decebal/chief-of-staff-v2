@@ -1438,7 +1438,14 @@ const ICON_FILE: &str = "apps/desktop/ui/vendor/lucide/icons-0.556.0.js";
 /// Each picture's share of art/art.js: the README's "under ~6 KB each".
 const ART_PER_KIND: usize = 6 * 1024;
 /// The window's scripts, each of which may show a state.
-const WINDOW_JS: &[&str] = &["states.js", "kit.js", "command.js", "dash.js", "app.js"];
+const WINDOW_JS: &[&str] = &[
+    "states.js",
+    "kit.js",
+    "command.js",
+    "dash.js",
+    "assistants.js",
+    "app.js",
+];
 
 /// From `head` to the first brace closing a top-level function or a method.
 fn body<'a>(js: &'a str, head: &str) -> &'a str {
@@ -1534,6 +1541,8 @@ fn every_state_renders_through_state_view_with_an_icon_and_art() {
         "function renderRuns(",
         "function renderScores(",
         "  async refresh() {",
+        "  async function load() {",
+        "  async function apply(c, action) {",
         "function frameLoad(",
     ] {
         assert!(
@@ -1548,7 +1557,7 @@ fn every_state_renders_through_state_view_with_an_icon_and_art() {
         );
     }
     assert!(js.contains(r#"frameLoad("docs-frame""#));
-    for file in ["command.js", "dash.js"] {
+    for file in ["command.js", "dash.js", "assistants.js"] {
         assert!(
             read(&format!("{UI}/{file}")).contains("stateView(\"unreachable\""),
             "{file} reads the backend with no state for a failed read"

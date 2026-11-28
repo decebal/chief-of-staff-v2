@@ -689,16 +689,15 @@ fn spin_off_hires_into_herdr() {
         &home,
         &format!("Fix the parser in `{}/src/lib.rs`.", repo.display()),
     );
-    let cfg = cos::pipeline::Config {
+    let triple = cos::business::Triple {
         home: home.clone(),
-        install: home.clone(),
         workspace: home.clone(),
         projects: root.join("projects"),
-        budget: None,
-        bins: Default::default(),
+        business: None,
+        layer: cos::business::Layer::Flags,
     };
     let args = serde_json::from_value(serde_json::json!({ "from": "brief", "item": 1 })).unwrap();
-    let spec = cos::mcp::spin_off_hire(&cfg, args, Path::new(COS)).unwrap();
+    let spec = cos::mcp::spin_off_hire(&triple, args, Path::new(COS)).unwrap();
     assert_eq!(spec.repo.as_deref(), Some(repo.as_path()));
     let until = Instant::now() + Duration::from_secs(20);
     while state(&home, &spec.id).herdr.is_none() {
@@ -711,7 +710,7 @@ fn spin_off_hires_into_herdr() {
 
     f.down(true);
     let args = serde_json::from_value(serde_json::json!({ "from": "brief", "item": 1 })).unwrap();
-    let err = cos::mcp::spin_off_hire(&cfg, args, Path::new(COS)).unwrap_err();
+    let err = cos::mcp::spin_off_hire(&triple, args, Path::new(COS)).unwrap_err();
     assert!(
         format!("{err:#}").contains("Herdr isn't running"),
         "{err:#}"
@@ -969,7 +968,10 @@ fn cli_and_mcp_refuse_escaping_ids() {
         .unwrap()
         .block_on(
             server.stop_agent(rmcp::handler::server::wrapper::Parameters(
-                cos::mcp::AgentId { id: "../x".into() },
+                cos::mcp::AgentId {
+                    id: "../x".into(),
+                    business: None,
+                },
             )),
         );
     assert_eq!(res.is_error, Some(true), "{res:?}");

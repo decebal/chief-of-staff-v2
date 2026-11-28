@@ -14,5 +14,12 @@
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><false/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>dev.decebal.cos</string>
+      <key>CFBundleURLSchemes</key><array><string>cos</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>

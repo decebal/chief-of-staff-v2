@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use cos::agents::{self, Harness};
 use cos::business::{self, Business, Dirs, Inputs, Sources, Triple};
 use cos::claude::Run;
-use cos::mcp::{self, Mode};
+use cos::mcp;
 use cos::pipeline::Config;
 
 /// Chief of staff: one daily brief over headless Claude Code, from the goals
@@ -131,6 +131,67 @@ enum Cmd {
     Review {
         #[command(subcommand)]
         cmd: ReviewCmd,
+    },
+    /// Show, register, repair or remove `cos mcp` in Claude Desktop and Codex.
+    Connect {
+        #[command(subcommand)]
+        cmd: ConnectCmd,
+    },
+    /// Own the paid runs MCP clients and the app start, for every registered
+    /// business, on a socket only you can open; follow every business's
+    /// hires. Runs in the foreground; launchd keeps it alive.
+    Daemon {
+        #[command(subcommand)]
+        cmd: Option<DaemonCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonCmd {
+    /// Load `cos daemon` under launchd as `cos.daemon`, kept alive on this
+    /// binary. Refuses (exit 75) while the daemon owns a live run.
+    Install {
+        /// Stop the daemon's live runs first.
+        #[arg(long)]
+        force: bool,
+        /// The `cos` binary launchd runs, absolute. Default: this one.
+        #[arg(long)]
+        bin: Option<PathBuf>,
+    },
+    /// Boot `cos.daemon` out of launchd and remove its plist.
+    Uninstall,
+}
+
+#[derive(Subcommand)]
+enum ConnectCmd {
+    /// One row per client: config, registration, command, version, timeout, daemon.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Register `cos mcp` in Claude Desktop. Touches only the `cos` entry and
+    /// keeps the first original as `<config>.cos.orig`.
+    ClaudeDesktop {
+        /// Rewrite an existing `cos` entry.
+        #[arg(long)]
+        repair: bool,
+        /// The `cos` binary the client runs, absolute. Default: this one.
+        #[arg(long)]
+        bin: Option<PathBuf>,
+    },
+    /// Register `cos mcp` in Codex, with `tool_timeout_sec = 320`.
+    Codex {
+        /// Rewrite an existing `cos` entry.
+        #[arg(long)]
+        repair: bool,
+        /// The `cos` binary the client runs, absolute. Default: this one.
+        #[arg(long)]
+        bin: Option<PathBuf>,
+    },
+    /// Remove the `cos` entry from a client, nothing else.
+    Remove {
+        #[arg(value_parser = ["claude-desktop", "codex"])]
+        client: String,
     },
 }
 
@@ -414,14 +475,20 @@ const DEFERRED_EXIT: i32 = 75;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let auth = if matches!(&cli.cmd, Cmd::Dash { .. }) {
+    let signals = ((matches!(cli.cmd, Cmd::Brief | Cmd::Ask { .. }) && !cli.dry_run)
+        || matches!(cli.cmd, Cmd::Daemon { cmd: None }))
+    .then(cos::runs::block_signals);
+    let auth = if matches!(
+        &cli.cmd,
+        Cmd::Dash { .. } | Cmd::Connect { .. } | Cmd::Daemon { .. }
+    ) {
         cos::auth::Source::Interactive
     } else {
         cos::auth::load()
     };
-    let result = run(&cli, auth);
+    let result = run(&cli, auth, signals);
     if let Err(e) = &result
-        && e.is::<cos::pipeline::Deferred>()
+        && (e.is::<cos::pipeline::Deferred>() || e.is::<cos::daemon::install::Busy>())
     {
         eprintln!("{e}");
         std::process::exit(DEFERRED_EXIT);
@@ -437,10 +504,41 @@ fn main() -> Result<()> {
     result
 }
 
-fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
+fn run(cli: &Cli, auth: cos::auth::Source, signals: Option<libc::sigset_t>) -> Result<()> {
     match &cli.cmd {
         Cmd::Ritual { cmd } => ritual_cmd(cmd),
         Cmd::Business { cmd } => business_cmd(cli, cmd),
+        Cmd::Connect { cmd } => connect_cmd(cmd),
+        Cmd::Daemon { cmd: None } => {
+            let signals = signals.context("daemon signals were not blocked at start")?;
+            let code = cos::daemon::serve(cos::daemon::Options::from_env()?, signals)?;
+            std::process::exit(code)
+        }
+        Cmd::Daemon {
+            cmd: Some(DaemonCmd::Install { force, bin }),
+        } => {
+            let bin = match bin {
+                Some(b) => b.clone(),
+                None => std::env::current_exe().context("locate the cos binary")?,
+            };
+            let done = cos::daemon::install::install(&cos::daemon::install::Install {
+                bin,
+                force: *force,
+            })?;
+            println!(
+                "cos daemon: installed {}; loaded: {}",
+                done.plist.display(),
+                done.loaded
+            );
+            Ok(())
+        }
+        Cmd::Daemon {
+            cmd: Some(DaemonCmd::Uninstall),
+        } => {
+            let plist = cos::daemon::install::uninstall()?;
+            println!("cos daemon: booted out; {} removed", plist.display());
+            Ok(())
+        }
         // This takes its paths as arguments and never resolves a triple.
         Cmd::Agents {
             cmd:
@@ -458,12 +556,66 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
             ) {
                 eprintln!("business: {} {t}", t.label());
             }
-            run_on(cli, &t, auth, cmd)
+            run_on(cli, &t, auth, cmd, signals)
         }
     }
 }
 
-fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<()> {
+/// The run process's start: the brief lock, the start sweep, the `running`
+/// record. A held brief lock prints the holder's run id and exits 73.
+fn begin_run(
+    t: &Triple,
+    kind: cos::runs::Kind,
+    signals: Option<libc::sigset_t>,
+) -> Result<&'static cos::runs::Session> {
+    let signals = signals.context("run signals were not blocked at start")?;
+    match cos::runs::Session::begin(&t.home, kind, t.label(), signals)? {
+        cos::runs::Begun::Running(s) => Ok(s),
+        cos::runs::Begun::Busy(holder) => {
+            println!("{holder}");
+            eprintln!(
+                "cos: a brief is already running for {}: {holder}",
+                t.label()
+            );
+            std::process::exit(cos::runs::EXIT_BRIEF_HELD)
+        }
+    }
+}
+
+/// Self-cleanup and the run's final state, from how the run ended.
+fn end_run<T>(
+    session: &cos::runs::Session,
+    result: &Result<cos::pipeline::Done<T>>,
+    done: impl FnOnce(&mut cos::runs::Record, &cos::pipeline::Done<T>),
+) {
+    use cos::runs::State;
+    let short = |s: String| s.chars().take(200).collect::<String>();
+    match result {
+        Ok(d) => session.finish(State::Done, None, |r| {
+            r.cost_usd = Some(d.cost_usd);
+            done(r, d);
+        }),
+        Err(e) if e.is::<cos::pipeline::Deferred>() => {
+            session.finish(State::Deferred, Some(short(e.to_string())), |_| {})
+        }
+        Err(e) => {
+            let said = format!("{e:#}");
+            let tail: Vec<&str> = said.lines().collect();
+            let tail = tail[tail.len().saturating_sub(12)..].join("\n");
+            session.finish(State::Failed, Some(short(e.to_string())), |r| {
+                r.said = Some(tail.chars().take(8192).collect());
+            })
+        }
+    };
+}
+
+fn run_on(
+    cli: &Cli,
+    t: &Triple,
+    auth: cos::auth::Source,
+    cmd: &Cmd,
+    signals: Option<libc::sigset_t>,
+) -> Result<()> {
     let ws = t.workspace.clone();
     let cfg = Config {
         home: t.home.clone(),
@@ -477,7 +629,18 @@ fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<(
         Cmd::Brief if cli.dry_run => print_run(&cfg.brief_run(&cfg.gather()?)),
         Cmd::Ask { question } if cli.dry_run => print_run(&cfg.ask_run(&question.join(" "))),
         Cmd::Brief => {
-            let done = cfg.brief()?;
+            let session = begin_run(t, cos::runs::Kind::Brief, signals)?;
+            let result = cfg.brief();
+            end_run(session, &result, |r, d| {
+                r.day = d
+                    .saved
+                    .as_deref()
+                    .and_then(|p| p.file_stem())
+                    .and_then(|s| s.to_str())
+                    .filter(|s| cos::runs::is_day(s))
+                    .map(str::to_owned);
+            });
+            let done = result?;
             finish(&done.markdown, done.cost_usd, done.saved.as_deref())?;
             tracked(done.tracked.as_ref());
             if !done.value.week.proposed.is_empty() {
@@ -554,10 +717,15 @@ fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<(
             }
         },
         Cmd::Ask { question } => {
-            let done = cfg.ask(&question.join(" "))?;
+            let session = begin_run(t, cos::runs::Kind::Ask, signals)?;
+            let result = cfg.ask(&question.join(" "));
+            end_run(session, &result, |r, d| {
+                r.answer = Some(cos::runs::cap_answer(d.markdown.clone()));
+            });
+            let done = result?;
             finish(&done.markdown, done.cost_usd, None)
         }
-        Cmd::Mcp => runtime()?.block_on(mcp::stdio(cfg, Mode::Local)),
+        Cmd::Mcp => runtime()?.block_on(mcp::stdio(cfg, mcp::Pick::new(inputs(cli), t))),
         Cmd::Serve {
             addr,
             token,
@@ -569,6 +737,8 @@ fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<(
         Cmd::Review { cmd } => review_cmd(&ws, cmd),
         Cmd::Ritual { .. } => unreachable!("run dispatches ritual before a triple resolves"),
         Cmd::Business { .. } => unreachable!("run dispatches business before a triple resolves"),
+        Cmd::Connect { .. } => unreachable!("run dispatches connect before a triple resolves"),
+        Cmd::Daemon { .. } => unreachable!("run dispatches the daemon before a triple resolves"),
     }
 }
 
@@ -861,6 +1031,83 @@ fn review_cmd(ws: &std::path::Path, cmd: &ReviewCmd) -> Result<()> {
 
 fn repo_dir(repo: &Option<PathBuf>) -> Result<PathBuf> {
     cos::ritual::resolve_repo(repo.as_deref())
+}
+
+fn connect_cmd(cmd: &ConnectCmd) -> Result<()> {
+    use cos::connect::{self, Client, Outcome};
+    let env = connect::Env::from_process()?;
+    let (client, repair, bin) = match cmd {
+        ConnectCmd::Status { json } => {
+            let rows = connect::status(&env);
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({ "clients": rows }))?
+                );
+            } else {
+                for r in &rows {
+                    print_connect_row(r);
+                }
+            }
+            return Ok(());
+        }
+        ConnectCmd::Remove { client } => {
+            let client = Client::parse(client).context("unknown client")?;
+            let path = client.config(&env);
+            match connect::remove(client, &env)? {
+                Outcome::NotRegistered => {
+                    println!("{}: not registered in {}", client.name(), path.display())
+                }
+                _ => println!("{}: removed cos from {}", client.name(), path.display()),
+            }
+            return Ok(());
+        }
+        ConnectCmd::ClaudeDesktop { repair, bin } => (Client::ClaudeDesktop, *repair, bin),
+        ConnectCmd::Codex { repair, bin } => (Client::Codex, *repair, bin),
+    };
+    let bin = match bin {
+        Some(b) => b.clone(),
+        None => connect::current_bin()?,
+    };
+    let path = client.config(&env);
+    let name = client.name();
+    match connect::register(client, &env, &bin, repair)? {
+        Outcome::AlreadyRegistered => {
+            println!(
+                "{name}: already registered in {}; --repair rewrites it",
+                path.display()
+            );
+            return Ok(());
+        }
+        Outcome::Repaired => println!("{name}: repaired cos in {}", path.display()),
+        _ => println!("{name}: registered {} in {}", bin.display(), path.display()),
+    }
+    if client == Client::ClaudeDesktop {
+        println!("restart Claude Desktop to load it");
+    }
+    Ok(())
+}
+
+fn print_connect_row(r: &cos::connect::Status) {
+    let verdict = if r.ok {
+        "green".to_owned()
+    } else {
+        format!("red ({})", r.problems.join(", "))
+    };
+    println!("{}: {verdict}", r.client.name());
+    println!("  config   {}", r.config.display());
+    if let Some(cmd) = &r.command {
+        let version = r.version.as_deref().unwrap_or("no version");
+        let stale = if r.version_stale { ", stale" } else { "" };
+        println!("  command  {cmd} ({version}{stale})");
+    }
+    if let Some(t) = r.timeout_sec {
+        println!("  timeout  {t}s");
+    }
+    println!("  daemon   {}", r.daemon.as_str());
+    if let Some(e) = &r.error {
+        println!("  error    {e}");
+    }
 }
 
 fn ritual_cmd(cmd: &RitualCmd) -> Result<()> {

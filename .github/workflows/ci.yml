@@ -27,7 +27,7 @@ jobs:
         with:
           version: 3.53.1
       - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --features cos/stand-in -- -D warnings
+      - run: cargo test --workspace --features cos/stand-in
       - name: Demo home builds and renders
         run: cargo run --example demo -- "$RUNNER_TEMP/cos-demo"

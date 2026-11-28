@@ -8,21 +8,27 @@
 //! The report renders in a sandboxed iframe with an opaque origin: a brief
 //! quotes mail and tickets, and nothing in it may reach these commands.
 
+mod assistants;
+mod links;
 pub mod servers;
 pub mod settings;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use cos::agents::{self, Harness, Spec, State};
 use cos::business::{self, Business, Dirs, Inputs, Layer, Sources, Triple};
+use cos::daemon::client;
+use cos::pipeline::{self, RunChild};
+use cos::runs;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime};
 
+pub use links::{Nav, open_link, parse_link};
 pub use settings::Settings;
 
 /// What the window starts from: the install, the files it reads, and the env values it was
@@ -32,6 +38,8 @@ pub struct Start {
     /// The clone this binary was built from: the built-in home and workspace.
     pub install: PathBuf,
     pub user_home: Option<PathBuf>,
+    /// `CODEX_HOME`: where Codex's `config.toml` lives, default `~/.codex`.
+    pub codex_home: Option<PathBuf>,
     pub registry: PathBuf,
     pub settings_file: PathBuf,
     /// Holds `servers/`: pidfiles and port locks.
@@ -47,6 +55,8 @@ pub struct Start {
     pub cos_bin: Option<PathBuf>,
     /// `COS_AGENT_SLOTS`, ahead of the settings file.
     pub slots: Option<usize>,
+    /// Where the `cos daemon` socket lives (`cos::daemon::dir`).
+    pub daemon_dir: PathBuf,
 }
 
 impl Start {
@@ -61,6 +71,7 @@ impl Start {
         Ok(Self {
             install: install.canonicalize().unwrap_or(install),
             user_home: env_path("HOME"),
+            codex_home: env_path("CODEX_HOME"),
             registry: business::location()?,
             settings_file: config.join("settings.json"),
             data_dir: app.path().app_data_dir()?,
@@ -79,6 +90,7 @@ impl Start {
             slots: std::env::var("COS_AGENT_SLOTS")
                 .ok()
                 .and_then(|v| v.parse().ok()),
+            daemon_dir: cos::daemon::dir()?,
         })
     }
 }
@@ -239,6 +251,8 @@ struct App(Mutex<AppState>);
 #[derive(Clone)]
 struct Current {
     business: String,
+    /// The registry name; `None` when the triple came from the env or defaults layer.
+    registered: Option<String>,
     home: PathBuf,
     workspace: PathBuf,
     projects: PathBuf,
@@ -259,6 +273,7 @@ impl App {
         let st = self.lock();
         Current {
             business: st.triple.label().to_owned(),
+            registered: st.triple.business.clone(),
             home: st.triple.home.clone(),
             workspace: st.triple.workspace.clone(),
             projects: st.triple.projects.clone(),
@@ -342,23 +357,6 @@ struct SwitchArgs {
     name: String,
 }
 
-/// A business's directories must exist and be directories; the message names the repair.
-fn check_dirs(name: &str, b: &Business) -> Res<()> {
-    for (label, dir) in [
-        ("home", &b.home),
-        ("workspace", &b.workspace),
-        ("projects", &b.projects),
-    ] {
-        if !dir.is_dir() {
-            return Err(format!(
-                "business {name:?}: {label} {} is not a directory; repair it with `cos business add`",
-                dir.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
 #[tauri::command]
 fn tax_read(app: tauri::State<'_, App>) -> Res<Value> {
     let dir = cos::state::runtime_dir(&app.get().workspace).map_err(err)?;
@@ -384,41 +382,64 @@ fn tax_save(app: tauri::State<'_, App>, data: Value) -> Res<()> {
 
 /// Points the window at another registered business. Nothing is written to disk.
 #[tauri::command]
-fn switch_business(app: tauri::State<'_, App>, args: SwitchArgs) -> Res<Value> {
-    {
-        let mut st = app.lock();
-        if let Some(var) = st.pinned {
-            return Err(format!(
-                "pinned by {var}: this window's business comes from the environment; start it without {var} to switch"
-            ));
-        }
-        let registry = business::load(&st.registry).map_err(chain)?;
-        let found = registry.businesses.get(&args.name).ok_or_else(|| {
-            let known: Vec<&str> = registry.businesses.keys().map(String::as_str).collect();
-            format!(
-                "business {:?} is not registered; known: {}",
-                args.name,
-                known.join(", ")
-            )
-        })?;
-        check_dirs(&args.name, found)?;
-        let dir = cos::state::runtime_dir(&found.workspace).map_err(chain)?;
-        if !dir.join("profile.json").is_file() {
-            return Err(format!(
-                "{} has no profile.json; run `cos --workspace {} state init` first",
-                dir.display(),
-                found.workspace.display()
-            ));
-        }
-        st.triple = Triple {
-            home: found.home.clone(),
-            workspace: found.workspace.clone(),
-            projects: found.projects.clone(),
-            business: Some(args.name.clone()),
-            layer: Layer::Registry,
-        };
-    }
+fn switch_business(
+    app: tauri::State<'_, App>,
+    links: tauri::State<'_, links::Links>,
+    args: SwitchArgs,
+) -> Res<Value> {
+    switch_in(&mut app.lock(), &args.name)?;
+    links.unready();
     Ok(paths(app))
+}
+
+/// Points `st` at the registered business `name`, unless the window is pinned.
+fn switch_in(st: &mut AppState, name: &str) -> Res<()> {
+    st.triple = switch_target(st, name)?;
+    Ok(())
+}
+
+/// Where `switch_in` would point `st`, or why it may not; `st` is untouched.
+fn switch_target(st: &AppState, name: &str) -> Res<Triple> {
+    if let Some(var) = st.pinned {
+        return Err(format!(
+            "pinned by {var}: this window's business comes from the environment; start it without {var} to switch"
+        ));
+    }
+    let registry = business::load(&st.registry).map_err(chain)?;
+    let found = registry.businesses.get(name).ok_or_else(|| {
+        let known: Vec<&str> = registry.businesses.keys().map(String::as_str).collect();
+        format!(
+            "business {name:?} is not registered; known: {}",
+            known.join(", ")
+        )
+    })?;
+    business::check_dirs(name, found).map_err(chain)?;
+    let dir = cos::state::runtime_dir(&found.workspace).map_err(chain)?;
+    if !dir.join("profile.json").is_file() {
+        return Err(format!(
+            "{} has no profile.json; run `cos --workspace {} state init` first",
+            dir.display(),
+            found.workspace.display()
+        ));
+    }
+    Ok(Triple {
+        home: found.home.clone(),
+        workspace: found.workspace.clone(),
+        projects: found.projects.clone(),
+        business: Some(name.to_owned()),
+        layer: Layer::Registry,
+    })
+}
+
+/// Sets the registry's active business, the one MCP clients act on when a
+/// call names none. The window stays on its own business.
+#[tauri::command]
+async fn business_make_default<R: Runtime>(app: AppHandle<R>, name: String) -> Res<Value> {
+    let registry = app.state::<App>().lock().registry.clone();
+    let set = name.clone();
+    blocking(move || business::set_active(&registry, &set)).await?;
+    publish(&app, Rebuild::All);
+    Ok(json!({ "active": name }))
 }
 
 #[derive(Serialize, Clone, PartialEq)]
@@ -814,17 +835,23 @@ pub fn report_response<R: Runtime>(
     path: &str,
 ) -> tauri::http::Response<Vec<u8>> {
     let s = app.state::<App>().get();
-    let body = match path {
-        "/" | "" => cos::report::data(&s.home, &s.workspace, false)
+    let page = match path {
+        "/" | "" => Some(links::DayPage::Latest),
+        p => match p.strip_prefix("/brief/") {
+            Some(day) => links::day_page(&s.home, day),
+            None => cos::dash::archived(&s.home, p).map(links::DayPage::Archived),
+        },
+    };
+    let body = match page {
+        Some(links::DayPage::Latest) => cos::report::data(&s.home, &s.workspace, false)
             .and_then(|mut d| {
                 d["hostBrief"] = true.into();
                 cos::report::render(&d)
             })
             .map(String::into_bytes)
             .map_err(|e| format!("{e:#}")),
-        _ => cos::dash::archived(&s.home, path)
-            .ok_or_else(|| "not found".to_owned())
-            .and_then(|f| std::fs::read(f).map_err(err)),
+        Some(links::DayPage::Archived(f)) => std::fs::read(f).map_err(err),
+        None => Err("not found".to_owned()),
     };
     let (status, kind, bytes) = match body {
         Ok(b) => (200, "text/html; charset=utf-8", b),
@@ -1549,10 +1576,16 @@ async fn agent_tasks(app: tauri::State<'_, App>, from: agents::From) -> Res<Vec<
     blocking(move || agents::tasks(&home, from)).await
 }
 
-/// The brief started from the window: one at a time, owned by this process.
+/// The window business's latest brief run, from whichever client started it.
+/// `brief-changed` carries one of these for asks too, with `kind` saying so.
 #[derive(Default, Clone, Serialize)]
 struct BriefRun {
     running: bool,
+    /// The run id, once a run record exists.
+    run: Option<String>,
+    kind: Option<runs::Kind>,
+    /// The record's state as a reader shows it.
+    state: Option<runs::State>,
     /// The business it runs for.
     business: Option<String>,
     /// Seconds since the epoch.
@@ -1564,8 +1597,46 @@ struct BriefRun {
     said: Option<String>,
 }
 
+impl BriefRun {
+    fn of(r: &runs::Record, shown: runs::State) -> Self {
+        let fin = shown.is_final();
+        let said = match shown {
+            runs::State::Done => None,
+            runs::State::Lost if !r.state.is_final() => Some("its process is gone".to_owned()),
+            _ => r.said.clone().or_else(|| r.reason.clone()),
+        };
+        BriefRun {
+            running: !fin,
+            run: Some(r.id.clone()),
+            kind: Some(r.kind),
+            state: Some(shown),
+            business: Some(r.business.clone()),
+            started: u64::try_from(r.started).ok(),
+            ended: r.ended.and_then(|e| u64::try_from(e).ok()),
+            ok: fin.then_some(shown == runs::State::Done),
+            deferred: shown == runs::State::Deferred,
+            said: if fin { said } else { None },
+        }
+    }
+}
+
 #[derive(Default)]
 struct Brief(Mutex<BriefRun>);
+
+/// The runs this window started itself because no daemon answered, by run
+/// id. Each is followed by its own thread up to `pipeline::BRIEF_CHILD`, and
+/// all are stopped and reaped when the app quits.
+#[derive(Default)]
+struct AppRuns(Mutex<BTreeMap<String, Arc<Mutex<RunChild>>>>);
+
+/// The ids of the runs this window owns and has not reaped yet.
+pub fn owned_runs<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    app.state::<AppRuns>()
+        .0
+        .lock()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
+}
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -1574,66 +1645,434 @@ fn now_secs() -> u64 {
         .unwrap_or_default()
 }
 
-/// Starts `cos brief` for the app business as a child this process owns
-/// (`pipeline::brief_child`: one deadline, killed and reaped), unless one is
-/// running. Returns at once; `brief-changed` fires as it starts and ends, and
-/// the report refreshes from the watcher when the run writes.
+/// Starts `cos brief` for the app business. When the daemon answers, it
+/// owns the run (`start`); when it is down, this process does (`spawn_run`,
+/// owner `app`). A probe that fails other than by the daemon being down is
+/// an error, so a lost reply never starts a second paid run. Returns at
+/// once; `brief-changed` fires as it starts and ends.
 #[tauri::command]
-fn brief_run<R: Runtime>(
-    handle: AppHandle<R>,
-    app: tauri::State<'_, App>,
-    brief: tauri::State<'_, Brief>,
-    business: String,
-) -> Res<BriefRun> {
-    let s = app.get();
+async fn brief_run<R: Runtime>(handle: AppHandle<R>, business: String) -> Res<BriefRun> {
+    let s = handle.state::<App>().get();
     named(&s, &business)?;
-    let cos = s.cos.clone().ok_or(
-        "no cos binary: set COS_BIN, build it (`cargo build`), or `task install`".to_owned(),
-    )?;
-    let mut b = brief.0.lock().map_err(err)?;
-    if b.running {
-        return Err("a brief is already running".into());
+    let dir = handle.state::<Start>().daemon_dir.clone();
+    let h = handle.clone();
+    let snapshot = blocking(move || {
+        if let Some(name) = &s.registered
+            && let client::Probe::Up { .. } = client::probe(&dir)?
+        {
+            let (run, _existing) = client::start(&dir, runs::Kind::Brief, name, None)?;
+            let mut last = None;
+            let shown = runs::shown_from(
+                || {
+                    last = runs::read(&s.home, &run).ok().flatten();
+                    last.clone()
+                },
+                runs::process_gone,
+            );
+            let snap = match (last, shown) {
+                (Some(r), Some(shown)) => BriefRun::of(&r, shown),
+                _ => BriefRun {
+                    running: true,
+                    run: Some(run.clone()),
+                    kind: Some(runs::Kind::Brief),
+                    business: Some(s.business.clone()),
+                    started: Some(now_secs()),
+                    ..BriefRun::default()
+                },
+            };
+            let brief = h.state::<Brief>();
+            let mut b = brief.0.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            // A subscribe event for this run may have landed first with a later state.
+            if b.run.as_deref() == Some(run.as_str()) && !b.running {
+                return Ok(b.clone());
+            }
+            *b = snap.clone();
+            return Ok(snap);
+        }
+        own_brief(&h, &s)
+    })
+    .await?;
+    let _ = handle.emit("brief-changed", &snapshot);
+    Ok(snapshot)
+}
+
+/// The daemon is down: `cos brief` as a child this process owns, kept in
+/// `AppRuns` and followed by a thread to its deadline.
+fn own_brief<R: Runtime>(handle: &AppHandle<R>, s: &Current) -> anyhow::Result<BriefRun> {
+    let cos = s.cos.clone().ok_or_else(|| {
+        anyhow::anyhow!("no cos binary: set COS_BIN, build it (`cargo build`), or `task install`")
+    })?;
+    let owned = handle.state::<AppRuns>();
+    let mut owned = owned.0.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let brief = handle.state::<Brief>();
+    let mut b = brief.0.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+    if !owned.is_empty() {
+        anyhow::bail!("a brief is already running");
     }
+    let child = pipeline::spawn_run(
+        &cos,
+        &pipeline::RunSpec {
+            kind: runs::Kind::Brief,
+            business: &s.business,
+            home: &s.home,
+            workspace: &s.workspace,
+            projects: &s.projects,
+            question: None,
+            owner: runs::Owner::App,
+            env: Vec::new(),
+            client_req: None,
+            budget: None,
+        },
+    )?;
+    let run = child.id().to_owned();
+    let child = Arc::new(Mutex::new(child));
+    owned.insert(run.clone(), child.clone());
     *b = BriefRun {
         running: true,
+        run: Some(run.clone()),
+        kind: Some(runs::Kind::Brief),
+        state: Some(runs::State::Queued),
         business: Some(s.business.clone()),
         started: Some(now_secs()),
         ..BriefRun::default()
     };
     let snapshot = b.clone();
-    drop(b);
-    let _ = handle.emit("brief-changed", &snapshot);
-    std::thread::spawn(move || {
-        let out = cos::pipeline::brief_child(&cos, &s.home, &s.workspace, &s.projects);
-        let state = handle.state::<Brief>();
-        let Ok(mut b) = state.0.lock() else {
-            return;
-        };
-        b.running = false;
-        b.ended = Some(now_secs());
-        match out {
-            Ok(o) => {
-                b.ok = Some(o.ok);
-                b.deferred = o.deferred;
-                b.said = (!o.ok).then_some(o.said);
-            }
-            Err(e) => {
-                b.ok = Some(false);
-                b.said = Some(format!("{e:#}"));
-            }
-        }
-        let snapshot = b.clone();
-        drop(b);
-        let _ = handle.emit("brief-changed", &snapshot);
-        let _ = handle.emit("report-changed", ());
-    });
+    let h = handle.clone();
+    let home = s.home.clone();
+    std::thread::spawn(move || follow_owned(h, run, child, home));
     Ok(snapshot)
 }
 
-/// Whether a brief started here is running, and how the last one ended.
+/// Owns one run child until it is reaped: its exit, a stop through
+/// `AppRuns` (`run_stop`, which reaps it and leaves the record final), or
+/// `pipeline::BRIEF_CHILD`.
+fn follow_owned<R: Runtime>(
+    handle: AppHandle<R>,
+    run: String,
+    child: Arc<Mutex<RunChild>>,
+    home: PathBuf,
+) {
+    let deadline = pipeline::BRIEF_CHILD;
+    let until = cos::proc::Deadline::capped(deadline, deadline);
+    let ended = loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
+        if c.is_reaped() {
+            break Ok(None);
+        }
+        match c.try_end() {
+            Ok(Some(e)) => break Ok(Some(e)),
+            Ok(None) => {}
+            Err(e) => break Err(e),
+        }
+        if until.expired() {
+            break c.stop_as(runs::State::Failed, "deadline").and_then(|_| {
+                Err(anyhow::anyhow!(
+                    "cos brief did not finish in {}s",
+                    deadline.as_secs()
+                ))
+            });
+        }
+    };
+    if let Ok(mut owned) = handle.state::<AppRuns>().0.lock() {
+        owned.remove(&run);
+    }
+    let state = handle.state::<Brief>();
+    let Ok(mut b) = state.0.lock() else {
+        return;
+    };
+    if b.run.as_deref() != Some(run.as_str()) {
+        return;
+    }
+    b.running = false;
+    b.ended = Some(now_secs());
+    match ended {
+        Ok(Some(e)) => {
+            let ok = e.status.success();
+            b.ok = Some(ok);
+            b.state = Some(e.state);
+            b.deferred = e.status.code() == Some(75);
+            b.said = (!ok).then_some(e.said);
+        }
+        Ok(None) => {
+            let record = runs::read(&home, &run).ok().flatten();
+            let state = record.as_ref().map(|r| r.state);
+            b.ok = Some(state == Some(runs::State::Done));
+            b.state = state;
+            b.said = record
+                .and_then(|r| r.reason)
+                .or_else(|| Some("stopped".to_owned()));
+        }
+        Err(e) => {
+            b.ok = Some(false);
+            b.said = Some(format!("{e:#}"));
+        }
+    }
+    let snapshot = b.clone();
+    drop(b);
+    let _ = handle.emit("brief-changed", &snapshot);
+    let _ = handle.emit("report-changed", json!({ "run": run }));
+}
+
+/// Stops and reaps every run this window owns.
+fn stop_owned_runs<R: Runtime>(app: &AppHandle<R>) {
+    let Some(owned) = app.try_state::<AppRuns>() else {
+        return;
+    };
+    let all: Vec<_> = owned
+        .0
+        .lock()
+        .map(|mut m| std::mem::take(&mut *m).into_values().collect())
+        .unwrap_or_default();
+    for child in all {
+        let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = c.kill() {
+            eprintln!("cos: run {}: {e:#}", c.id());
+        }
+    }
+}
+
+/// Follows every run under every registered home through the daemon's
+/// `subscribe` stream, one connection at a time, reconnecting every 2 s while
+/// it is down or after it hangs up. Each event for the window's business
+/// becomes `brief-changed` with a `BriefRun` read from its record, and a
+/// final state also `report-changed`. Absent the daemon, `watch` and the
+/// window's own runs say the same from the files.
+fn follow_runs<R: Runtime>(handle: AppHandle<R>) {
+    std::thread::spawn(move || {
+        let dir = handle.state::<Start>().daemon_dir.clone();
+        loop {
+            let _ = subscribe(&handle, &dir);
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
+}
+
+fn subscribe<R: Runtime>(handle: &AppHandle<R>, dir: &Path) -> anyhow::Result<()> {
+    use std::io::{BufRead, Read, Write};
+    let sock = cos::daemon::socket_path(dir);
+    cos::daemon::check_socket_path(&sock)?;
+    let mut s = std::os::unix::net::UnixStream::connect(&sock)?;
+    s.set_write_timeout(Some(cos::daemon::IDLE))?;
+    s.write_all(b"{\"op\":\"subscribe\"}\n")?;
+    // The stream carries changes only: a brief already running is read once here.
+    let cur = handle.state::<App>().get();
+    if let (Some(business), Ok(Some(run))) = (&cur.registered, runs::brief_held(&cur.home)) {
+        on_run_event_line(handle, &json!({ "run": run, "business": business }));
+    }
+    recheck_brief(handle);
+    let mut reader = std::io::BufReader::new(s);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let n = (&mut reader)
+            .take(cos::daemon::LINE_MAX as u64 + 1)
+            .read_until(b'\n', &mut line)?;
+        if n == 0 || line.last() != Some(&b'\n') {
+            return Ok(());
+        }
+        if let Ok(event) = serde_json::from_slice::<Value>(&line) {
+            on_run_event_line(handle, &event);
+        }
+    }
+}
+
+fn on_run_event_line<R: Runtime>(handle: &AppHandle<R>, event: &Value) {
+    let (Some(id), Some(business)) = (event["run"].as_str(), event["business"].as_str()) else {
+        return;
+    };
+    let s = handle.state::<App>().get();
+    if !runs::is_id(id) || s.registered.as_deref() != Some(business) {
+        return;
+    }
+    let mut last = None;
+    let Some(shown) = runs::shown_from(
+        || {
+            last = runs::read(&s.home, id).ok().flatten();
+            last.clone()
+        },
+        runs::process_gone,
+    ) else {
+        return;
+    };
+    let Some(record) = last.filter(|r| r.business == business) else {
+        return;
+    };
+    let snapshot = BriefRun::of(&record, shown);
+    if record.kind == runs::Kind::Brief
+        && let Ok(mut b) = handle.state::<Brief>().0.lock()
+    {
+        *b = snapshot.clone();
+    }
+    let _ = handle.emit("brief-changed", &snapshot);
+    if shown.is_final() {
+        let _ = handle.emit("report-changed", json!({ "run": id }));
+    }
+}
+
+/// Reads the shown brief's record again when it shows running and no thread
+/// here owns it: the daemon's stream starts from a baseline, so a final state
+/// written while no stream was open is never streamed.
+fn recheck_brief<R: Runtime>(handle: &AppHandle<R>) {
+    let brief = handle.state::<Brief>();
+    let (run, business) = {
+        let Ok(b) = brief.0.lock() else {
+            return;
+        };
+        match (&b.run, &b.business) {
+            (Some(run), Some(business)) if b.running => (run.clone(), business.clone()),
+            _ => return,
+        }
+    };
+    if handle
+        .state::<AppRuns>()
+        .0
+        .lock()
+        .is_ok_and(|m| m.contains_key(&run))
+    {
+        return;
+    }
+    let home = handle.state::<App>().get().home;
+    if runs::shown(&home, &run).is_ok_and(|s| s.is_some_and(|s| s.is_final())) {
+        on_run_event_line(handle, &json!({ "run": run, "business": business }));
+    }
+}
+
+/// When the shown brief is another business's, as after a switch, the brief
+/// already running for the window's business: the stream sends changes only,
+/// and dropped this business's while the window showed another.
+fn seed_brief<R: Runtime>(handle: &AppHandle<R>) {
+    let cur = handle.state::<App>().get();
+    let Some(business) = &cur.registered else {
+        return;
+    };
+    let shown = handle
+        .state::<Brief>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|b| b.business.clone());
+    if shown.as_deref() == Some(business.as_str()) {
+        return;
+    }
+    if let Ok(Some(run)) = runs::brief_held(&cur.home) {
+        on_run_event_line(handle, &json!({ "run": run, "business": business }));
+    }
+}
+
+/// The window business's latest brief: running, or how it ended.
 #[tauri::command]
-fn brief_status(brief: tauri::State<'_, Brief>) -> Res<BriefRun> {
-    Ok(brief.0.lock().map_err(err)?.clone())
+fn brief_status<R: Runtime>(handle: AppHandle<R>) -> Res<BriefRun> {
+    seed_brief(&handle);
+    recheck_brief(&handle);
+    Ok(handle.state::<Brief>().0.lock().map_err(err)?.clone())
+}
+
+/// A run as the run panel shows it: what MCP `run_status` returns, plus who
+/// started it, when, and whether this window can stop it.
+#[derive(Serialize)]
+struct RunPanel {
+    #[serde(flatten)]
+    view: cos::bridge::RunView,
+    owner: runs::Owner,
+    started: i64,
+    stoppable: bool,
+}
+
+fn owner_word(o: runs::Owner) -> String {
+    serde_json::to_value(o)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// One run of the window's business, read from its record and, once done,
+/// its brief or answer, as `run_status` with `wait_secs: 0` reads it. Writes
+/// nothing.
+#[tauri::command]
+async fn run_get<R: Runtime>(handle: AppHandle<R>, business: String, run: String) -> Res<RunPanel> {
+    let s = handle.state::<App>().get();
+    if !runs::is_id(&run) {
+        return Err(format!("run {run:?} is not a run id"));
+    }
+    named(&s, &business)?;
+    let owned = handle
+        .state::<AppRuns>()
+        .0
+        .lock()
+        .is_ok_and(|m| m.contains_key(&run));
+    blocking(move || {
+        let (r, state) = cos::bridge::observe(&s.home, &run)?
+            .ok_or_else(|| anyhow::anyhow!("no run {run} under business {}", s.business))?;
+        let stoppable = !state.is_final()
+            && match r.owner {
+                runs::Owner::Daemon => s.registered.is_some(),
+                runs::Owner::App => owned,
+                runs::Owner::Mcp | runs::Owner::Itself => false,
+            };
+        Ok(RunPanel {
+            view: cos::bridge::view(&s.home, &r, state, true).linked(s.registered.is_some()),
+            owner: r.owner,
+            started: r.started,
+            stoppable,
+        })
+    })
+    .await
+}
+
+/// Stops a live run of the window's business: through the daemon when it
+/// owns the run, or this window's own `RunChild`. A run started anywhere else
+/// is refused untouched; it is stopped where it was started.
+#[tauri::command]
+async fn run_stop<R: Runtime>(handle: AppHandle<R>, business: String, run: String) -> Res<Value> {
+    let s = handle.state::<App>().get();
+    if !runs::is_id(&run) {
+        return Err(format!("run {run:?} is not a run id"));
+    }
+    named(&s, &business)?;
+    let dir = handle.state::<Start>().daemon_dir.clone();
+    let h = handle.clone();
+    let state = blocking(move || {
+        let r = runs::read(&s.home, &run)?
+            .ok_or_else(|| anyhow::anyhow!("no run {run} under business {}", s.business))?;
+        if r.state.is_final() {
+            return Ok(r.state);
+        }
+        let refuse = || anyhow::anyhow!("not stoppable here: started by {}", owner_word(r.owner));
+        match r.owner {
+            runs::Owner::Daemon => {
+                let name = s.registered.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("the daemon stops runs of registered businesses only")
+                })?;
+                client::stop(&dir, name, &run)
+            }
+            runs::Owner::App => {
+                let child = h
+                    .state::<AppRuns>()
+                    .0
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .get(&run)
+                    .cloned()
+                    .ok_or_else(refuse)?;
+                let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
+                if c.is_reaped() {
+                    return Ok(runs::read(&s.home, &run)?.map_or(r.state, |r| r.state));
+                }
+                let state = c.kill()?.state;
+                drop(c);
+                h.state::<AppRuns>()
+                    .0
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .remove(&run);
+                Ok(state)
+            }
+            runs::Owner::Mcp | runs::Owner::Itself => Err(refuse()),
+        }
+    })
+    .await?;
+    Ok(json!({ "state": state }))
 }
 
 /// The main checkout named `repo` under the app business's projects
@@ -1867,18 +2306,6 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// An unreadable registry has no businesses to watch.
-fn registered_homes(registry: &Path) -> BTreeMap<String, PathBuf> {
-    business::load(registry)
-        .map(|r| {
-            r.businesses
-                .into_iter()
-                .map(|(name, b)| (name, b.home))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Emits `report-changed` when a run or the workspace writes, and
 /// `agents-changed` when an agent does, so the window refreshes on events
 /// instead of every view polling. Reads metadata only: `agents::list` may
@@ -1898,14 +2325,14 @@ fn watch<R: Runtime>(handle: AppHandle<R>) {
         let (mut report, mut fleet) = (String::new(), String::new());
         let mut registry_mtime = modified(&start.registry);
         let mut dashboards_mtime = modified(&dashboards);
-        let mut homes = registered_homes(&start.registry);
+        let mut homes = business::registered_homes(&start.registry);
         let mut watched: BTreeMap<String, Watched> = BTreeMap::new();
         loop {
             let now = modified(&start.registry);
             let registry_changed = now != registry_mtime;
             if registry_changed {
                 registry_mtime = now;
-                homes = registered_homes(&start.registry);
+                homes = business::registered_homes(&start.registry);
             }
             let plist_mtime = plist.as_deref().and_then(modified);
             watched.retain(|name, _| homes.contains_key(name));
@@ -1968,50 +2395,42 @@ fn watch<R: Runtime>(handle: AppHandle<R>) {
 /// no run in Herdr is read from its files alone and left as it is. Its writes
 /// reach the window through `watch`; a change in which of the window's runs
 /// wait on you in Herdr rebuilds the report, whose Today lists them.
+///
+/// While the daemon answers `hello` it follows every registered home's hires,
+/// so this follows only the window's home and only when it is unregistered;
+/// `hello` is asked at most once per `client::HELLO_CACHE`.
 fn follow_herdr<R: Runtime>(handle: AppHandle<R>) {
     std::thread::spawn(move || {
         let start = handle.state::<Start>().inner().clone();
         let mut waiting = String::new();
-        // Per home: its runs' stamp at the last scan, and the blocked runs
-        // that scan found when some run was in Herdr. A home whose stamp has
-        // not moved and had nothing in Herdr is not read again.
-        let mut seen: BTreeMap<PathBuf, (String, Option<Vec<String>>)> = BTreeMap::new();
+        let mut follow = agents::Follow::default();
+        let mut hello: Option<(Instant, bool)> = None;
         loop {
+            let up = match hello {
+                Some((at, up)) if at.elapsed() < client::HELLO_CACHE => up,
+                _ => {
+                    let up = matches!(
+                        client::probe(&start.daemon_dir),
+                        Ok(client::Probe::Up { .. })
+                    );
+                    hello = Some((Instant::now(), up));
+                    up
+                }
+            };
             let current = handle.state::<App>().get().home;
-            let mut homes: Vec<PathBuf> = registered_homes(&start.registry).into_values().collect();
-            if !homes.contains(&current) {
-                homes.push(current.clone());
+            if !up {
+                follow.follow_all(&start.registry, Some(&current));
+            } else if business::registered_homes(&start.registry)
+                .values()
+                .any(|h| *h == current)
+            {
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            } else {
+                follow.follow_homes(std::slice::from_ref(&current));
             }
-            seen.retain(|h, _| homes.contains(h));
-            for home in &homes {
-                let stamp = cos::dash::stamp([agents::root(home)]);
-                if seen
-                    .get(home)
-                    .is_some_and(|(s, live)| *s == stamp && live.is_none())
-                {
-                    continue;
-                }
-                let live = agents::in_herdr(home);
-                if !live.is_empty()
-                    && let Err(e) = agents::tick(home)
-                {
-                    eprintln!("cos: following hires in Herdr: {e:#}");
-                }
-                let blocked = (!live.is_empty()).then(|| {
-                    agents::in_herdr(home)
-                        .into_iter()
-                        .filter(|(_, st)| st.herdr.as_ref().and_then(|h| h.blocked()).is_some())
-                        .map(|(spec, _)| spec.id)
-                        .collect()
-                });
-                seen.insert(
-                    home.clone(),
-                    (cos::dash::stamp([agents::root(home)]), blocked),
-                );
-            }
-            let now = seen
-                .get(&current)
-                .and_then(|(_, b)| b.as_ref())
+            let now = follow
+                .blocked(&current)
                 .map(|b| b.join(","))
                 .unwrap_or_default();
             if now != waiting {
@@ -2067,6 +2486,47 @@ pub fn with_menu<R: Runtime>(builder: Builder<R>) -> Builder<R> {
     })
 }
 
+/// `cos://` links. Only the real app adds the plugins: single-instance ends a
+/// second process of the same app, which on the test harness is the test.
+/// Single-instance goes first, so a link that starts a second process is
+/// handed to this one; a cold-start link is read once setup has run.
+pub fn with_links<R: Runtime>(builder: Builder<R>) -> Builder<R> {
+    with_deep_links(
+        builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            for url in argv.iter().filter(|a| a.starts_with("cos://")) {
+                open_link(app, url);
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+            }
+        })),
+    )
+}
+
+/// The deep-link plugin and the setup that routes its URLs into `open_link`;
+/// safe under the test harness, unlike single-instance.
+pub fn with_deep_links<R: Runtime>(builder: Builder<R>) -> Builder<R> {
+    use tauri_plugin_deep_link::DeepLinkExt;
+    builder.plugin(tauri_plugin_deep_link::init()).plugin(
+        tauri::plugin::Builder::<R>::new("cos-links")
+            .setup(|app, _| {
+                let handle = app.clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        open_link(&handle, url.as_str());
+                    }
+                });
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    for url in urls {
+                        open_link(app, url.as_str());
+                    }
+                }
+                Ok(())
+            })
+            .build(),
+    )
+}
+
 /// The supervisor's `emit`: `dashboard-exited` for an owned server only. A server that
 /// exits while starting is reported by its `ensure` instead.
 pub fn emit_exited<R: Runtime>(app: &AppHandle<R>, notice: &servers::ExitNotice) {
@@ -2075,13 +2535,14 @@ pub fn emit_exited<R: Runtime>(app: &AppHandle<R>, notice: &servers::ExitNotice)
     }
 }
 
-/// The callback `.run()` takes: quit stops every server this instance started. Both
-/// events reach it on ⌘Q; the second `stop_owned` is a no-op.
+/// The callback `.run()` takes: quit stops every server and every run this instance
+/// started. Both events reach it on ⌘Q; the second stop is a no-op.
 pub fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
-    if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event
-        && let Some(supervisor) = app.try_state::<servers::Supervisor>()
-    {
-        supervisor.stop_owned();
+    if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+        if let Some(supervisor) = app.try_state::<servers::Supervisor>() {
+            supervisor.stop_owned();
+        }
+        stop_owned_runs(app);
     }
 }
 
@@ -2090,6 +2551,8 @@ pub fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
 pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder<R> {
     builder
         .manage(Brief::default())
+        .manage(AppRuns::default())
+        .manage(links::Links::default())
         .manage(FlowPages(Default::default()))
         .register_asynchronous_uri_scheme_protocol("cosreport", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
@@ -2147,6 +2610,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             }
             watch(app.handle().clone());
             follow_herdr(app.handle().clone());
+            follow_runs(app.handle().clone());
             // Off the window's path, so the Flows tab's first open shows a page at once.
             flows_behind(app.handle().clone());
             Ok(())
@@ -2154,10 +2618,14 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
         .invoke_handler(tauri::generate_handler![
             paths,
             switch_business,
+            business_make_default,
             businesses,
             brief_seen,
             brief_run,
             brief_status,
+            run_get,
+            run_stop,
+            links::link_ready,
             ritual_gates,
             ritual_approve,
             ritual_open,
@@ -2191,5 +2659,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             brief_summary,
             repos,
             docs_save,
+            assistants::connect_status,
+            assistants::connect_apply,
         ])
 }
