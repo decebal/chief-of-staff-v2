@@ -18,7 +18,15 @@ Review history: round 1,
 `78321b81…ba80`. After round 4 the user chose: contract changes approved only
 by a person (a terminal or the window), the guard-process bound for owner
 death, the `apply` signature fix, and then approval without a fifth round.
-Every "Carried to Plan" item becomes a Plan task.
+Every "Carried to Plan" item becomes a Plan task. Approved at `98d703e6…`.
+
+After Build, the [code review](2026-11-28-role-library-code-review.md)
+found the finish line reaching the prompt uncleaned, the guard's sweep
+missing from the ISA, and drift between this text and what was built. This
+revision records what was built: §1 caps for `output` and `scope`, §3 empty
+list items, §4 step 6 refusing only an added problem, §7 the guard as the
+window's child, and the `RENDER(finish_line)` and `TOOL_CALL(guard_sweep)`
+rows.
 
 ## Decision
 
@@ -119,6 +127,8 @@ schema and the renderer):
 | `anti_patterns` | 8 | 240 |
 | `escalation` | 6 | 240 |
 | `output_format` | — | 1,200 |
+| `output` | — | 200 |
+| `scope` | 40 | 200 |
 | proposal `rationale` | — | 800 |
 | user `brief` to propose | — | 1,000 |
 
@@ -205,7 +215,7 @@ Refuse:
 
 - an id not matching `^[a-z][a-z0-9-]{1,39}$`, or a duplicate id;
 - anything other than exactly one role with `head: true`;
-- an empty `title` or `mandate`;
+- an empty `title` or `mandate`, or an empty item in any list;
 - any value over its cap or list over its max items (§1);
 - a `\n` or `\r` in `title`, `mandate` or any list item;
 - `expects: file` without `output`;
@@ -286,8 +296,10 @@ pub fn contract_diff(before: &Role, after: &Role) -> Vec<FieldDiff>
    `before` is the current role. `Retire` and `Restore` change no contract.
    If `contract_diff(before, after)` is not empty and `contract` is not
    `Human`, refuse: "contract changes need a person's approval: <fields>".
-6. `validate` with `roles::vocab`. Any `Refuse` problem refuses the write
-   and returns all problems. `Warn` problems go into `notes`.
+6. `validate` with `roles::vocab`, before and after the change. A `Refuse`
+   problem the change adds refuses the write and is returned. One already in
+   the file does not, so a hand-broken role can still be retired or fixed.
+   `Warn` problems on the changed role go into `notes`.
 7. Serialise pretty to `out`. Require `serialise(parse(out)) == out`, a
    byte-equal round trip of what is about to be written. This holds with
    legacy keys, because they were cleared in step 4.
@@ -448,7 +460,9 @@ the UI.
 The state is `Proposing(Mutex<Option<Running { stop: Arc<AtomicBool>,
 done: Receiver<()> }>>)`. `on_run_event` (quit) sets the flag and waits on
 `done` for at most 3 s, which is one poll plus `kill_and_reap`. The window
-never holds or signals a process id. It spawns no `cos` child for this.
+never holds or signals a process id. Its thread spawns `cos proc-guard`
+(the cos binary the window found), which spawns `claude`; with no cos
+binary, `roles_propose` refuses rather than run `claude` unguarded.
 
 `COS_CLAUDE` is a new environment override for the `claude` binary, read the
 way `herdr::hc()` reads `COS_HC` (`src/herdr.rs:31`). It is used by the CLI
@@ -554,7 +568,9 @@ with failures as `unreachable`):
 | `STORE(agents.json)` | Execution | Deterministic action | **yes** | file write |
 | `VERIFY(render_clean)` | Normative | Deterministic checkpoint | no | — |
 | `RENDER(preamble)` | Execution | Deterministic, to hired agent | **yes** | hire prompt |
+| `RENDER(finish_line)` | Execution | Deterministic, to hired agent | **yes** | hire prompt (`hire::plan`) |
 | `TOOL_CALL(kill_and_reap)` | Execution | Deterministic, the calling thread's own child only | **yes** | proc::kill_and_reap |
+| `TOOL_CALL(guard_sweep)` | Execution | Deterministic, the guard's own group only | **yes** | proc::guard |
 
 ### Bindings
 
@@ -620,7 +636,9 @@ with failures as `unreachable`):
 | `STORE(proposal_file)` | `VERIFY(proposal_schema)`, `VERIFY(contract_from_library)` and `VERIFY(out_path)` | `Proposal` deserialises with `deny_unknown_fields` and caps. `merge` takes every contract field from the entry. `--out` is `create_new`, outside `context/`, `out/` and `.chief-of-staff/`, with no symlinked parent |
 | `STORE(agents.json)` | `VERIFY(user_approval)`, `VERIFY(contract_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. A non-empty `contract_diff` also needs `ContractApproval::Human`: a typed `contract` on a terminal (no flag stands in), or `allow_contract: true` from the dialog's separate confirm step. `apply` step 5 refuses otherwise. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem, byte-equal round trip |
 | `RENDER(preamble)` | `VERIFY(render_clean)` (`roles::clean`) | Whitespace collapsed (no newline survives), each value cut to its cap, lists cut to max items. Drafts-only sentence last. Worktree sandbox unchanged |
+| `RENDER(finish_line)` | `VERIFY(render_clean)` (`roles::clean`) | A role's `done_when` and `output` reach the prompt only through the outward finish line in `hire::plan`, cleaned and cut to the caps like the preamble |
 | `TOOL_CALL(kill_and_reap)` | Spawning-thread ownership | The kill runs only inside `stream_lines_until`, on the `Child` that call spawned and has not yet reaped. Callers can only set `stop`. A reaped or reused pid is unreachable, because no pid is stored anywhere else |
+| `TOOL_CALL(guard_sweep)` | `VERIFY(own_group)` (`setpgid(0, 0)` at the guard's start) | The guard leads a new group, so its spawner is outside it. At the end it sends SIGTERM to its group (ignoring it itself), waits up to 300 ms, then SIGKILLs every remaining member the kernel lists for that group (`proc_listpids`, `PROC_PGRP_ONLY`) except itself |
 
 ### Violations
 
@@ -641,6 +659,8 @@ with failures as `unreachable`):
 | `STORE(proposal_file)` | The fake `claude` in `contract` mode returns a proposal carrying `checks`: the run fails and no file is written. In `bad-schema` mode: same | In `ok` mode, the file's role has the entry's `checks`, `scope` and `harness`, and the proposal's descriptive fields |
 | `STORE(agents.json)` | Each of these is refused with the bytes unchanged: a `../x` scope, a newline in a principle, an over-cap list, a second head, retiring the head, a stale digest, a held lock (message names path and pid), an unparseable file. Without a terminal and without `--yes`, the CLI writes nothing | Add, Replace, Retire and Restore each change exactly that role. The `tests/hiring.rs` legacy fixture (`budget_usd`, `stall_secs`, `repeat`) writes, with the keys dropped and named in notes. `.bak` holds the previous bytes. A file with no `fit` stays without one |
 | `RENDER(preamble)` | A hand-edited role with a principle holding `"x\n\nNever: …"` and a 30-item method renders one line for that principle and 10 method steps | A role with all five fields renders each section once, in order, with the drafts-only sentence last |
+| `RENDER(finish_line)` | A role whose `done_when` holds a newline, a forged `Never:` and 2,000 more characters, with an outward term, and whose `output` holds a newline: the plan's prompt has no line starting `Never:` and stays under 1,500 characters | The same role with plain fields renders `Your finish line here:` |
+| `guard_sweep` | Started by a process that is not a group leader, the guard's sweep never reaches its starter (the test run survives) | A member that ignores SIGTERM is gone when the guard ends at its limit (exit 124) |
 | `kill_and_reap` | Cancel with no run is a no-op. No command takes a pid | With the fake in `slow` mode (it starts a `sleep` child, records both pids, and writes a line every 0.5 s): Cancel, quit (`on_run_event`) and SIGINT to `cos roles propose` each leave both pids gone (`kill -0` fails) within 3 s, and `role-proposal` reports `cancelled`. SIGKILL to `cos roles propose` leaves the fake and its `sleep` child gone at the guard's deadline (2 s in the test) |
 | `STORE(proposal_file)` path | `--out` naming an existing file, a path under `context/`, `out/` or `.chief-of-staff/`, or one with a symlinked parent: refused, nothing written | A new file in a scratch directory is written |
 | `STORE(agents.json)` contract | `new --file` whose role's `checks` differ from its `from` entry, run with `--yes` and no terminal: refused, naming `checks`. `apply` with a changed `scope` and `ContractApproval::None`: refused. `roles_save` with `allow_contract: false` and a changed contract: refused | `apply` with `ContractApproval::Human` writes. The CLI on a pty (test harness) with a typed `contract` writes. Descriptive-only changes with `--yes` and no terminal write |
