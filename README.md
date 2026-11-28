@@ -265,6 +265,8 @@ cos --home /tmp/cos-demo dash
 | [Flows and Today in motion plan](docs/plans/2026-11-26-flows-today-motion-plan.md) | gates, the testing trophy and 14 stories |
 | [Flows and Today in motion code reviews](docs/plans/2026-11-26-flows-today-motion-code-review.md) | two fresh-context prove-it reviews ([second](docs/plans/2026-11-26-flows-today-motion-code-review-2.md)) and what was left to check by hand |
 | [Flows and Today in motion evidence](docs/reports/2026-11-27-flows-today-motion.html) | before and after, every new view in light and dark, the no-writes proof, and what was not checked |
+| [Role library brief](docs/plans/2026-11-28-role-library-brief.md) | curating the hired staff from world-class specialist role definitions |
+| [Role library design](docs/plans/2026-11-28-role-library-design.md) | structured role fields, the shipped library, the one write path to agents.json, specialising, `cos roles` and the Staff tab editor |
 
 ## License
 
