@@ -10,6 +10,7 @@
 
 mod assistants;
 mod links;
+pub mod mods;
 pub mod servers;
 pub mod settings;
 
@@ -57,6 +58,8 @@ pub struct Start {
     pub slots: Option<usize>,
     /// Where the `cos daemon` socket lives (`cos::daemon::dir`).
     pub daemon_dir: PathBuf,
+    /// Local mods: `COS_MODS`, else `mods/` beside the business registry.
+    pub mods_dir: PathBuf,
 }
 
 impl Start {
@@ -68,11 +71,14 @@ impl Start {
         };
         let install = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let config = app.path().app_config_dir()?;
+        let registry = business::location()?;
+        let mods_dir = env_path("COS_MODS")
+            .unwrap_or_else(|| registry.parent().unwrap_or(Path::new(".")).join("mods"));
         Ok(Self {
             install: install.canonicalize().unwrap_or(install),
             user_home: env_path("HOME"),
             codex_home: env_path("CODEX_HOME"),
-            registry: business::location()?,
+            registry,
             settings_file: config.join("settings.json"),
             data_dir: app.path().app_data_dir()?,
             log_dir: app.path().app_log_dir()?,
@@ -91,6 +97,7 @@ impl Start {
                 .ok()
                 .and_then(|v| v.parse().ok()),
             daemon_dir: cos::daemon::dir()?,
+            mods_dir,
         })
     }
 }
@@ -357,27 +364,31 @@ struct SwitchArgs {
     name: String,
 }
 
+/// The local mods under the mods folder, for the tabs.
 #[tauri::command]
-fn tax_read(app: tauri::State<'_, App>) -> Res<Value> {
-    let dir = cos::state::runtime_dir(&app.get().workspace).map_err(err)?;
-    let path = dir.join("tax-planning.json");
-    if !path.exists() {
-        return Ok(Value::Null);
-    }
-    cos::state::load(&path).map_err(err)
+fn mods_list(start: tauri::State<'_, Start>) -> Res<Vec<mods::Row>> {
+    Ok(mods::list(&start.mods_dir))
+}
+
+/// The named mod's data for the app business. The frame that asks is the only caller.
+#[tauri::command]
+fn mod_read(app: tauri::State<'_, App>, name: String) -> Res<Value> {
+    mods::read(&app.get().workspace, &name)
 }
 
 #[tauri::command]
-fn tax_save(app: tauri::State<'_, App>, data: Value) -> Res<()> {
-    let dir = cos::state::runtime_dir(&app.get().workspace).map_err(err)?;
-    if !dir.is_dir() {
-        return Err("Set up the workspace before saving tax planning.".into());
+fn mod_save(app: tauri::State<'_, App>, name: String, data: Value) -> Res<()> {
+    mods::save(&app.get().workspace, &name, &data)
+}
+
+/// Names the mod whose page the frame loads next. Sent before the frame's src is set.
+#[tauri::command]
+fn mod_open(shown: tauri::State<'_, mods::Shown>, name: String) -> Res<()> {
+    if !mods::valid_name(&name) {
+        return Err(format!("{name:?} is not a mod name"));
     }
-    let bytes = serde_json::to_vec(&data).map_err(err)?;
-    if !data.is_object() || bytes.len() > 32_768 {
-        return Err("Invalid tax planning data.".into());
-    }
-    cos::state::atomic_write(&dir.join("tax-planning.json"), &data).map_err(err)
+    shown.set(&name);
+    Ok(())
 }
 
 /// Points the window at another registered business. Nothing is written to disk.
@@ -967,7 +978,9 @@ pub fn link_kind(url: &tauri::Url) -> Link {
         h == "localhost" || h.ends_with(".localhost") || h == "127.0.0.1" || h == "[::1]"
     });
     match url.scheme() {
-        "tauri" | "cosreport" | "about" | "data" | "blob" | "ipc" | "asset" => Link::InApp,
+        "tauri" | "cosreport" | "cosmod" | "about" | "data" | "blob" | "ipc" | "asset" => {
+            Link::InApp
+        }
         "http" | "https" if local => Link::InApp,
         "http" | "https" | "mailto" => Link::Browser,
         _ => Link::Refused,
@@ -1032,6 +1045,16 @@ pub fn cosreport_response<R: Runtime>(
     } else {
         report_response(app, path)
     }
+}
+
+/// `cosmod://localhost/<mod>/<file>`: a file of a local mod. A mod's frame has an
+/// opaque origin, so no origin rule applies; what it may read is `mods::serve`'s.
+pub fn mods_response<R: Runtime>(
+    app: &AppHandle<R>,
+    req: &tauri::http::Request<Vec<u8>>,
+) -> mods::Reply {
+    let start = app.state::<Start>();
+    mods::serve(&start.mods_dir, req.method(), req.uri().path())
 }
 
 /// The app's own origins. A dashboard frame is `http://127.0.0.1:*`, and a frame
@@ -2620,6 +2643,10 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             let app = ctx.app_handle().clone();
             std::thread::spawn(move || responder.respond(cosreport_response(&app, &req)));
         })
+        .register_asynchronous_uri_scheme_protocol("cosmod", |ctx, req, responder| {
+            let app = ctx.app_handle().clone();
+            std::thread::spawn(move || responder.respond(mods_response(&app, &req)));
+        })
         .setup(move |app| {
             let start = match start {
                 Some(s) => s,
@@ -2639,8 +2666,13 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
                 cos::dashboards::Dashboards::default()
             });
             supervisor.launch_cleanup(&dashboards);
+            if let Err(e) = mods::write_guide(&start.mods_dir) {
+                eprintln!("mods: could not write AGENTS.md: {e:#}");
+            }
             app.manage(supervisor);
             app.manage(App::new(&start));
+            let shown = mods::Shown::default();
+            app.manage(shown.clone());
             app.manage(start);
             app.manage(RowCache::default());
             // The main window is built here rather than from the config alone
@@ -2656,9 +2688,10 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
                 .cloned()
                 .collect();
             for w in windows {
+                let shown = shown.clone();
                 tauri::WebviewWindowBuilder::from_config(app.handle(), &w)?
-                    .on_navigation(|url| match link_kind(url) {
-                        Link::InApp => true,
+                    .on_navigation(move |url| match link_kind(url) {
+                        Link::InApp => shown.allows(url),
                         _ => {
                             send_out(url, open_in_browser);
                             false
@@ -2696,8 +2729,10 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             flow_bead,
             dashboards,
             dashboard_open,
-            tax_read,
-            tax_save,
+            mods_list,
+            mod_read,
+            mod_save,
+            mod_open,
             agents_list,
             agents_snapshot,
             agents_fit,

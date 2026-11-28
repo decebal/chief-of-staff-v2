@@ -21,11 +21,11 @@ function safeUrl(v) {
   }
 }
 
-// Windows serves cosreport: as http://cosreport.localhost.
+// Windows serves cosreport: and cosmod: as http://cosreport.localhost and http://cosmod.localhost.
 function safeFrameSrc(v) {
   try {
     const u = new URL(String(v));
-    if (u.protocol === "cosreport:") return u.href;
+    if (u.protocol === "cosreport:" || u.protocol === "cosmod:") return u.href;
     const loopback = u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname.endsWith(".localhost");
     return u.protocol === "http:" && loopback ? u.href : null;
   } catch {

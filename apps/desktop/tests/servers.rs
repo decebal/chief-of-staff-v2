@@ -580,6 +580,7 @@ fn start(root: &Path) -> Start {
         cos_bin: None,
         slots: None,
         daemon_dir: std::env::temp_dir().join(format!("cosd-srv-{}", std::process::id())),
+        mods_dir: root.join("mods"),
     }
 }
 

@@ -105,6 +105,7 @@ fn start(root: &Path, cos: PathBuf, slots: usize, pins: Sources) -> Start {
         cos_bin: Some(cos),
         slots: Some(slots),
         daemon_dir: no_daemon(),
+        mods_dir: root.join("mods"),
     }
 }
 
@@ -2751,7 +2752,7 @@ ready = { path = "/health", contains = "\"status\":\"ok\"" }
 name = "Control room"
 url = "http://127.0.0.1:4777/"
 server = "control-room"
-probe = { path = "/", contains = "<title>Wolven portfolio control room" }
+probe = { path = "/", contains = "<title>Northwind portfolio control room" }
 
 [[business.bravo]]
 name = "Bravo board"

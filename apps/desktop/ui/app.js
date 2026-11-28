@@ -128,7 +128,7 @@ function renderSlots() {
   $("runs-count").textContent = ui.agents.length ? String(ui.agents.length) : "";
 }
 
-const VIEWS = ["today", "agents", "flows", "tax", "docs", "dash"];
+const VIEWS = ["today", "agents", "flows", "docs", "dash"];
 const SWITCH_PANES = ["staff", "runs", "scorecard", "skills"];
 
 // The docs room names the business it was opened for; its saves carry it back.
@@ -145,15 +145,17 @@ const seenArgs = () =>
     : null;
 const seenFailed = (e) => logDev("brief_seen", e);
 
-function openTab(view, pane, dash) {
+function openTab(view, pane, name) {
   for (const t of document.querySelectorAll(".app-tab")) {
-    if (t.dataset.view === view && (view !== "dash" || t.dataset.dash === dash)) t.setAttribute("aria-current", "page");
+    const same = view === "dash" ? t.dataset.dash === name : view !== "mod" || t.dataset.mod === name;
+    if (t.dataset.view === view && same) t.setAttribute("aria-current", "page");
     else t.removeAttribute("aria-current");
   }
   for (const v of document.querySelectorAll(".view")) {
     v.classList.toggle("active", v.id === `view-${view}`);
   }
   if (view !== "dash") window.hideDash();
+  if (view === "mod") window.showMod(name).catch((e) => logDev("mod", e));
   // Loaded on first open: the room scans every monitored repo.
   if (view === "docs" && !$("docs-frame").src) {
     frameLoad("docs-frame", docsUrl(), {
@@ -178,6 +180,7 @@ for (const tab of document.querySelectorAll(".app-tab")) {
 // The tabs load before routing, so the hash's dashboard exists before it is selected.
 async function openFromHash() {
   await window.loadDashTabs();
+  await window.loadModTabs();
   const h = new URLSearchParams(location.hash.slice(1));
   const tab = h.get("tab");
   if (tab === "dash") {
@@ -189,6 +192,10 @@ async function openFromHash() {
     } else {
       openTab("today", "");
     }
+  } else if (tab === "mod") {
+    const name = h.get("mod");
+    const listed = [...document.querySelectorAll('.app-tab[data-view="mod"]')].some((t) => t.dataset.mod === name);
+    openTab(listed ? "mod" : "today", "", name);
   } else if (VIEWS.includes(tab)) {
     openTab(tab, h.get("pane") ?? "");
     if (tab === "agents" && h.get("run")) openRun(h.get("run"));
@@ -219,7 +226,12 @@ async function switchTo(name, hash) {
   const pane = ui.pane === "role" ? "staff" : ui.pane === "run" ? ui.from : ui.pane;
   // Dashboard names contain spaces ("Control room").
   location.hash =
-    hash ?? (tab === "dash" ? `tab=dash&dash=${encodeURIComponent(current.dataset.dash)}` : `tab=${tab}&pane=${pane}`);
+    hash ??
+    (tab === "dash"
+      ? `tab=dash&dash=${encodeURIComponent(current.dataset.dash)}`
+      : tab === "mod"
+        ? `tab=mod&mod=${encodeURIComponent(current.dataset.mod)}`
+        : `tab=${tab}&pane=${pane}`);
   location.reload();
 }
 window.switchTo = switchTo;

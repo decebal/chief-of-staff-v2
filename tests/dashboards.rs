@@ -60,7 +60,7 @@ const CONTROL_ROOM: &str = r#"
 name = "Control room"
 url = "http://127.0.0.1:4777/"
 server = "control-room"
-probe = { path = "/", contains = "<title>Wolven portfolio control room" }
+probe = { path = "/", contains = "<title>Northwind portfolio control room" }
 "#;
 
 const SALESROOM: &str = r#"
@@ -128,7 +128,7 @@ fn server_table_parses() {
     assert_eq!(list[0].probe.path, "/");
     assert_eq!(
         list[0].probe.contains,
-        "<title>Wolven portfolio control room"
+        "<title>Northwind portfolio control room"
     );
     assert_eq!(list[1].name, "Salesroom");
     assert_eq!(list[1].probe.path, "/sales");
@@ -497,7 +497,7 @@ fn syntax_error_is_an_error() {
     assert!(load_text("syntax", "[server.cr\n").is_err());
 }
 
-const MARKER: &str = "<title>Wolven portfolio control room";
+const MARKER: &str = "<title>Northwind portfolio control room";
 const CAP: usize = 64 * 1024;
 
 /// One served connection on a loopback port; the thread returns the request it read.
@@ -585,7 +585,7 @@ fn probe_of(path: &str, contains: &str) -> Probe {
 }
 
 const PAGE: &str =
-    "<!doctype html><html><head><title>Wolven portfolio control room</title></head></html>";
+    "<!doctype html><html><head><title>Northwind portfolio control room</title></head></html>";
 
 #[test]
 fn probe_matches_and_sends_only_host_and_connection_close() {

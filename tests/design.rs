@@ -1021,7 +1021,7 @@ const WINDOW_EXCEPTIONS: &[(&str, &str, &str)] = &[
     (
         "states.js",
         "frame.src = safeFrameSrc(src)",
-        "the app's cosreport: page or a loopback dashboard, through safeFrameSrc",
+        "the app's cosreport: or cosmod: page or a loopback dashboard, through safeFrameSrc",
     ),
 ];
 
@@ -1443,6 +1443,7 @@ const WINDOW_JS: &[&str] = &[
     "kit.js",
     "command.js",
     "dash.js",
+    "mods.js",
     "assistants.js",
     "app.js",
 ];
@@ -1557,7 +1558,7 @@ fn every_state_renders_through_state_view_with_an_icon_and_art() {
         );
     }
     assert!(js.contains(r#"frameLoad("docs-frame""#));
-    for file in ["command.js", "dash.js", "assistants.js"] {
+    for file in ["command.js", "dash.js", "mods.js", "assistants.js"] {
         assert!(
             read(&format!("{UI}/{file}")).contains("stateView(\"unreachable\""),
             "{file} reads the backend with no state for a failed read"
