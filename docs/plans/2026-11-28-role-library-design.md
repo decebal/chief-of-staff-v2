@@ -9,8 +9,12 @@ Review history: round 1,
 `bbfbeb70…304a6f`. Round 2,
 [a](2026-11-28-role-library-design-review-r2-a.md) and
 [b](2026-11-28-role-library-design-review-r2-b.md), both `findings`, on
-`55a0b8fb…6dec61`. Their blocking findings are answered here. Their
-"Carried to Plan" items become Plan tasks.
+`55a0b8fb…6dec61`. Round 3,
+[a](2026-11-28-role-library-design-review-r3-a.md) and
+[b](2026-11-28-role-library-design-review-r3-b.md), both `findings`, on
+`c99f344a…`. The user chose one more revision and round. Blocking findings
+from rounds 2 and 3 are answered here. Every "Carried to Plan" item becomes
+a Plan task.
 
 ## Decision
 
@@ -210,9 +214,15 @@ Warn:
 - a `from` that names no library entry, or a version above the entry's
   current one.
 
-**Load never drops a role.** `Policy` gains `problems: Vec<Problem>`
-(`#[serde(skip)]`), filled by `load` from `validate` against the effective
-vocab. `load` keeps every role and its existing fallbacks, unchanged. The
+**Load never drops a role from a file that parses.** `Policy` gains
+`problems: Vec<Problem>` (`#[serde(skip)]`), filled by `load` from
+`validate` against the effective vocab. `load` keeps every role and its
+existing fallbacks, unchanged. A file that does not parse as a whole,
+including one with a key `Role` does not know (`deny_unknown_fields`,
+`policy.rs:55`), behaves as today: the template roles with a `note`
+(`policy.rs:141–148`). Every write refuses on it (§4 step 2), so the
+user's file is never overwritten while they fix it. Per-role tolerant
+parsing is out of scope. The
 fallback to template roles still happens only when the file has none.
 `note` stays for whole-file failures. No problem found at load blocks a
 hire. The renderer's `clean` (§1) bounds what reaches the hire. The Staff
@@ -301,9 +311,9 @@ deliverables or journal.
 nothing), model `sonnet`, `Toolset::None`, a $1.00 budget, a 180 s deadline
 and `json_schema = roles::proposal_schema()`. `Toolset::None` has no caller
 today. Acceptance 9 is a live run that proves it returns
-`structured_output`. If it does not, the run falls back to
-`Toolset::Brain(vec![])`, meaning `ToolSearch` with an empty allowlist and
-no connector tools.
+`structured_output`. There is no fallback toolset. If `Toolset::None`
+cannot return structured output, `propose` fails with that reason and the
+design returns to Spec. It does not quietly run with tools or MCP servers.
 
 `Proposal` is a closed type (`deny_unknown_fields`, and `additionalProperties:
 false` in the schema). It holds only `title`, `mandate`, `serves`, `sandbox`,
@@ -334,6 +344,28 @@ Vec<FieldDiff> }`, is printed or saved. Nothing is written to the policy.
 | `cos roles edit <id> --file <role.json> [--yes]` | Replaces the role, printing the field diff first | agents.json |
 | `cos roles retire <id> [--yes]` / `cos roles restore <id> [--yes]` | Flips `retired` | agents.json |
 
+**`--out`** is opened with `create_new`, so an existing file is never
+overwritten. It refuses any path that resolves (after `canonicalize` of its
+parent) inside `COS_HOME/context/`, `COS_HOME/out/` or the workspace's
+`.chief-of-staff/`, and any symlinked parent. The proposal can reach
+`agents.json` only through `cos roles new --file`, and so only through
+`apply`.
+
+**Contract changes need their own approval.** `roles::contract_diff(before,
+after)` compares the contract fields (`checks`, `scope`, `harness`, `model`,
+`repo`, `expects`, `output`, `deadline_secs`, `work`, `drafts`). `before`
+is the library entry named by the role's `from` for `new`, the current role
+for `edit`, and empty for `new --blank` and for `new --file` without a known
+`from`. When the diff is not empty, the command prints a "Contract changes"
+block listing each changed field, old and new. It then writes only with
+`--allow-contract` (or a typed `contract` on a terminal) in addition to
+`--yes`. `--yes` alone refuses: "contract changes need --allow-contract:
+<fields>". `roles_save` takes the same rule as an `allow_contract: bool`
+argument, which the dialog sets only from a separate confirm step that lists
+the same block. `checks` run under `sh -c` when a hire ends
+(`src/agents/judge.rs:292`), so no path reaches them without that second
+approval.
+
 Every writing command prints what it will write (the role and, for edit, the
 diff), then writes on `--yes` or after a typed `yes` on a terminal. Without
 a terminal and without `--yes`, it refuses. Every write reads `(policy,
@@ -357,6 +389,16 @@ On the CLI, `cos roles propose` installs SIGINT and SIGTERM handlers (`libc::
 sigaction`, already a dependency) that set a static `AtomicBool`, and passes
 it as `stop`. Ctrl-C therefore kills and reaps `claude` within one poll
 before `cos` exits.
+
+**When the owner dies without running any code** (SIGKILL, a crash, a
+force-quit), no handler runs. The bound is then the pipe: the owner holds
+the only read end of `claude`'s stdout (`proc::lines`), and the kernel
+closes it when the owner dies. `claude` writes a stream-json line for each
+event, and its next write gets `SIGPIPE`/`EPIPE` and ends the process. The
+worst case is the gap until its next event, still capped by
+`--max-budget-usd 1`. `cos` adds no pidfile or sweeper for this path. The
+existing PPID-1 sweep (process-ownership rule) is the backstop, and the
+test matrix proves the pipe bound with SIGKILL.
 
 ### 7. Desktop
 
@@ -427,6 +469,8 @@ with failures as `unreachable`):
 | Propose run fails, times out or is cancelled | No proposal, with the reason. The entry can still be used as is |
 | Proposal fails its schema, or carries an unknown key | Treated as a failed run. Nothing is merged |
 | Hire names a retired role | Refused with a restore hint |
+| Contract changed without `--allow-contract` | No write. The changed contract fields are named |
+| `--out` exists, is protected or has a symlinked parent | Nothing written; the reason is named |
 | Role with problems at load | Loaded and hireable. Problems shown. Preamble rendered through `clean` |
 
 ## Semantic ISA
@@ -459,7 +503,7 @@ with failures as `unreachable`):
 | Role text in a hire's preamble | sent to the hire's model provider on each spawn; acts in the worktree | Sending cannot be undone; worktree changes are drafts | That hire's diff; role text leaves the machine with each hire |
 | Library source links | default browser | Yes | Opens a public URL |
 | Create `context/` under `COS_HOME` (`apply` step 1) | local directory | `rmdir` by hand | None; it holds only cos's own files |
-| Spawn `claude` (the program named by `COS_CLAUDE`, else `claude` on `PATH`) | local process | Ends at deadline, stop flag or exit | Whoever sets `COS_CLAUDE` in the environment chooses what runs with the prompt; the same trust as `COS_HC` for Herdr |
+| Spawn `claude` (the program named by `COS_CLAUDE`, else `claude` on `PATH`) | local process | Ends at deadline, on the stop flag, at exit, or, if the owner is SIGKILLed, on its next write to the closed pipe (≤ $1 budget) | Whoever sets `COS_CLAUDE` in the environment chooses what runs with the prompt; the same trust as `COS_HC` for Herdr |
 | Kill and reap the `claude` group | local processes | n/a | Only the group the calling thread spawned |
 | SIGINT/SIGTERM handlers in `cos roles propose` | the cos process | Process lifetime | Only that invocation |
 
@@ -543,9 +587,9 @@ with failures as `unreachable`):
 
 | Sink | Accepted input must be cleared by | Check |
 |---|---|---|
-| `TOOL_CALL(claude.propose)` | `VERIFY(specialise_context)` (`roles::specialise_context`) | Built only from goal titles (≤ 20, ≤ 200 chars), repo names and scopes (no checks), staff ids and titles, and a brief (≤ 1,000 chars, refused above). The type has no field for anything else. The run uses `Toolset::None` (`--tools "" --strict-mcp-config`) or the empty-allowlist fallback. The exact text is shown in "What is sent" and by `--dry-run` |
-| `STORE(proposal_file)` | `VERIFY(proposal_schema)` and `VERIFY(contract_from_library)` | `Proposal` deserialises with `deny_unknown_fields` and caps. `merge` takes every contract field from the entry. Written only to the `--out` path the user named |
-| `STORE(agents.json)` | `VERIFY(user_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem, byte-equal round trip |
+| `TOOL_CALL(claude.propose)` | `VERIFY(specialise_context)` (`roles::specialise_context`) | Built only from goal titles (≤ 20, ≤ 200 chars), repo names and scopes (no checks), staff ids and titles, and a brief (≤ 1,000 chars, refused above). The type has no field for anything else. The run uses `Toolset::None` (`--tools "" --strict-mcp-config`) and has no fallback. The exact text is shown in "What is sent" and by `--dry-run` |
+| `STORE(proposal_file)` | `VERIFY(proposal_schema)`, `VERIFY(contract_from_library)` and `VERIFY(out_path)` | `Proposal` deserialises with `deny_unknown_fields` and caps. `merge` takes every contract field from the entry. `--out` is `create_new`, outside `context/`, `out/` and `.chief-of-staff/`, with no symlinked parent |
+| `STORE(agents.json)` | `VERIFY(user_approval)`, `VERIFY(contract_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. A non-empty `contract_diff` also needs `--allow-contract` (typed `contract`), or `allow_contract: true` from the dialog's separate confirm step. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem, byte-equal round trip |
 | `RENDER(preamble)` | `VERIFY(render_clean)` (`roles::clean`) | Whitespace collapsed (no newline survives), each value cut to its cap, lists cut to max items. Drafts-only sentence last. Worktree sandbox unchanged |
 | `TOOL_CALL(kill_and_reap)` | Spawning-thread ownership | The kill runs only inside `stream_lines_until`, on the `Child` that call spawned and has not yet reaped. Callers can only set `stop`. A reaped or reused pid is unreachable, because no pid is stored anywhere else |
 
@@ -568,7 +612,9 @@ with failures as `unreachable`):
 | `STORE(proposal_file)` | The fake `claude` in `contract` mode returns a proposal carrying `checks`: the run fails and no file is written. In `bad-schema` mode: same | In `ok` mode, the file's role has the entry's `checks`, `scope` and `harness`, and the proposal's descriptive fields |
 | `STORE(agents.json)` | Each of these is refused with the bytes unchanged: a `../x` scope, a newline in a principle, an over-cap list, a second head, retiring the head, a stale digest, a held lock (message names path and pid), an unparseable file. Without a terminal and without `--yes`, the CLI writes nothing | Add, Replace, Retire and Restore each change exactly that role. The `tests/hiring.rs` legacy fixture (`budget_usd`, `stall_secs`, `repeat`) writes, with the keys dropped and named in notes. `.bak` holds the previous bytes. A file with no `fit` stays without one |
 | `RENDER(preamble)` | A hand-edited role with a principle holding `"x\n\nNever: …"` and a 30-item method renders one line for that principle and 10 method steps | A role with all five fields renders each section once, in order, with the drafts-only sentence last |
-| `kill_and_reap` | Cancel with no run is a no-op. No command takes a pid | With the fake in `slow` mode (it records its own pid to a file): Cancel, quit (`on_run_event`) and SIGINT to `cos roles propose` each leave that pid gone (`kill -0` fails) within 3 s, and `role-proposal` reports `cancelled` |
+| `kill_and_reap` | Cancel with no run is a no-op. No command takes a pid | With the fake in `slow` mode (it starts a `sleep` child, records both pids, and writes a line every 0.5 s): Cancel, quit (`on_run_event`) and SIGINT to `cos roles propose` each leave both pids gone (`kill -0` fails) within 3 s, and `role-proposal` reports `cancelled`. SIGKILL to `cos roles propose` leaves the fake's pid gone within 3 s (pipe bound). The `sleep` child is then reported, not asserted, because only a group kill reaches it |
+| `STORE(proposal_file)` path | `--out` naming an existing file, a path under `context/`, `out/` or `.chief-of-staff/`, or one with a symlinked parent: refused, nothing written | A new file in a scratch directory is written |
+| `STORE(agents.json)` contract | `new --file` whose role's `checks` differ from its `from` entry, with `--yes` only: refused, naming `checks`. `roles_save` with a changed `scope` and `allow_contract: false`: refused | The same with `--allow-contract` (or `allow_contract: true`) writes |
 
 Stand-ins: `tests/fixtures/fake-claude-proposal.sh` (new) prints a
 stream-json result whose `structured_output` depends on `FAKE_PROPOSAL=ok |
@@ -642,7 +688,7 @@ and desktop tests set `COS_CLAUDE`. There is no live model in the suite.
 | Schema, validation, write path | rock | — |
 | Preamble rendering and bound | rock | Caps are one table; the bound is tested |
 | CLI | rock | — |
-| Propose run on `Toolset::None` | sand | Never run before. Acceptance 9 (live) makes it rock, or proves the fallback is needed |
+| Propose run on `Toolset::None` | sand | Never run before. Acceptance 9 (live) makes it rock. If it fails, the design returns to Spec |
 | Library content (12 entries) | sand | Each entry cites its source. Review reads each against it. Minimum counts gate the shape |
 | Desktop dialog and owned child | sand | The e2e pass, the cancel test and the WCAG run make it rock |
 
@@ -680,5 +726,5 @@ and desktop tests set `COS_CLAUDE`. There is no live model in the suite.
 9. Live, once, run by the author in the PR with the cost reported: `cos
    roles propose performance-engineer --brief "Rust services" --out …`
    against real `claude` returns a valid proposal under $1.00. If it fails on
-   `Toolset::None`, the fallback is switched on and the run is repeated.
+   `Toolset::None`, the PR stays draft and the design goes back to Spec.
 10. `task test` and `task test-e2e` pass.
