@@ -188,3 +188,160 @@ fn the_plan_shows_the_preamble_the_hire_will_read() {
         "{pre}"
     );
 }
+
+fn refused(p: &Policy) -> Vec<String> {
+    roles::validate(p, &roles::vocab(p))
+        .into_iter()
+        .filter(|x| x.level == roles::Level::Refuse)
+        .map(|x| format!("{}.{}", x.role.unwrap_or_default(), x.field))
+        .collect()
+}
+
+fn with(edit: impl FnOnce(&mut Role)) -> Policy {
+    let mut p = policy::seed();
+    let mut r = specialist();
+    edit(&mut r);
+    p.roles.push(r);
+    p
+}
+
+#[test]
+fn the_template_and_a_specialist_validate_clean() {
+    assert_eq!(refused(&policy::seed()), Vec::<String>::new());
+    assert_eq!(refused(&with(|_| {})), Vec::<String>::new());
+}
+
+#[test]
+fn each_refuse_rule_names_its_role_and_field() {
+    let cases: Vec<(&str, Policy)> = vec![
+        ("Bad Id.id", with(|r| r.id = "Bad Id".into())),
+        ("appsec.title", with(|r| r.title = String::new())),
+        ("appsec.mandate", with(|r| r.mandate = "x".repeat(601))),
+        (
+            "appsec.principles",
+            with(|r| r.principles = vec!["a\nb".into()]),
+        ),
+        (
+            "appsec.method",
+            with(|r| r.method = (0..11).map(|i| i.to_string()).collect()),
+        ),
+        (
+            "appsec.anti_patterns",
+            with(|r| r.anti_patterns = vec![String::new()]),
+        ),
+        (
+            "appsec.output",
+            with(|r| r.expects = cos::agents::judge::Expects::File),
+        ),
+        (
+            "appsec.scope",
+            with(|r| r.scope = vec!["../outside".into()]),
+        ),
+        ("appsec.scope", with(|r| r.scope = vec!["/etc".into()])),
+        (
+            "appsec.output",
+            with(|r| r.output = Some("a/../../b".into())),
+        ),
+        ("appsec.title", with(|r| r.title = "a\rb".into())),
+    ];
+    for (want, p) in cases {
+        let got = refused(&p);
+        assert!(got.iter().any(|g| g == want), "{want}: {got:?}");
+    }
+}
+
+#[test]
+fn ids_are_unique_and_there_is_exactly_one_head() {
+    let mut dup = policy::seed();
+    let b = dup.role("builder").unwrap().clone();
+    dup.roles.push(b);
+    assert!(
+        refused(&dup).contains(&"builder.id".to_owned()),
+        "{:?}",
+        refused(&dup)
+    );
+
+    let mut two = policy::seed();
+    two.roles[1].head = true;
+    assert!(
+        refused(&two).iter().any(|g| g.ends_with(".head")),
+        "{:?}",
+        refused(&two)
+    );
+
+    let mut none = policy::seed();
+    none.roles[0].head = false;
+    assert!(
+        refused(&none).iter().any(|g| g.ends_with(".head")),
+        "{:?}",
+        refused(&none)
+    );
+}
+
+#[test]
+fn unknown_kinds_needs_and_library_entries_only_warn() {
+    let p = with(|r| {
+        r.work = vec!["juggling".into()];
+        r.drafts = vec!["telepathy".into()];
+        r.from = Some("no-such-entry@1".into());
+    });
+    assert_eq!(refused(&p), Vec::<String>::new());
+    let warns: Vec<String> = roles::validate(&p, &roles::vocab(&p))
+        .into_iter()
+        .filter(|x| x.level == roles::Level::Warn)
+        .map(|x| x.field)
+        .collect();
+    for f in ["work", "drafts", "from"] {
+        assert!(warns.contains(&f.to_owned()), "{f}: {warns:?}");
+    }
+}
+
+#[test]
+fn load_keeps_a_role_with_problems_and_it_still_hires() {
+    let home = scratch("problems");
+    std::fs::create_dir_all(home.join("context")).unwrap();
+    let p = with(|r| {
+        r.work = vec!["juggling".into()];
+        r.principles = vec!["one\ntwo".into()];
+    });
+    std::fs::write(policy::path(&home), serde_json::to_string(&p).unwrap()).unwrap();
+    let loaded = policy::load(&home);
+    assert!(loaded.note.is_none(), "{:?}", loaded.note);
+    assert!(loaded.role("appsec").is_some(), "the role is kept");
+    assert!(loaded.hire("appsec").is_ok(), "and still hires");
+    let fields: Vec<&str> = loaded
+        .problems
+        .iter()
+        .filter(|x| x.role.as_deref() == Some("appsec"))
+        .map(|x| x.field.as_str())
+        .collect();
+    assert!(
+        fields.contains(&"work") && fields.contains(&"principles"),
+        "{fields:?}"
+    );
+}
+
+#[test]
+fn a_file_with_an_unknown_key_keeps_todays_note() {
+    let home = scratch("unknown-key");
+    std::fs::create_dir_all(home.join("context")).unwrap();
+    let mut v = serde_json::to_value(policy::seed()).unwrap();
+    v["roles"][1]["colour"] = serde_json::json!("blue");
+    std::fs::write(policy::path(&home), v.to_string()).unwrap();
+    let loaded = policy::load(&home);
+    assert!(
+        loaded.note.as_deref().is_some_and(|n| n.contains("colour")),
+        "{:?}",
+        loaded.note
+    );
+}
+
+#[test]
+fn the_effective_vocabulary_is_the_files_else_the_templates() {
+    let mut p = policy::seed();
+    p.fit = None;
+    assert!(roles::vocab(&p).kinds.contains_key("code"));
+    let mut own = policy::seed();
+    own.fit.as_mut().unwrap().kinds.clear();
+    assert!(roles::vocab(&own).kinds.is_empty());
+}

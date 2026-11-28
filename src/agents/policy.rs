@@ -145,6 +145,9 @@ pub struct Policy {
     /// Why the file was not used, when it was not.
     #[serde(skip)]
     pub note: Option<String>,
+    /// What is wrong with the roles `load` kept; none of it stops a hire.
+    #[serde(skip)]
+    pub problems: Vec<roles::Problem>,
 }
 
 pub fn path(home: &Path) -> std::path::PathBuf {
@@ -171,6 +174,7 @@ pub fn load(home: &Path) -> Policy {
     if policy.fit.is_none() {
         policy.fit = seed().fit;
     }
+    policy.problems = roles::validate(&policy, &roles::vocab(&policy));
     policy
 }
 
