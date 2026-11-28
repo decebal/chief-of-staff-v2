@@ -271,6 +271,11 @@
   .src-pop { position: absolute; z-index: 4; top: calc(100% + 0.375rem); left: 0; width: min(22rem, 80vw); background: var(--popover); color: var(--popover-foreground);
     border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 0.625rem 0.75rem; box-shadow: var(--shadow-md); }
   .src-pop p { margin: 0 0 0.25rem; }
+  .src-row { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; }
+  .src-act { font-size: var(--text-xs); line-height: 1.25rem; padding: 0.1875rem 0.75rem; border-radius: var(--radius-full); border: 1px solid var(--border);
+    background: var(--card); color: var(--foreground); text-decoration: none; cursor: pointer; }
+  .src-act:hover { border-color: var(--ring); }
+  .src-say { font-size: var(--text-xs); color: var(--muted-foreground); }
   .gaps { margin-top: 0.375rem; }
   .detail > * + * { margin-top: 1rem; }
 
@@ -626,7 +631,7 @@ const DATA = "__COS_DATA__";
   // ---- the host: the desktop app says what it can do. Hire then opens its
   // dialog; Run brief appears and asks the window to run one. A browser
   // (`cos dash`, the MCP view) has no host, so neither changes there.
-  let canHire = false;
+  let canHire = false, canSources = false;
   const runBtn = $("brief-run"), runSay = $("brief-state");
   addEventListener("message", (e) => {
     if (e.source !== window.parent) return;
@@ -636,6 +641,8 @@ const DATA = "__COS_DATA__";
       for (const b of document.querySelectorAll("[data-hire]")) b.textContent = canHire ? "Hire" : "Copy prompt";
       for (const b of document.querySelectorAll("[data-herdr-open]")) b.textContent = canHire ? "Open in Herdr" : "Copy hc attach";
       $("host-run").hidden = d.runBrief !== true;
+      canSources = d.sources === true;
+      for (const b of document.querySelectorAll("[data-source-id]")) b.hidden = !canSources;
     } else if (d.type === "cos-brief-state") {
       const running = d.state === "running";
       runBtn.disabled = running;
@@ -924,6 +931,30 @@ const DATA = "__COS_DATA__";
       pick(next.dataset.pick, true);
     });
   }
+  // Today's coverage rows: Not needed asks the window to take the source out
+  // of the reads and shows what it answered. The host enables the button.
+  const rowSay = (btn) => btn.closest(".src-row")?.querySelector(".src-say");
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest?.("[data-source-id]");
+    if (!btn || !canSources) return;
+    const say = rowSay(btn);
+    if (say) say.textContent = "Saving…";
+    tellHost({ type: "cos-source-not-needed", id: btn.dataset.sourceId });
+  });
+  addEventListener("message", (e) => {
+    if (e.source !== window.parent) return;
+    const d = e.data ?? {};
+    if (d.type !== "cos-source-state") return;
+    const btn = [...document.querySelectorAll("[data-source-id]")].find((b) => b.dataset.sourceId === d.id);
+    if (!btn) return;
+    const say = rowSay(btn);
+    if (d.ok === true) {
+      btn.hidden = true;
+      if (say) say.textContent = "Not needed — left out from the next brief";
+    } else if (say) {
+      say.textContent = `Not saved: ${typeof d.error === "string" ? d.error : "unknown error"}`;
+    }
+  });
   /* end kit */
   // Only the desktop's live `/` sets hostBrief: an archived or browser page names no brief to mark seen.
   const hostRef = DATA.hostBrief === true && DATA.briefRef;

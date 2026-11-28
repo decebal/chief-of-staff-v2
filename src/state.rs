@@ -602,6 +602,21 @@ impl Drop for Lock {
     }
 }
 
+/// The workspace's write lock: created exclusively, removed on drop, never stolen.
+fn write_lock(folder: &Path) -> Result<Lock> {
+    let lock_path = folder.join("write.lock");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    let mut file = opts
+        .open(&lock_path)
+        .with_context(|| format!("write lock held: {}", lock_path.display()))?;
+    let lock = Lock(lock_path);
+    file.write_all(std::process::id().to_string().as_bytes())?;
+    Ok(lock)
+}
+
 /// The one write path: exclusive lock, revision check, transition rules,
 /// journal entry, atomic replace. A held lock is never stolen.
 pub fn commit(
@@ -615,17 +630,7 @@ pub fn commit(
         "Use a short nonempty commit reason",
     )?;
     let folder = runtime_dir(workspace)?;
-    let lock_path = folder.join("write.lock");
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    let mut file = opts
-        .open(&lock_path)
-        .with_context(|| format!("write lock held: {}", lock_path.display()))?;
-    let _lock = Lock(lock_path);
-    file.write_all(std::process::id().to_string().as_bytes())?;
-    drop(file);
+    let _lock = write_lock(&folder)?;
 
     let path = folder.join("state.json");
     let old = load(&path)?;
@@ -645,6 +650,24 @@ pub fn commit(
     validate(&new)?;
     atomic_write(&path, &new)?;
     Ok(json!({ "committed": true, "revision": revision }))
+}
+
+/// Takes an approved source out of the reads: `readsApproved` false and
+/// `notNeeded` true, so the next brief neither calls it nor covers it. Written
+/// under the same write lock as [`commit`], with the same atomic replace.
+pub fn set_source_not_needed(workspace: &Path, id: &str) -> Result<()> {
+    let folder = runtime_dir(workspace)?;
+    let path = folder.join("profile.json");
+    require(path.is_file(), "No workspace profile: run setup first")?;
+    let _lock = write_lock(&folder)?;
+    let mut profile = load(&path)?;
+    let source = profile["sources"]
+        .as_array_mut()
+        .and_then(|sources| sources.iter_mut().find(|s| s["id"] == json!(id)))
+        .with_context(|| format!("no source {id:?} in the workspace profile"))?;
+    source["readsApproved"] = json!(false);
+    source["notNeeded"] = json!(true);
+    atomic_write(&path, &profile)
 }
 
 /// UTC, microseconds, `+00:00`: the form Python's `isoformat()` writes.

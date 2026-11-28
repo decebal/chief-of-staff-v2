@@ -2863,6 +2863,47 @@ fn dashboard_open_refuses_a_stale_business_an_undeclared_name_and_an_invalid_fil
     );
 }
 
+#[test]
+fn source_not_needed_takes_the_source_out_of_the_app_business_profile() {
+    let root = scratch("source-not-needed");
+    let a = dirs(&root, "default");
+    seed(&a.workspace, None);
+    let profile_path = a.workspace.join(".chief-of-staff/profile.json");
+    let mut profile: Value = serde_json::from_str(cos::state::PROFILE_TEMPLATE).unwrap();
+    profile["sources"] = json!([{
+        "id": "email", "service": "mail", "accountIdentity": "me", "scope": "s",
+        "readsApproved": true, "approvalRef": "test", "readBudget": "b",
+    }]);
+    cos::state::atomic_write(&profile_path, &profile).unwrap();
+    let start = start(&root, cos_bin(), 2, Sources::default());
+    register(&start, "default", &a, true);
+    let (_app, w) = open(start);
+    let read =
+        || -> Value { serde_json::from_slice(&std::fs::read(&profile_path).unwrap()).unwrap() };
+
+    let source = |business: &str, id: &str| {
+        call(
+            &w,
+            "source_not_needed",
+            json!({ "business": business, "id": id }),
+        )
+    };
+    assert_eq!(
+        source("default", "email").unwrap(),
+        json!({ "id": "email", "notNeeded": true })
+    );
+    assert_eq!(read()["sources"][0]["readsApproved"], json!(false));
+    assert_eq!(read()["sources"][0]["notNeeded"], json!(true));
+
+    let e = source("default", "nope").unwrap_err();
+    assert!(error_text(&e).contains("\"nope\""), "{e}");
+    let stale = source("bravo", "email").unwrap_err();
+    assert_eq!(
+        error_text(&stale),
+        "this call names business \"bravo\" but the window is on \"default\": nothing written, run or killed"
+    );
+}
+
 /// A listener answering every request with a page that carries `marker`.
 fn marker_page(marker: &'static str) -> u16 {
     use std::io::{Read, Write};
@@ -4084,8 +4125,11 @@ fn only_the_report_frame_runs_a_brief_and_passes_it_nothing() {
     let handler = &js[start..start + js[start..].find("\n});\n").unwrap()];
     assert!(handler.contains("const frame = $(\"report\").contentWindow;"));
     assert!(handler.contains("if (ev.source !== frame) return;"));
-    assert!(handler.contains(r#"{ type: "cos-host", hire: true, runBrief: true }"#));
+    assert!(handler.contains(r#"{ type: "cos-host", hire: true, runBrief: true, sources: true }"#));
     assert!(handler.contains("} else if (d.type === \"cos-run-brief\") {\n    runBrief();\n"));
+    assert!(
+        handler.contains(r#"invoke("source_not_needed", { business: ui.business, id: d.id })"#)
+    );
     assert_eq!(
         js.matches("cos-run-brief").count(),
         1,

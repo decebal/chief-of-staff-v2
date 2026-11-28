@@ -33,7 +33,8 @@ manifests at its version (`tests/kit.rs`).
   default the home) — `profile.json` (approved sources, timezone,
   tracking approval) and `state.json` (goals, KPIs, deliverables,
   commitments, sources, runs, incidents, journal). Written only through
-  `state::commit` or the kit's `state.py`. Gitignored.
+  `state::commit`, `state::set_source_not_needed` (profile.json, same lock)
+  or the kit's `state.py`. Gitignored.
 - `context/`, gitignored and seeded from `templates/context/`:
   `principles.md`, `decisions/`, and `profile.md` / `goals.md`, which matter
   only when there is no workspace.
@@ -47,7 +48,7 @@ anything from `.chief-of-staff/`, `context/` or `out/`.
 |---|---|
 | `src/claude.rs` | stream-json driver, audit log |
 | `src/context.rs` | the workspace and `context/` inlined into prompts (brains have no file tools); connectors narrowed to approved sources; `deny-mcp.txt` |
-| `src/state.rs` | the kit's `state.py` in Rust: validate, transition rules, lock, atomic journaled commit |
+| `src/state.rs` | the kit's `state.py` in Rust: validate, transition rules, lock, atomic journaled commit; `set_source_not_needed` (the Today row's Not needed) under the same lock |
 | `src/track.rs` | what `cos` commits: run receipts and source coverage (tracking approved only); the brief's proposed deliverables as a candidate |
 | `src/handoff.rs` | the kit's nine-part handoff, from a tracked deliverable |
 | `src/proc/` | bounded child processes: one deadline, kill the group, reap; process start times and the group identity check; the process-wide group set a run records, and `spawn_gated`, which holds a child before `exec` until its group is recorded |

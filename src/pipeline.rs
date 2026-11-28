@@ -193,7 +193,11 @@ pub fn cover_every_source(brief: &mut Brief, workspace: &Path, facts: &Facts, ca
         return;
     };
     for src in crate::state::approved_sources(&profile) {
-        if brief.coverage.iter().any(|c| c.source == src.id) {
+        if brief
+            .coverage
+            .iter()
+            .any(|c| c.source == src.id || c.source == src.service)
+        {
             continue;
         }
         let row = |health, review, note: String| Coverage {
@@ -377,7 +381,9 @@ impl Config {
              {MAX_ACTIONS} actions that need the user, each citing the goal and deliverable it \
              serves when there is one, and at most {MAX_CHANGES} verified changes. Meetings that \
              have already ended go nowhere but a one-line note; prep only for what is still \
-             ahead. {}{}\n\n{}",
+             ahead. The headline states the goal-level finding (what moved, what is at risk, what \
+             needs the user) and never names a source that was not read, a connection failure or \
+             an 'on state alone' hedge; coverage and gaps carry those. {}{}\n\n{}",
             d.day,
             d.now,
             d.week_ago,

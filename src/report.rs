@@ -94,6 +94,7 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         "archive": archive(home),
         "diagrams": diagrams,
         "workspace": workspace(ws),
+        "profile_sources": profile_sources(ws),
         "delivery": crate::delivery::view(home),
         "constraints": crate::constraints::view(home),
         "herdr_waiting": herdr_waiting,
@@ -106,6 +107,17 @@ pub fn data(home: &Path, ws: &Path, live: bool) -> Result<Value> {
         out["workspace"]["kpiTiles"] = tiles;
     }
     Ok(out)
+}
+
+/// The profile's source ids and services, for the Today coverage actions.
+fn profile_sources(ws: &Path) -> Value {
+    let rows = crate::state::profile(ws)
+        .and_then(|p| p["sources"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|s| json!({ "id": s["id"], "service": s["service"] }))
+        .collect();
+    Value::Array(rows)
 }
 
 /// The plan view: the state's records and a ready handoff per open

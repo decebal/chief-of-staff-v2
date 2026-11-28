@@ -116,8 +116,8 @@ pub fn workspace(workspace: &Path) -> String {
     let sources = state::approved_sources(&profile);
     if sources.is_empty() {
         s.push_str(
-            "\nApproved sources: none. Read no connector; work from the facts and the \
-             state, and list every source as not_reviewed in coverage.\n",
+            "\nApproved sources: none. Read no connector; list every source as not_reviewed \
+             in coverage, and keep that out of the headline.\n",
         );
     } else {
         s.push_str(
@@ -155,27 +155,41 @@ pub fn workspace(workspace: &Path) -> String {
     s
 }
 
-/// The `READ_ONLY` tools a profile source's `service` covers.
-pub fn service_tools(service: &str) -> Vec<&'static str> {
+/// A claude.ai connector that a profile source's `service` reads through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Connector {
+    pub name: &'static str,
+    prefix: &'static str,
+}
+
+pub fn connector(service: &str) -> Option<Connector> {
     let service = service.to_lowercase();
-    let prefixes: &[&str] = if service.contains("mail") {
-        &["mcp__claude_ai_Gmail__"]
+    let (name, prefix) = if service.contains("mail") {
+        ("Gmail", "mcp__claude_ai_Gmail__")
     } else if service.contains("calendar") {
-        &["mcp__claude_ai_Google_Calendar__"]
+        ("Google Calendar", "mcp__claude_ai_Google_Calendar__")
     } else if ["jira", "confluence", "atlassian"]
         .iter()
         .any(|k| service.contains(k))
     {
-        &["mcp__claude_ai_Atlassian_Rovo__"]
+        ("Atlassian Rovo", "mcp__claude_ai_Atlassian_Rovo__")
     } else if service.contains("notion") {
-        &["mcp__claude_ai_Notion__"]
+        ("Notion", "mcp__claude_ai_Notion__")
     } else {
-        &[]
+        return None;
+    };
+    Some(Connector { name, prefix })
+}
+
+/// The `READ_ONLY` tools a profile source's `service` covers.
+pub fn service_tools(service: &str) -> Vec<&'static str> {
+    let Some(connector) = connector(service) else {
+        return Vec::new();
     };
     READ_ONLY
         .iter()
         .copied()
-        .filter(|t| prefixes.iter().any(|p| t.starts_with(p)))
+        .filter(|t| t.starts_with(connector.prefix))
         .collect()
 }
 

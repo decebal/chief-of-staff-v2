@@ -10,6 +10,7 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, ZonedDateTime};
 use serde_json::Value;
 
+use crate::context;
 use crate::reports::{Basis, Brief, ChangeKind, Completeness, Confidence, Health, Steer, Verb};
 
 /// `<`, `>`, `&` and both quotes, so text is safe in content and attributes.
@@ -1335,6 +1336,38 @@ fn changes(s: &mut String, b: &Brief) {
     s.push_str("</ul></section>");
 }
 
+/// The side actions of a coverage row that was not read in full. Connect goes
+/// to claude.ai's connector settings for a connector-backed source, found by the
+/// profile service or, when the row is named by its service, by the row itself.
+/// Not needed needs a profile source with this id and stays hidden until the
+/// desktop host says it can save the change.
+fn source_actions(cx: &Ctx, source: &str) -> String {
+    let profile = cx.data["profile_sources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["id"].as_str() == Some(source));
+    let service = profile
+        .and_then(|s| s["service"].as_str())
+        .unwrap_or(source);
+    let mut out = String::new();
+    if let Some(connector) = context::connector(service) {
+        let _ = write!(
+            out,
+            r#"<a class="src-act" href="https://claude.ai/settings/connectors" target="_blank" rel="noopener" aria-label="Connect {name}" title="Opens claude.ai connectors to connect or check {name}">Connect</a>"#,
+            name = esc(connector.name)
+        );
+    }
+    if profile.is_some() && !source.is_empty() {
+        let _ = write!(
+            out,
+            r#"<button type="button" class="src-act" data-source-id="{id}" aria-label="Mark {id} not needed for this business" hidden>Not needed</button><span class="src-say" role="status"></span>"#,
+            id = esc(source)
+        );
+    }
+    out
+}
+
 fn coverage(s: &mut String, cx: &Ctx, b: &Brief) {
     if b.coverage.is_empty() && b.gaps.is_empty() {
         s.push_str(r#"<p class="quiet" id="coverage" data-section="coverage">This brief reported no coverage.</p>"#);
@@ -1364,9 +1397,14 @@ fn coverage(s: &mut String, cx: &Ctx, b: &Brief) {
             (false, true) => format!("from {}", cx.stamp(&c.window_start)),
             _ => String::new(),
         };
+        let actions = if tone == "ok" {
+            String::new()
+        } else {
+            source_actions(cx, &c.source)
+        };
         let _ = write!(
             s,
-            r#"<details class="src src-{tone}"><summary><i aria-hidden="true"></i>{} <small>{review}</small></summary><div class="src-pop"><p><b>{health}</b> · {review}{}</p><p>{}</p></div></details>"#,
+            r#"<div class="src-row"><details class="src src-{tone}"><summary><i aria-hidden="true"></i>{} <small>{review}</small></summary><div class="src-pop"><p><b>{health}</b> · {review}{}</p><p>{}</p></div></details>{actions}</div>"#,
             esc(&c.source),
             if window.is_empty() {
                 String::new()

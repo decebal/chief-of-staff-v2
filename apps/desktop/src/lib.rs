@@ -2166,6 +2166,18 @@ async fn ritual_approve(
     .await
 }
 
+/// Today's coverage row, Not needed: the source leaves the profile's reads.
+#[tauri::command]
+async fn source_not_needed(app: tauri::State<'_, App>, business: String, id: String) -> Res<Value> {
+    let s = app.get();
+    named(&s, &business)?;
+    blocking(move || {
+        cos::state::set_source_not_needed(&s.workspace, &id)?;
+        Ok(json!({ "id": id, "notNeeded": true }))
+    })
+    .await
+}
+
 /// Opens a file the card links to (the brief, the design, a review) in its
 /// default app. Only paths the waiting flow's card names.
 #[tauri::command]
@@ -2622,6 +2634,7 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             businesses,
             brief_seen,
             brief_run,
+            source_not_needed,
             brief_status,
             run_get,
             run_stop,

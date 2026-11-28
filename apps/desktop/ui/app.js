@@ -235,14 +235,15 @@ window.addEventListener("message", async (ev) => {
 // The report frame has no storage of its own (sandboxed, opaque origin): it
 // reports its tab and scroll here so a reload after a run lands where it was,
 // its Hire buttons open the hire dialog with that brief action picked, and
-// its Run brief asks for a run: the message carries nothing the run uses.
+// its Run brief asks for a run: the message carries nothing the run uses. Its
+// Not needed on a coverage row names the source and the window answers it.
 const reportState = { tab: "", y: 0 };
 window.addEventListener("message", (ev) => {
   const frame = $("report").contentWindow;
   if (ev.source !== frame) return;
   const d = ev.data ?? {};
   if (d.type === "cos-report-ready") {
-    frame.postMessage({ type: "cos-host", hire: true, runBrief: true }, "*");
+    frame.postMessage({ type: "cos-host", hire: true, runBrief: true, sources: true }, "*");
     if (briefNow) frame.postMessage(briefNow, "*");
     tellHires();
     if (d.brief != null) {
@@ -252,6 +253,10 @@ window.addEventListener("message", (ev) => {
     }
   } else if (d.type === "cos-run-brief") {
     runBrief();
+  } else if (d.type === "cos-source-not-needed" && typeof d.id === "string" && d.id) {
+    invoke("source_not_needed", { business: ui.business, id: d.id })
+      .then(() => frame.postMessage({ type: "cos-source-state", id: d.id, ok: true }, "*"))
+      .catch((e) => frame.postMessage({ type: "cos-source-state", id: d.id, ok: false, error: String(e) }, "*"));
   } else if (d.type === "cos-report-state") {
     reportState.tab = /^[a-z]+$/.test(d.tab ?? "") ? d.tab : "";
     reportState.y = Number.isFinite(d.y) ? Math.max(0, Math.round(d.y)) : 0;
