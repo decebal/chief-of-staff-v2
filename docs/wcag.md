@@ -42,6 +42,9 @@ The markers are buttons again, as in rv2-kit: each is a 24 px target with the 14
 inside it, and a marker within one target of another moves to the row above or below, so no
 button covers another. Same count after that change: 0 violation nodes, 1,884 undecided.
 
+2026-11-28, with the role dialog's library, specialise and review steps: 26 states, light and
+dark, 0 violation nodes and 1,864 undecided.
+
 The undecided nodes are mostly text inside SVG (the docs graph's labels,
 which carry a `--background` halo), glyphs axe skips by design, and content
 behind an open modal. axe decides part of WCAG: keyboard order, reflow at
