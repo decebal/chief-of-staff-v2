@@ -11,6 +11,11 @@ use super::fit::Vocab;
 use super::judge::Expects;
 use super::policy::{self, Policy, Role};
 
+mod write;
+pub use write::{
+    CONTRACT, Change, ContractApproval, FieldDiff, Written, apply, contract_diff, diff, read,
+};
+
 /// A list's bound: at most `items`, each at most `chars` characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListCap {

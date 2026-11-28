@@ -140,7 +140,7 @@ pub struct Policy {
     #[serde(default)]
     pub repos: BTreeMap<String, Terms>,
     /// The fit check's vocabulary; the template's when the file has none.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fit: Option<Vocab>,
     /// Why the file was not used, when it was not.
     #[serde(skip)]
