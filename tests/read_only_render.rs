@@ -145,6 +145,7 @@ fn spec(id: &str, created: &str) -> Spec {
         terminal: Some(format!("cos-{id}")),
         workspace: None,
         projects: None,
+        skills: None,
     }
 }
 

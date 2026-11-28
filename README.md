@@ -147,6 +147,32 @@ cos agents scorecard                                                   # every v
 - **The scorecard**: every verdict appends to `out/agents/ledger.jsonl`, grouped by
   `cos agents scorecard`, `/agents` and the MCP `agents` tool: runs, accepted, needs you,
   rejected, overclaimed, median time; runs in Herdr have no cost measured.
+- **Skills per hire**: each hire runs with the skills its role uses, plus `--skill`, minus
+  `--no-skill`, plus every skill those require. What you decided about each skill on the
+  machine (relevant or not, which role uses it, which skills it requires) lives in Prime
+  (`COS_PRIME_URL`, default `http://127.0.0.1:3906/mcp`, loopback only). Prime holds skill
+  names only; cos finds the skills themselves in `~/.claude/skills`, `~/.agents/skills`,
+  `~/.codex/skills` and any `skills.roots` in `context/agents.json`. A Claude hire loads its
+  skills as a session plugin from `out/agents/<id>/skills` (`--plugin-dir`), outside its
+  worktree, and the skills you marked irrelevant are switched off for that session
+  (`skillOverrides`); a repo's own `.claude/skills` always win. A Codex hire gets the list in
+  its prompt, and the irrelevant skills in `~/.agents/skills` and `~/.codex/skills` are
+  switched off for its session (`-c skills.config=…`, your own entries kept). Skills from
+  installed plugins still load.
+  A hire never waits on Prime: it asks at most once per 30 s and falls back to the last graph
+  it read. Prime is writable by anything on the machine, hires included through their own
+  Prime MCP tools; a fact cos did not write shows as "written outside cos".
+
+  ```sh
+  cos skills curate                                  # walk the unreviewed skills at a terminal
+  cos skills set rust-perf --relevant --role builder --requires tdd
+  cos skills ls --unreviewed                         # what is left to decide
+  cos skills show --role builder                     # the set a builder would get
+  cos agents spawn --role builder --skill seo-audit --no-skill tdd --prompt "…"
+  ```
+
+  The desktop's Agents tab has the same list in its Skills pane, the hire dialog shows the
+  picked skills with why each is there, and the run page shows what a hire was given.
 
 Full flags: [Usage › Spin off agents](docs/usage.md#spin-off-agents).
 
@@ -270,6 +296,11 @@ cos --home /tmp/cos-demo dash
 | [MCP client bridge design](docs/plans/2026-11-25-mcp-client-bridge-design.md) | the cos daemon, run ids, business per call, `cos connect`, `cos://` links and the Semantic ISA |
 | [MCP client bridge plan](docs/plans/2026-11-25-mcp-client-bridge-plan.md) | quality gates, testing trophy and 11 stories, the process-cleanup spike first |
 | [MCP client bridge cleanup spike](docs/plans/2026-11-25-mcp-client-bridge-cleanup-spike.md) | US-001: the group list stands, five design text changes for owner approval, orphan-group measurements |
+| [Hire skill graph brief](docs/plans/2026-11-28-hire-skill-graph-brief.md) | each hire pulls in only the skills its work needs, from a skill graph in Prime, with curation of the global skills |
+| [Hire skill graph design](docs/plans/2026-11-28-hire-skill-graph-design.md) | skill facts in Prime, the local skill catalog, resolving a hire's skill set, the per-hire plugin bundle, `cos skills` and the Skills panel; its reviews beside it |
+| [Hire skill graph plan](docs/plans/2026-11-28-hire-skill-graph-plan.md) | gates, testing trophy and the twelve stories that build it |
+| [Hire skill graph evidence](docs/reports/2026-11-28-hire-skill-graph.html) | live Claude and Codex runs with the flags cos builds, steps to see a skill switched off, and what was not checked |
+| [Codex skill switch spike](docs/reports/2026-11-28-codex-skill-switch-spike.md) | one Codex invocation can switch a skill off with `-c skills.config`, and reads files outside its workspace |
 
 ## License
 

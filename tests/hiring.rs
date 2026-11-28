@@ -6,6 +6,10 @@
 #[allow(dead_code)]
 mod fake_herdr;
 
+#[allow(dead_code)]
+#[path = "common/prime.rs"]
+mod stand_in;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -87,6 +91,7 @@ fn request(repo: &Path, prompt: &str) -> Request {
         contract: Contract::default(),
         explicit: Explicit::default(),
         role: None,
+        skills: None,
     }
 }
 
@@ -214,6 +219,43 @@ fn a_broken_policy_is_ignored_and_says_why() {
         p.note.unwrap().contains("unknown field"),
         "a typo must not hire silently"
     );
+}
+
+#[test]
+fn the_skills_settings_load_beside_the_roles_and_their_absence_changes_nothing() {
+    let extra = scratch("skills-root");
+    let with = format!(
+        r#"{{ "defaults": {{ "deadline_secs": 900 }},
+             "skills": {{ "roots": ["{}", "relative/dir", "/nonexistent/cos-root"], "unreviewed": "off" }} }}"#,
+        extra.display()
+    );
+    let (home, _, f) = setup("skills-with", Some(&with));
+    drop(f);
+    let p = policy::load(&home);
+    assert!(p.note.is_none(), "{:?}", p.note);
+    assert_eq!(p.defaults.deadline_secs, Some(900));
+    assert!(!p.roles.is_empty());
+    let s = p.skills_settings();
+    assert_eq!(s.unreviewed, cos::agents::skills::Unreviewed::Off);
+    assert_eq!(
+        s.roots,
+        std::slice::from_ref(&extra),
+        "relative and missing roots are left out"
+    );
+    assert_eq!(s.notes.len(), 2, "{:?}", s.notes);
+
+    let (home, _, f) = setup("skills-without", Some(POLICY));
+    drop(f);
+    let s = policy::load(&home).skills_settings();
+    assert_eq!(s.unreviewed, cos::agents::skills::Unreviewed::On);
+    assert!(s.roots.is_empty() && s.notes.is_empty());
+
+    let (home, _, _f) = setup(
+        "skills-typo",
+        Some(r#"{ "skills": { "unreviewd": "off" } }"#),
+    );
+    let p = policy::load(&home);
+    assert!(p.note.unwrap().contains("unknown field"));
 }
 
 #[test]
@@ -475,4 +517,450 @@ fn spawn_without_a_source_names_the_real_from_values() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--from brief|goals"), "{err}");
+}
+
+/// The user's skill roots in the stand-in's `COS_SKILLS_HOME`, and a
+/// stand-in Prime holding rust-perf (builder, requires tdd) and seo-audit
+/// (irrelevant).
+fn skilled(home: &Path, f: &Fake) -> stand_in::Prime {
+    let user = home.parent().unwrap().join("user-home/.claude/skills");
+    for (s, d) in [
+        ("rust-perf", "Profile hot paths"),
+        ("tdd", "Test first"),
+        ("seo-audit", "SEO"),
+    ] {
+        std::fs::create_dir_all(user.join(s)).unwrap();
+        std::fs::write(
+            user.join(s).join("SKILL.md"),
+            format!("---\ndescription: {d}\n---\n"),
+        )
+        .unwrap();
+    }
+    let p = stand_in::Prime::start();
+    let node = |id: &str, name: &str, verdict: &str, roles: &[&str], requires: &[&str]| {
+        serde_json::json!({"id": id, "type": "cos_skill", "properties": {"name": name,
+            "verdict": verdict, "roles": roles, "requires": requires,
+            "curated_at": "2026-11-28T10:00:00Z", "source": "cos-skills"}})
+    };
+    p.reply(
+        "prime_search",
+        serde_json::json!({"nodes": [
+            node("a", "rust-perf", "relevant", &["builder"], &["tdd"]),
+            node("b", "seo-audit", "irrelevant", &[], &[]),
+        ]}),
+    );
+    f.prime(&p.url());
+    p
+}
+
+fn task(prompt: &str) -> agents::hire::Ask {
+    agents::hire::Ask::Task(agents::Task {
+        n: 0,
+        title: "t".into(),
+        prompt: prompt.into(),
+        source: "prompt".into(),
+    })
+}
+
+fn skill_plan(home: &Path, repo: &Path, asked: cos::agents::skills::Asked) -> agents::hire::Plan {
+    agents::hire::plan(
+        &agents::hire::Where {
+            home,
+            workspace: home,
+            projects: repo.parent().unwrap(),
+        },
+        Some("builder"),
+        task("Implement the cache"),
+        Some(repo.to_path_buf()),
+        &Contract::default(),
+        &agents::hire::SkillsAsk::from_env(asked, cos::agents::skill_facts::Mode::Live),
+    )
+    .unwrap()
+}
+
+fn run(harness: Harness) -> agents::hire::Run {
+    agents::hire::Run {
+        harness,
+        program: Some(agent()),
+        model: None,
+        worktree: true,
+        deadline: Duration::from_secs(30),
+        slots: Some(8),
+        explicit: Explicit::default(),
+    }
+}
+
+#[test]
+fn a_plan_resolves_the_roles_skills_and_the_hires_own_and_shows_them() {
+    let (home, repo, f) = setup("skill-plan", Some(POLICY));
+    let _prime = skilled(&home, &f);
+    let p = skill_plan(&home, &repo, Default::default());
+    let set = p.skills.as_ref().expect("skills resolved");
+    let picked: Vec<&str> = set.picked.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(picked, ["rust-perf", "tdd"]);
+    assert_eq!(set.hidden, ["rust-perf", "seo-audit", "tdd"]);
+    let json = serde_json::to_value(&p).unwrap();
+    assert_eq!(json["skills"]["picked"][0]["why"], "role");
+    assert_eq!(json["skills"]["graph"]["state"], "fresh");
+
+    let p = skill_plan(
+        &home,
+        &repo,
+        cos::agents::skills::Asked {
+            add: vec!["seo-audit".into()],
+            remove: vec!["tdd".into()],
+        },
+    );
+    let set = p.skills.unwrap();
+    let picked: Vec<&str> = set.picked.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(picked, ["rust-perf", "seo-audit"]);
+    assert!(
+        set.warnings
+            .iter()
+            .any(|w| w.contains("rust-perf requires tdd")),
+        "{:?}",
+        set.warnings
+    );
+}
+
+#[test]
+fn a_codex_request_carries_the_skills_block_and_a_claude_one_does_not() {
+    let (home, repo, f) = setup("skill-codex", Some(POLICY));
+    let _prime = skilled(&home, &f);
+    let codex = skill_plan(&home, &repo, Default::default())
+        .request(run(Harness::Codex))
+        .unwrap();
+    assert!(
+        codex.prompt.contains("Skills for this work"),
+        "{}",
+        codex.prompt
+    );
+    assert!(codex.prompt.contains("- rust-perf: Profile hot paths ("));
+    assert!(codex.prompt.contains("rust-perf/SKILL.md)"));
+    let claude = skill_plan(&home, &repo, Default::default())
+        .request(run(Harness::Claude))
+        .unwrap();
+    assert!(!claude.prompt.contains("Skills for this work"));
+    assert!(claude.skills.is_some());
+}
+
+#[test]
+fn the_skill_set_is_written_to_the_spec_and_an_old_spec_still_reads() {
+    let (home, repo, f) = setup("skill-spec", Some(POLICY));
+    let _prime = skilled(&home, &f);
+    let req = skill_plan(&home, &repo, Default::default())
+        .request(run(Harness::Claude))
+        .unwrap();
+    let planned = req.skills.clone().unwrap();
+    let spec = agents::prepare_spec(&at(&home), req).unwrap();
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(agents::dir(&home, &spec.id).join("spec.json")).unwrap(),
+    )
+    .unwrap();
+    let back: cos::agents::skills::SkillSet =
+        serde_json::from_value(raw["skills"].clone()).unwrap();
+    assert_eq!(back, planned);
+
+    let mut old = raw.clone();
+    old.as_object_mut().unwrap().remove("skills");
+    let old: Spec = serde_json::from_value(old).unwrap();
+    assert!(old.skills.is_none());
+}
+
+#[test]
+fn a_plan_without_prime_still_plans_and_says_the_graph_is_missing() {
+    let (home, repo, _f) = setup("skill-noprime", Some(POLICY));
+    let p = skill_plan(&home, &repo, Default::default());
+    let set = p.skills.unwrap();
+    assert!(set.picked.is_empty());
+    assert_eq!(set.graph, cos::agents::skills::GraphState::None);
+    assert!(
+        set.warnings
+            .iter()
+            .any(|w| w.contains("Prime did not answer")),
+        "{:?}",
+        set.warnings
+    );
+    assert!(p.refused.is_none());
+}
+
+fn argv_of(home: &Path, f: &Fake, id: &str) -> Vec<String> {
+    let st = agents::read(home, id).unwrap().1;
+    f.argv(&st.herdr.expect("a Herdr terminal").address)
+}
+
+fn flag(argv: &[String], name: &str) -> Option<String> {
+    argv.iter()
+        .position(|a| a == name)
+        .map(|i| argv[i + 1].clone())
+}
+
+#[test]
+fn a_claude_hire_loads_its_bundle_and_hides_the_rest_outside_its_worktree() {
+    let (home, repo, f) = setup("skill-bundle", Some(POLICY));
+    let _prime = skilled(&home, &f);
+    let req = skill_plan(&home, &repo, Default::default())
+        .request(run(Harness::Claude))
+        .unwrap();
+    let spec = agents::spawn(&at(&home), req, Path::new(COS)).unwrap();
+    let run_dir = agents::dir(&home, &spec.id);
+    let bundle = run_dir.join("skills");
+    assert!(bundle.join(".claude-plugin/plugin.json").is_file());
+    let planned = spec.skills.clone().unwrap();
+    for p in &planned.picked {
+        let copy = bundle.join("skills").join(&p.name);
+        assert_eq!(
+            cos::agents::skills::tree_digest(&copy).unwrap(),
+            *p.digest.as_ref().unwrap()
+        );
+    }
+    assert!(!run_dir.join("skills.tmp").exists());
+
+    let argv = argv_of(&home, &f, &spec.id);
+    assert_eq!(
+        flag(&argv, "--plugin-dir"),
+        Some(bundle.display().to_string())
+    );
+    let settings: serde_json::Value =
+        serde_json::from_str(&flag(&argv, "--settings").unwrap()).unwrap();
+    assert_eq!(settings["sandbox"]["enabled"], true, "the sandbox stays");
+    let off: Vec<&String> = settings["skillOverrides"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(off, ["rust-perf", "seo-audit", "tdd"]);
+    assert!(
+        settings["skillOverrides"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == "off")
+    );
+
+    let st = Command::new("git")
+        .arg("-C")
+        .arg(&spec.workdir)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    let dirty = String::from_utf8_lossy(&st.stdout);
+    assert!(
+        !dirty.contains("skills"),
+        "nothing of the bundle in the worktree: {dirty}"
+    );
+}
+
+#[test]
+fn a_hire_whose_role_picks_nothing_still_hides_irrelevant_skills_with_no_plugin_dir() {
+    let (home, repo, f) = setup("skill-hide-only", Some(POLICY));
+    let _prime = skilled(&home, &f);
+    let p = agents::hire::plan(
+        &agents::hire::Where {
+            home: &home,
+            workspace: &home,
+            projects: repo.parent().unwrap(),
+        },
+        Some("reviewer"),
+        task("Review the change"),
+        Some(repo.clone()),
+        &Contract::default(),
+        &agents::hire::SkillsAsk::from_env(
+            Default::default(),
+            cos::agents::skill_facts::Mode::Live,
+        ),
+    )
+    .unwrap();
+    let spec = agents::spawn(
+        &at(&home),
+        p.request(run(Harness::Claude)).unwrap(),
+        Path::new(COS),
+    )
+    .unwrap();
+    let argv = argv_of(&home, &f, &spec.id);
+    assert_eq!(flag(&argv, "--plugin-dir"), None);
+    let settings: serde_json::Value =
+        serde_json::from_str(&flag(&argv, "--settings").unwrap()).unwrap();
+    assert_eq!(settings["skillOverrides"]["seo-audit"], "off");
+    assert!(!agents::dir(&home, &spec.id).join("skills").exists());
+}
+
+#[test]
+fn a_skill_changed_after_planning_fails_the_hire_before_herdr_starts_it() {
+    let (home, repo, f) = setup("skill-changed", Some(POLICY));
+    let _prime = skilled(&home, &f);
+    let req = skill_plan(&home, &repo, Default::default())
+        .request(run(Harness::Claude))
+        .unwrap();
+    let user = home.parent().unwrap().join("user-home/.claude/skills");
+    std::fs::write(user.join("rust-perf/extra.md"), "new").unwrap();
+    let err = agents::spawn(&at(&home), req, Path::new(COS)).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("rust-perf changed since the hire was planned"),
+        "{err:#}"
+    );
+    assert!(
+        !f.calls().lines().any(|c| c.starts_with("run")),
+        "Herdr never ran it: {:?}",
+        f.calls()
+    );
+}
+
+fn run_dir_of(home: &Path) -> PathBuf {
+    home.parent().unwrap().join("run")
+}
+
+#[test]
+fn bundling_again_rebuilds_and_a_repo_skill_is_neither_copied_nor_hidden() {
+    let (home, repo, f) = setup("skill-rebundle", Some(POLICY));
+    let _prime = skilled(&home, &f);
+    let set = skill_plan(&home, &repo, Default::default()).skills.unwrap();
+    let roots = agents::hire::skill_roots(&home);
+    let bundle = |set: &cos::agents::skills::SkillSet| {
+        cos::agents::skill_bundle::bundle(
+            &run_dir_of(&home),
+            &repo,
+            set,
+            &roots,
+            Duration::from_secs(60),
+        )
+    };
+    let run_dir = run_dir_of(&home);
+    std::fs::create_dir_all(run_dir.join("skills.tmp/skills/rust-perf")).unwrap();
+    let first = bundle(&set).unwrap();
+    assert_eq!(first, ["rust-perf", "tdd"]);
+
+    let mut forged = set.clone();
+    let elsewhere = home.parent().unwrap().join("elsewhere/rust-perf");
+    std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    let real = forged.picked[0].path.clone().unwrap();
+    assert!(
+        Command::new("cp")
+            .arg("-R")
+            .arg(&real)
+            .arg(&elsewhere)
+            .status()
+            .unwrap()
+            .success()
+    );
+    forged.picked[0].path = Some(elsewhere.canonicalize().unwrap());
+    let e = format!("{:#}", bundle(&forged).unwrap_err());
+    assert!(
+        e.contains("not in any skill root"),
+        "a path from spec.json alone is not trusted: {e}"
+    );
+
+    let again = bundle(&set).unwrap();
+    assert_eq!(
+        again, first,
+        "an existing skills/ is replaced, not nested into"
+    );
+    assert!(!run_dir.join("skills/skills/rust-perf/rust-perf").exists());
+
+    std::fs::create_dir_all(repo.join(".claude/skills/rust-perf")).unwrap();
+    std::fs::write(
+        repo.join(".claude/skills/rust-perf/SKILL.md"),
+        "---\ndescription: repo\n---\n",
+    )
+    .unwrap();
+    let with_repo = bundle(&set).unwrap();
+    assert_eq!(with_repo, ["tdd"]);
+    let hidden = cos::agents::skill_bundle::hidden(&set, &repo);
+    assert!(!hidden.contains(&"rust-perf".to_string()), "{hidden:?}");
+    assert!(hidden.contains(&"seo-audit".to_string()));
+}
+
+#[test]
+fn a_codex_hire_gets_no_plugin_dir_and_no_bundle() {
+    let (home, repo, f) = setup("skill-codex-hire", Some(POLICY));
+    let _prime = skilled(&home, &f);
+    let mut req = skill_plan(&home, &repo, Default::default())
+        .request(run(Harness::Codex))
+        .unwrap();
+    req.program = Some(agent());
+    let spec = agents::spawn(&at(&home), req, Path::new(COS)).unwrap();
+    let argv = argv_of(&home, &f, &spec.id);
+    assert_eq!(flag(&argv, "--plugin-dir"), None);
+    assert!(!agents::dir(&home, &spec.id).join("skills").exists());
+}
+
+#[test]
+fn a_codex_hire_switches_off_irrelevant_agents_skills_and_keeps_the_users_own_entries() {
+    let (home, repo, f) = setup("skill-codex-hide", Some(POLICY));
+    let p = skilled(&home, &f);
+    let agents_root = home
+        .parent()
+        .unwrap()
+        .join("user-home/.agents/skills/gstack-qa");
+    std::fs::create_dir_all(&agents_root).unwrap();
+    std::fs::write(agents_root.join("SKILL.md"), "---\ndescription: QA\n---\n").unwrap();
+    p.reply(
+        "prime_search",
+        serde_json::json!({"nodes": [
+            {"id": "a", "type": "cos_skill", "properties": {"name": "rust-perf", "verdict": "relevant",
+              "roles": ["builder"], "curated_at": "2026-11-28T10:00:00Z", "source": "cos-skills"}},
+            {"id": "c", "type": "cos_skill", "properties": {"name": "gstack-qa", "verdict": "irrelevant",
+              "curated_at": "2026-11-28T10:00:00Z", "source": "cos-skills"}}
+        ]}),
+    );
+    let codex_home = home.parent().unwrap().join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    std::fs::write(
+        codex_home.join("config.toml"),
+        "[[skills.config]]\nname = \"mine\"\nenabled = true\n",
+    )
+    .unwrap();
+    let codex_req = || {
+        let mut req = skill_plan(&home, &repo, Default::default())
+            .request(run(Harness::Codex))
+            .unwrap();
+        req.program = Some(agent());
+        req
+    };
+    let spec = agents::spawn(&at(&home), codex_req(), Path::new(COS)).unwrap();
+    let argv = argv_of(&home, &f, &spec.id);
+    let i = argv
+        .iter()
+        .position(|a| a.starts_with("skills.config="))
+        .expect("a skills.config override");
+    assert_eq!(argv[i - 1], "-c");
+    let value = argv[i].strip_prefix("skills.config=").unwrap();
+    let parsed: toml::Table = format!("v = {value}").parse().unwrap();
+    let entries = parsed["v"].as_array().unwrap();
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["mine", "gstack-qa"], "{value}");
+    assert_eq!(
+        entries[0]["enabled"].as_bool(),
+        Some(true),
+        "the user's entry as it was"
+    );
+    assert_eq!(entries[1]["enabled"].as_bool(), Some(false));
+    let st = agents::read(&home, &spec.id).unwrap().1;
+    assert_eq!(st.skills_hidden, ["gstack-qa"]);
+
+    for broken in ["skills = 3\n[[", "[skills]\nconfig = \"nope\"\n"] {
+        std::fs::write(codex_home.join("config.toml"), broken).unwrap();
+        let runs_before = f.calls().lines().filter(|c| c.starts_with("run")).count();
+        let err = agents::spawn(&at(&home), codex_req(), Path::new(COS)).unwrap_err();
+        assert!(format!("{err:#}").contains("config.toml"), "{err:#}");
+        let runs_after = f.calls().lines().filter(|c| c.starts_with("run")).count();
+        assert_eq!(runs_after, runs_before, "Herdr never ran it: {broken:?}");
+    }
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(codex_home.join("config.toml"), "").unwrap();
+    std::fs::set_permissions(&codex_home, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let runs_before = f.calls().lines().filter(|c| c.starts_with("run")).count();
+    let denied = agents::spawn(&at(&home), codex_req(), Path::new(COS));
+    std::fs::set_permissions(&codex_home, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let err = denied.unwrap_err();
+    assert!(format!("{err:#}").contains("config.toml"), "{err:#}");
+    let runs_after = f.calls().lines().filter(|c| c.starts_with("run")).count();
+    assert_eq!(
+        runs_after, runs_before,
+        "an unreadable config is not read as no config"
+    );
 }

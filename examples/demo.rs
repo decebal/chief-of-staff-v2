@@ -179,6 +179,7 @@ fn herdr_runs(home: &Path, today: Date) -> Result<()> {
         terminal: Some(cos::agents::follow::terminal_name(&id)),
         workspace: None,
         projects: None,
+        skills: None,
     };
     let screen = "> Reading the PR, the plan and the roadmap note, then I will write the prep.\n\n\
                   ● Bash(gh pr view 412 --repo northwind/api-gateway --json state,reviews)\n\n\
@@ -239,6 +240,7 @@ fn herdr_runs(home: &Path, today: Date) -> Result<()> {
         terminal: Some(cos::agents::follow::terminal_name(&id)),
         workspace: None,
         projects: None,
+        skills: None,
     };
     terminal(
         "t902",
@@ -321,6 +323,7 @@ fn fleet_history(home: &Path, today: Date) -> Result<()> {
             terminal,
             workspace: None,
             projects: None,
+            skills: None,
         };
     let event = |at: String, kind: Ev, by: By| Event::new(at, kind, by);
 
@@ -2002,6 +2005,7 @@ fn staff(home: &Path, today: Date) -> Result<()> {
             terminal: Some(cos::agents::follow::terminal_name(&id)),
             workspace: None,
             projects: None,
+            skills: None,
         };
         let verdict = Verdict {
             outcome: r.outcome,

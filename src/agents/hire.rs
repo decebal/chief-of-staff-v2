@@ -19,7 +19,95 @@ use serde_json::Value;
 use super::fit::{self, Fit, Work};
 use super::judge::Contract;
 use super::policy::{self, Policy, Role};
+use super::skill_facts::{self, Mode};
+use super::skills::{self, Asked, SkillSet};
 use super::{Task, deliverable_task, infer_repo};
+use crate::prime::Prime;
+
+/// What a hire asks of its skills, and where they are read from.
+pub struct SkillsAsk {
+    pub asked: Asked,
+    pub read: Mode,
+    /// `None` resolves no skill set at all.
+    pub source: Option<SkillSource>,
+}
+
+pub struct SkillSource {
+    /// Holds `.claude/skills`, `.agents/skills`, `.codex/skills`.
+    pub user_home: PathBuf,
+    pub prime: Result<Prime, String>,
+}
+
+impl SkillsAsk {
+    pub fn off() -> Self {
+        Self {
+            asked: Asked::default(),
+            read: Mode::Live,
+            source: None,
+        }
+    }
+
+    /// The user's skill roots under `COS_SKILLS_HOME` (else `$HOME`) and
+    /// Prime at `COS_PRIME_URL`.
+    pub fn from_env(asked: Asked, read: Mode) -> Self {
+        let source = skills_home().map(|user_home| SkillSource {
+            user_home,
+            prime: Prime::from_env().map_err(|e| format!("{e:#}")),
+        });
+        Self {
+            asked,
+            read,
+            source,
+        }
+    }
+}
+
+/// The directory holding the user's skill roots: `COS_SKILLS_HOME`, else
+/// `$HOME`.
+pub fn skills_home() -> Option<PathBuf> {
+    std::env::var_os("COS_SKILLS_HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+/// The skill roots a hire under `home`'s policy reads.
+pub fn skill_roots(home: &Path) -> Vec<skills::Root> {
+    let extra = policy::load(home).skills_settings().roots;
+    skills::roots(&skills_home().unwrap_or_default(), &extra)
+}
+
+fn skill_set(
+    at: &Where,
+    policy: &Policy,
+    role: Option<&Role>,
+    repo: Option<&Path>,
+    ask: &SkillsAsk,
+) -> Option<SkillSet> {
+    let src = ask.source.as_ref()?;
+    let settings = policy.skills_settings();
+    let catalog = skills::catalog(&skills::roots(&src.user_home, &settings.roots));
+    let graph = skill_facts::read_graph(
+        at.home,
+        src.prime.as_ref().map_err(String::as_str),
+        policy,
+        ask.read,
+    );
+    let mut set = skills::resolve(
+        &graph,
+        &catalog,
+        role.map(|r| r.id.as_str()),
+        &ask.asked,
+        settings.unreviewed,
+        &skills::project_skills(repo),
+    );
+    set.warnings.extend(settings.notes);
+    if !set.picked.is_empty() || !set.hidden.is_empty() {
+        set.warnings
+            .push("skills from installed plugins still load in every hire".into());
+    }
+    Some(set)
+}
 
 /// What to hire for.
 pub enum Ask {
@@ -45,6 +133,8 @@ pub struct Plan {
     pub fit: Fit,
     /// What the agent will be judged on, the policy applied.
     pub contract: Contract,
+    /// The skills it runs with; `None` when skills were not resolved.
+    pub skills: Option<SkillSet>,
     /// Things to know before hiring that do not stop it.
     pub warnings: Vec<String>,
     /// Why nothing will start, when it will not.
@@ -66,6 +156,7 @@ pub fn plan(
     ask: Ask,
     repo: Option<PathBuf>,
     asked: &Contract,
+    skills_ask: &SkillsAsk,
 ) -> Result<Plan> {
     let policy = policy::load(at.home);
     let role = role.map(|id| policy.hire(id)).transpose()?;
@@ -126,6 +217,7 @@ pub fn plan(
     };
 
     let contract = contract(&policy, role, repo.as_deref(), asked, done_when.as_deref());
+    let skills = skill_set(at, &policy, role, repo.as_deref(), skills_ask);
     let mut prompt = task.prompt.clone();
     if let (Some(draft), Some(original)) = (&contract.done_when, &contract.finish_line) {
         prompt.push_str(&format!(
@@ -159,6 +251,7 @@ pub fn plan(
         scratch_ok,
         fit,
         contract,
+        skills,
         warnings,
         refused,
     })
@@ -182,6 +275,13 @@ impl Plan {
         if let Some(why) = self.refused {
             anyhow::bail!("not hired: {why}");
         }
+        let mut prompt = self.prompt;
+        if run.harness == super::Harness::Codex
+            && let Some(block) = self.skills.as_ref().and_then(SkillSet::codex_block)
+        {
+            prompt.push_str("\n\n");
+            prompt.push_str(&block);
+        }
         Ok(super::Request {
             harness: run.harness,
             program: run.program,
@@ -190,12 +290,13 @@ impl Plan {
             repo: self.repo,
             title: self.title,
             source: self.source,
-            prompt: self.prompt,
+            prompt,
             deadline: run.deadline,
             slots: run.slots,
             contract: self.contract,
             explicit: run.explicit,
             role: self.role,
+            skills: self.skills,
         })
     }
 }

@@ -8,6 +8,10 @@
 #[path = "../../../tests/fake_herdr/mod.rs"]
 mod fake_herdr;
 
+#[allow(dead_code)]
+#[path = "../../../tests/common/prime.rs"]
+mod stand_in;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -4374,4 +4378,211 @@ fn a_daemon_socket_that_cannot_be_probed_is_an_error_naming_the_socket() {
     assert!(s["daemon"]["skew"].is_null(), "{s}");
     let e = s["daemon"]["error"].as_str().expect("the error named");
     assert!(e.contains("daemon.sock"), "{e}");
+}
+
+/// A business whose user home holds three claude skills, one with markup in
+/// its description, and a stand-in Prime with rust-perf (builder, requires
+/// tdd) and seo-audit written by another tool.
+fn skilled_window(
+    name: &str,
+) -> (
+    fake_herdr::Fake,
+    stand_in::Prime,
+    tauri::App<MockRuntime>,
+    Win,
+    PathBuf,
+) {
+    let root = scratch(name);
+    let herdr = fake_herdr::fake(&root);
+    for (s, d) in [
+        ("rust-perf", "Profile hot paths"),
+        ("tdd", "<img src=x onerror=alert(1)>"),
+        ("seo-audit", "SEO"),
+    ] {
+        let dir = root.join("user-home/.claude/skills").join(s);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\ndescription: {d}\n---\n"),
+        )
+        .unwrap();
+    }
+    let p = stand_in::Prime::start();
+    p.reply(
+        "prime_search",
+        json!({"nodes": [
+            {"id": "a", "type": "cos_skill", "properties": {"name": "rust-perf", "verdict": "relevant",
+              "roles": ["builder"], "requires": ["tdd"], "curated_at": "2026-11-28T10:00:00Z", "source": "cos-skills"}},
+            {"id": "b", "type": "cos_skill", "properties": {"name": "seo-audit", "verdict": "irrelevant",
+              "curated_at": "2026-11-28T10:00:00Z"}}
+        ]}),
+    );
+    herdr.prime(&p.url());
+    let d = dirs(&root, "default");
+    let repo = d.projects.join("demo-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "demo\n").unwrap();
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    let start = start(&root, cos_bin(), 2, Sources::default());
+    register(&start, "default", &d, true);
+    let (app, w) = open(start);
+    (herdr, p, app, w, repo)
+}
+
+fn picked(plan: &Value) -> Vec<String> {
+    plan["skills"]["picked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn the_skills_panel_reads_every_skill_with_its_decision_and_the_roles_it_offers() {
+    let (_herdr, _p, _app, w, _repo) = skilled_window("skills-catalog");
+    let c = call(&w, "skills_catalog", json!({})).unwrap();
+    assert_eq!(c["graph"]["state"], "fresh", "{c}");
+    let rows = c["rows"].as_array().unwrap();
+    let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["rust-perf", "seo-audit", "tdd"]);
+    assert_eq!(rows[0]["verdict"], "relevant");
+    assert_eq!(rows[0]["roles"], json!(["builder"]));
+    assert_eq!(rows[1]["outside_cos"], true);
+    assert_eq!(rows[2]["verdict"], Value::Null);
+    assert_eq!(
+        rows[2]["description"], "<img src=x onerror=alert(1)>",
+        "markup reaches the window as data; the panel renders it with textContent"
+    );
+    let roles = c["roles"].as_array().unwrap();
+    assert!(roles.contains(&json!("builder")));
+    assert!(
+        !roles.contains(&json!("chief-of-staff")),
+        "the head is not offered"
+    );
+}
+
+#[test]
+fn a_skill_decision_from_the_window_names_its_business_and_lands_in_prime() {
+    let (_herdr, p, _app, w, _repo) = skilled_window("skills-set");
+    let decision = json!({"name": "tdd", "verdict": "irrelevant"});
+    let refused = call(
+        &w,
+        "skills_set",
+        json!({"business": "bravo", "decision": decision}),
+    )
+    .unwrap_err();
+    assert!(refused.to_string().contains("nothing written"), "{refused}");
+    assert!(!p.calls().iter().any(|(t, _)| t == "prime_add_node"));
+
+    call(
+        &w,
+        "skills_set",
+        json!({"business": "default", "decision": decision}),
+    )
+    .unwrap();
+    let node = p
+        .calls()
+        .into_iter()
+        .find(|(t, _)| t == "prime_add_node")
+        .expect("one write")
+        .1;
+    assert_eq!(node["properties"]["name"], "tdd");
+    assert_eq!(node["properties"]["verdict"], "irrelevant");
+    assert_eq!(node["properties"]["source"], "cos-skills");
+
+    let bad = call(
+        &w,
+        "skills_set",
+        json!({"business": "default", "decision": {"name": "ghost", "verdict": "relevant"}}),
+    )
+    .unwrap_err();
+    assert!(bad.to_string().contains("ghost"), "{bad}");
+}
+
+#[test]
+fn the_hire_dialog_plan_carries_the_skill_set_and_its_additions_and_removals() {
+    let (_herdr, _p, _app, w, repo) = skilled_window("skills-fit");
+    let args = |skills: Value| {
+        json!({"args": {
+            "harness": "claude", "repo": repo, "prompt": "Implement the cache", "role": "builder",
+            "title": null, "model": null, "worktree": true, "deadlineSecs": 600, "count": 1,
+            "source": null, "skills": skills,
+        }})
+    };
+    let plan = call(&w, "agents_fit", args(json!({}))).unwrap();
+    assert_eq!(picked(&plan), ["rust-perf", "tdd"], "{plan}");
+    assert_eq!(plan["skills"]["picked"][0]["why"], "role");
+    assert!(
+        plan["skills"]["hidden"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("seo-audit"))
+    );
+
+    let plan = call(
+        &w,
+        "agents_fit",
+        args(json!({"add": ["seo-audit"], "remove": ["tdd"]})),
+    )
+    .unwrap();
+    assert_eq!(picked(&plan), ["rust-perf", "seo-audit"]);
+}
+
+#[test]
+fn a_run_hired_from_the_window_shows_the_skills_it_was_hired_with() {
+    let (herdr, _p, _app, w, repo) = skilled_window("skills-run");
+    herdr.exec(true);
+    let specs = call(
+        &w,
+        "agents_spawn",
+        json!({"business": "default", "args": {
+            "harness": "claude", "repo": repo, "prompt": "Implement the cache", "role": "builder",
+            "title": null, "model": null, "worktree": true, "deadlineSecs": 600, "count": 1,
+            "source": null, "program": fake_herdr::agent(), "skills": {"remove": ["tdd"]},
+        }}),
+    )
+    .unwrap();
+    let id = specs[0]["id"].as_str().unwrap().to_owned();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let row = loop {
+        let list = call(&w, "agents_list", json!({})).unwrap();
+        let row = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["spec"]["id"] == id.as_str())
+            .cloned()
+            .unwrap();
+        if !row["state"]["skills_bundled"].is_null() || Instant::now() > deadline {
+            break row;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let picked = &row["spec"]["skills"]["picked"];
+    assert_eq!(picked.as_array().unwrap().len(), 1, "{row}");
+    assert_eq!(picked[0]["name"], "rust-perf");
+    assert_eq!(picked[0]["digest"].as_str().unwrap().len(), 64);
+    assert_eq!(row["state"]["skills_bundled"], json!(["rust-perf"]));
+    assert!(
+        row["state"]["skills_hidden"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("seo-audit"))
+    );
+}
+
+#[test]
+fn with_prime_down_the_panel_says_so_and_still_lists_the_skills() {
+    let (herdr, _p, _app, w, _repo) = skilled_window("skills-down");
+    herdr.prime("http://127.0.0.1:9/mcp");
+    let c = call(&w, "skills_catalog", json!({})).unwrap();
+    assert_eq!(c["graph"]["state"], "none", "{c}");
+    assert_eq!(c["rows"].as_array().unwrap().len(), 3);
+    assert!(
+        c["warnings"].to_string().contains("Prime did not answer"),
+        "{c}"
+    );
 }

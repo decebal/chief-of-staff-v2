@@ -14,13 +14,14 @@
 //! are read and ignored, so an old file still loads.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::fit::Vocab;
 use super::judge::Expects;
+use super::skills::Unreviewed;
 use super::{Harness, Request};
 
 /// A key a file may still carry from before hires ran in Herdr.
@@ -120,9 +121,31 @@ pub struct Policy {
     /// The fit check's vocabulary; the template's when the file has none.
     #[serde(default)]
     pub fit: Option<Vocab>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<SkillsPolicy>,
     /// Why the file was not used, when it was not.
     #[serde(skip)]
     pub note: Option<String>,
+}
+
+/// Where hires find skills beyond the fixed roots, and whether a global skill
+/// nobody has reviewed stays on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsPolicy {
+    #[serde(default)]
+    pub roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub unreviewed: Unreviewed,
+}
+
+/// [`SkillsPolicy`] checked: only absolute directories that exist, and a
+/// note for each root left out.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SkillsSettings {
+    pub roots: Vec<PathBuf>,
+    pub unreviewed: Unreviewed,
+    pub notes: Vec<String>,
 }
 
 pub fn path(home: &Path) -> std::path::PathBuf {
@@ -172,6 +195,27 @@ impl Policy {
             deadline_secs: o.deadline_secs.or(d.deadline_secs),
             ..Terms::default()
         }
+    }
+
+    pub fn skills_settings(&self) -> SkillsSettings {
+        let Some(s) = &self.skills else {
+            return SkillsSettings::default();
+        };
+        let mut out = SkillsSettings {
+            unreviewed: s.unreviewed,
+            ..SkillsSettings::default()
+        };
+        for r in &s.roots {
+            if r.is_absolute() && r.is_dir() {
+                out.roots.push(r.clone());
+            } else {
+                out.notes.push(format!(
+                    "skill root {} left out: not an absolute directory",
+                    r.display()
+                ));
+            }
+        }
+        out
     }
 
     pub fn role(&self, id: &str) -> Option<&Role> {

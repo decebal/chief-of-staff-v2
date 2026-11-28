@@ -1291,6 +1291,52 @@ async fn agents_roles(app: tauri::State<'_, App>) -> Res<Value> {
     .await
 }
 
+/// Every skill on this machine with what the user decided about it, the
+/// graph's state, and the hireable roles the panel offers.
+#[tauri::command]
+async fn skills_catalog(app: tauri::State<'_, App>) -> Res<Value> {
+    let home = app.get().home;
+    blocking(move || {
+        let ctx = agents::skill_view::load(&home, agents::skill_facts::Mode::Live)?;
+        let roles: Vec<&str> = ctx
+            .policy
+            .roles
+            .iter()
+            .filter(|r| !r.head)
+            .map(|r| r.id.as_str())
+            .collect();
+        Ok(json!({
+            "rows": agents::skill_view::rows(&ctx.catalog, &ctx.graph),
+            "graph": ctx.graph.state,
+            "warnings": ctx.graph.warnings,
+            "roles": roles,
+            "prime": ctx.prime.as_ref().err(),
+        }))
+    })
+    .await
+}
+
+/// Records the user's decision about one skill in Prime. Refused unless it
+/// names the window's business.
+#[tauri::command]
+async fn skills_set(
+    app: tauri::State<'_, App>,
+    business: String,
+    decision: agents::skill_facts::Decision,
+) -> Res<Vec<String>> {
+    let s = app.get();
+    named(&s, &business)?;
+    blocking(move || {
+        let ctx = agents::skill_view::load(&s.home, agents::skill_facts::Mode::Live)?;
+        let prime = ctx
+            .prime
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("Prime is not reachable: {e}"))?;
+        agents::skill_facts::write_fact(&s.home, prime, &ctx.catalog, &ctx.policy, &decision)
+    })
+    .await
+}
+
 /// How agents did, from every verdict in the ledger: by role, harness, model
 /// and repo (`scores`), and by role alone (`roles`).
 #[tauri::command]
@@ -1402,6 +1448,9 @@ struct SpawnArgs {
     /// What the agent is judged against when it ends.
     #[serde(default)]
     contract: agents::Contract,
+    /// Skills added to or removed from the role's.
+    #[serde(default)]
+    skills: agents::skills::Asked,
 }
 
 /// The hire as planned from the dialog's fields: the repo, the fit, the
@@ -1448,6 +1497,7 @@ fn plan(s: &Current, args: &SpawnArgs) -> anyhow::Result<agents::hire::Plan> {
         ask,
         repo,
         &args.contract,
+        &agents::hire::SkillsAsk::from_env(args.skills.clone(), agents::skill_facts::Mode::Live),
     )?;
     if let Some(t) = args.title.as_deref().filter(|t| !t.trim().is_empty()) {
         p.title = t.to_owned();
@@ -2653,6 +2703,8 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             herdr_start,
             agent_tasks,
             agents_roles,
+            skills_catalog,
+            skills_set,
             agents_scorecard,
             agents_rejudge,
             deliverables_open,

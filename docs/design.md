@@ -292,6 +292,7 @@ or `--deliverable D-1` runs it instead of leaving it to be pasted
 | stop | `cos agents kill`, MCP `stop_agent` | `hc kill` for a live terminal, its last screen kept; a hire still being prepared is told to stop by a `stop` file |
 | reconcile | every read | a hire whose preparing process is gone before Herdr had it becomes `lost`; a run from before Herdr reads, never resumes |
 | clean | `cos agents clean` | removes finished worktrees and their Herdr terminals; refuses one with uncommitted changes or commits past its base unless `--force` |
+| skills | `agents::skills`, `skill_facts`, `skill_bundle`; `cos skills`, the Skills pane | the plan resolves a skill set from skill facts in Prime and a local catalog of the skill roots; a Claude hire gets it as a session plugin under its run directory with the rest switched off ([design](plans/2026-11-28-hire-skill-graph-design.md)) |
 
 The agents are the one place `cos` writes outside `out/`: in their own
 worktree. Herdr owns every agent process; cos owns none, and no CLI call

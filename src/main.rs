@@ -122,6 +122,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RitualCmd,
     },
+    /// The skills on this machine and what you decided about each: which are
+    /// relevant, which role uses which, which requires which. Kept in Prime.
+    Skills {
+        #[command(subcommand)]
+        cmd: SkillsCmd,
+    },
     /// The registered businesses, each with its home, workspace and projects.
     Business {
         #[command(subcommand)]
@@ -280,6 +286,59 @@ enum BusinessCmd {
 }
 
 #[derive(Subcommand)]
+enum SkillsCmd {
+    /// Every skill under the skill roots, with its verdict, roles and requires.
+    Ls {
+        /// Only skills with no decision yet.
+        #[arg(long)]
+        unreviewed: bool,
+        /// Only skills this role uses.
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The skill set a hire would get, without hiring.
+    Show {
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long = "skill")]
+        skills: Vec<String>,
+        #[arg(long = "no-skill")]
+        no_skills: Vec<String>,
+        /// The repo it would work in; its own `.claude/skills` win.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+    /// Record your decision about one skill in Prime.
+    Set {
+        name: String,
+        #[arg(
+            long,
+            conflicts_with = "irrelevant",
+            required_unless_present = "irrelevant"
+        )]
+        relevant: bool,
+        #[arg(long)]
+        irrelevant: bool,
+        /// A role that uses it; repeatable.
+        #[arg(long = "role")]
+        roles: Vec<String>,
+        /// A skill it needs alongside it; repeatable.
+        #[arg(long)]
+        requires: Vec<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Walk the unreviewed skills one at a time (every skill with --all);
+    /// each answer is written before the next skill shows.
+    Curate {
+        #[arg(long)]
+        all: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum RitualCmd {
     /// Exit 0 when the epic is approved and its design is unchanged since.
     Check {
@@ -354,6 +413,8 @@ enum DocsCmd {
     Json,
 }
 
+// Parsed once per process; boxing a clap variant's fields buys nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum AgentCmd {
     /// Hire an agent into a Herdr terminal (`cos-<id>`); prints its id once
@@ -403,6 +464,13 @@ enum AgentCmd {
         /// contract and mandate fill what the other flags leave empty.
         #[arg(long)]
         role: Option<String>,
+        /// A skill to give the hire beyond its role's; repeatable.
+        #[arg(long = "skill")]
+        skills: Vec<String>,
+        /// A skill to keep from the hire, even one its role or another skill
+        /// brings; repeatable.
+        #[arg(long = "no-skill")]
+        no_skills: Vec<String>,
         /// The program the terminal runs instead of the harness's own
         /// (a stand-in agent for a proof that costs nothing).
         #[arg(long, hide = true)]
@@ -733,6 +801,7 @@ fn run_on(
         } => runtime()?.block_on(mcp::http(cfg, addr, token, public_host.clone())),
         Cmd::Tunnel { port } => runtime()?.block_on(cos::tunnel::run(cfg, *port)),
         Cmd::Agents { cmd } => agents_cmd(cli, t, cmd),
+        Cmd::Skills { cmd } => skills_cmd(cli, &t.home, cmd),
         Cmd::Flows { json, cn } => flows_cmd(&ws, &t.projects, &t.home, cn, *json),
         Cmd::Review { cmd } => review_cmd(&ws, cmd),
         Cmd::Ritual { .. } => unreachable!("run dispatches ritual before a triple resolves"),
@@ -1162,6 +1231,199 @@ fn confirm_on_terminal(line: &str) -> Result<bool> {
     Ok(answer.trim() == "yes")
 }
 
+fn skills_cmd(cli: &Cli, home: &std::path::Path, cmd: &SkillsCmd) -> Result<()> {
+    use agents::skill_facts::{self, Decision, Mode as Read};
+    use agents::skill_view;
+    use agents::skills::{self, Verdict};
+    let read = if cli.dry_run { Read::Dry } else { Read::Live };
+    let ctx = skill_view::load(home, read)?;
+    let prime = || {
+        ctx.prime
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("Prime is not reachable: {e}"))
+    };
+    match cmd {
+        SkillsCmd::Ls {
+            unreviewed,
+            role,
+            json,
+        } => {
+            let rows: Vec<_> = skill_view::rows(&ctx.catalog, &ctx.graph)
+                .into_iter()
+                .filter(|r| !*unreviewed || r.verdict.is_none())
+                .filter(|r| role.as_ref().is_none_or(|id| r.roles.contains(id)))
+                .collect();
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                print!("{}", skill_view::table(&rows));
+            }
+            for w in &ctx.graph.warnings {
+                eprintln!("note: {w}");
+            }
+            Ok(())
+        }
+        SkillsCmd::Show {
+            role,
+            skills: add,
+            no_skills,
+            repo,
+        } => {
+            if let Some(r) = role {
+                ctx.policy.hire(r)?;
+            }
+            let set = skills::resolve(
+                &ctx.graph,
+                &ctx.catalog,
+                role.as_deref(),
+                &skills::Asked {
+                    add: add.clone(),
+                    remove: no_skills.clone(),
+                },
+                ctx.unreviewed,
+                &skills::project_skills(repo.as_deref()),
+            );
+            println!("{}", serde_json::to_string_pretty(&set)?);
+            Ok(())
+        }
+        SkillsCmd::Set {
+            name,
+            relevant,
+            irrelevant: _,
+            roles,
+            requires,
+            note,
+        } => {
+            let d = Decision {
+                name: name.clone(),
+                verdict: Some(if *relevant {
+                    Verdict::Relevant
+                } else {
+                    Verdict::Irrelevant
+                }),
+                roles: roles.clone(),
+                requires: requires.clone(),
+                note: note.clone(),
+            };
+            if cli.dry_run {
+                eprintln!("dry run: {name} would be recorded; nothing written");
+                return Ok(());
+            }
+            for w in skill_facts::write_fact(home, prime()?, &ctx.catalog, &ctx.policy, &d)? {
+                eprintln!("note: {w}");
+            }
+            eprintln!("recorded {name}");
+            Ok(())
+        }
+        SkillsCmd::Curate { .. } if cli.dry_run => {
+            anyhow::bail!("cos skills curate writes each answer; it does not run as a dry run")
+        }
+        SkillsCmd::Curate { all } => curate(home, &ctx, prime()?, *all),
+    }
+}
+
+/// `cos skills curate`: one skill at a time at a terminal.
+fn curate(
+    home: &std::path::Path,
+    ctx: &agents::skill_view::Ctx,
+    prime: &cos::prime::Prime,
+    all: bool,
+) -> Result<()> {
+    use agents::skill_facts::{self, Decision};
+    use agents::skills::Verdict;
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "cos skills curate needs a terminal; script a decision with `cos skills set <name> --relevant|--irrelevant`"
+        );
+    }
+    if std::env::var_os("COS_RUN_ID").is_some_and(|v| !v.is_empty()) {
+        anyhow::bail!("skill facts are the user's to write; a hire cannot curate them");
+    }
+    let hireable: Vec<&str> = ctx
+        .policy
+        .roles
+        .iter()
+        .filter(|r| !r.head)
+        .map(|r| r.id.as_str())
+        .collect();
+    let rows: Vec<_> = agents::skill_view::rows(&ctx.catalog, &ctx.graph)
+        .into_iter()
+        .filter(|r| all || r.verdict.is_none())
+        .collect();
+    if rows.is_empty() {
+        eprintln!("every skill has a decision; `cos skills curate --all` walks them again");
+        return Ok(());
+    }
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    let mut ask = |q: &str| -> Result<Option<String>> {
+        eprint!("{q}");
+        std::io::stderr().flush()?;
+        Ok(lines.next().transpose()?.map(|l| l.trim().to_owned()))
+    };
+    let list = |s: &str| -> Vec<String> {
+        s.split(',')
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let total = rows.len();
+    for (i, r) in rows.into_iter().enumerate() {
+        eprintln!(
+            "\n[{}/{total}] {}  [{}]\n  {}",
+            i + 1,
+            r.name,
+            r.roots.join(", "),
+            if r.description.is_empty() {
+                "no description"
+            } else {
+                &r.description
+            }
+        );
+        let Some(key) = ask("  r relevant · i irrelevant · s skip · q quit: ")? else {
+            break;
+        };
+        let verdict = match key.as_str() {
+            "r" => Verdict::Relevant,
+            "i" => Verdict::Irrelevant,
+            "q" => break,
+            _ => continue,
+        };
+        let (mut roles, mut requires) = (Vec::new(), Vec::new());
+        if verdict == Verdict::Relevant {
+            roles = list(
+                &ask(&format!(
+                    "  roles that use it ({}; empty for none): ",
+                    hireable.join(", ")
+                ))?
+                .unwrap_or_default(),
+            );
+            requires = list(
+                &ask("  skills it requires (comma list; empty for none): ")?.unwrap_or_default(),
+            );
+        }
+        let d = Decision {
+            name: r.name.clone(),
+            verdict: Some(verdict),
+            roles,
+            requires,
+            note: None,
+        };
+        match skill_facts::write_fact(home, prime, &ctx.catalog, &ctx.policy, &d) {
+            Ok(warnings) => {
+                for w in warnings {
+                    eprintln!("  note: {w}");
+                }
+                eprintln!("  recorded");
+            }
+            Err(e) => eprintln!("  not recorded: {e:#}"),
+        }
+    }
+    Ok(())
+}
+
 fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
     let home = &t.home;
     match cmd {
@@ -1180,6 +1442,8 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
             scope,
             done_when,
             role,
+            skills,
+            no_skills,
             program,
         } => {
             use agents::hire::Ask;
@@ -1230,13 +1494,38 @@ fn agents_cmd(cli: &Cli, t: &Triple, cmd: &AgentCmd) -> Result<()> {
                 scope: scope.clone(),
                 ..Default::default()
             };
+            let skills_ask = agents::hire::SkillsAsk::from_env(
+                agents::skills::Asked {
+                    add: skills.clone(),
+                    remove: no_skills.clone(),
+                },
+                if cli.dry_run {
+                    agents::skill_facts::Mode::Dry
+                } else {
+                    agents::skill_facts::Mode::Live
+                },
+            );
             for ask in picked {
-                let plan = agents::hire::plan(&at, role.as_deref(), ask, repo.clone(), &asked)?;
+                let plan = agents::hire::plan(
+                    &at,
+                    role.as_deref(),
+                    ask,
+                    repo.clone(),
+                    &asked,
+                    &skills_ask,
+                )?;
                 if cli.dry_run {
                     println!("{}", serde_json::to_string_pretty(&plan)?);
                     continue;
                 }
-                for n in plan.fit.notes.iter().chain(&plan.warnings) {
+                let skill_notes = plan.skills.iter().flat_map(|s| &s.warnings);
+                for n in plan
+                    .fit
+                    .notes
+                    .iter()
+                    .chain(&plan.warnings)
+                    .chain(skill_notes)
+                {
                     eprintln!("note: {n}");
                 }
                 let req = plan.request(agents::hire::Run {

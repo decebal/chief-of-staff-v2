@@ -122,7 +122,15 @@ fn workspace(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn plan(at: &Where, role: &str, ask: Ask) -> hire::Plan {
-    hire::plan(at, Some(role), ask, None, &Contract::default()).unwrap()
+    hire::plan(
+        at,
+        Some(role),
+        ask,
+        None,
+        &Contract::default(),
+        &hire::SkillsAsk::off(),
+    )
+    .unwrap()
 }
 
 fn own(prompt: &str) -> Ask {
@@ -215,6 +223,7 @@ fn the_repo_comes_from_the_goal_then_the_ticket_and_none_is_a_refusal() {
         Ask::Deliverable("D-3".into()),
         Some(sdk.clone()),
         &Contract::default(),
+        &hire::SkillsAsk::off(),
     )
     .unwrap();
     assert_eq!(picked.repo.as_deref(), Some(sdk.as_path()));
@@ -262,6 +271,7 @@ fn a_researcher_needs_no_repo_and_a_builder_without_one_is_refused_at_spawn_too(
         contract: Contract::default(),
         explicit: policy::Explicit::default(),
         role: Some("builder".into()),
+        skills: None,
     };
     let err =
         cos::agents::spawn(&pinned(&home), req, std::path::Path::new("/bin/false")).unwrap_err();
@@ -351,6 +361,7 @@ fn a_contract_with_nothing_to_run_warns_before_hiring() {
         own("Implement the refund export"),
         Some(repo),
         &Contract::default(),
+        &hire::SkillsAsk::off(),
     )
     .unwrap();
     assert!(p.refused.is_none());
