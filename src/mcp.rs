@@ -160,6 +160,14 @@ pub struct SpinOffArgs {
     role: Option<String>,
     /// A business name from `businesses`; see `latest_brief`.
     business: Option<String>,
+    /// Skills to give the hire beyond its role's.
+    #[serde(default)]
+    #[schemars(length(max = 50))]
+    skills_add: Vec<String>,
+    /// Skills to keep from the hire, even ones its role brings.
+    #[serde(default)]
+    #[schemars(length(max = 50))]
+    skills_remove: Vec<String>,
 }
 
 impl SpinOffArgs {
@@ -205,6 +213,22 @@ impl SpinOffArgs {
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
                 "role {role:?} is not a role name (a-z, 0-9, '-'; at most 40 characters)"
             );
+        }
+        for (field, names) in [
+            ("skills_add", &self.skills_add),
+            ("skills_remove", &self.skills_remove),
+        ] {
+            ensure!(
+                names.len() <= 50,
+                "{field}: at most 50 skills, got {}",
+                names.len()
+            );
+            for n in names {
+                ensure!(
+                    agents::skills::valid_name(n),
+                    "{field}: {n:?} is not a skill name"
+                );
+            }
         }
         Ok(())
     }
@@ -571,6 +595,13 @@ pub fn spin_off_hire(
             scope: args.scope,
             ..Default::default()
         },
+        &agents::hire::SkillsAsk::from_env(
+            agents::skills::Asked {
+                add: args.skills_add,
+                remove: args.skills_remove,
+            },
+            agents::skill_facts::Mode::Live,
+        ),
     )?;
     let req = plan.request(agents::hire::Run {
         harness: args.harness.unwrap_or(agents::Harness::Claude),

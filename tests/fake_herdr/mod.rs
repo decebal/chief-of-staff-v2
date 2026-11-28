@@ -47,11 +47,21 @@ pub fn fake(dir: &Path) -> Fake {
         std::env::set_var("FAKE_HC_STATE", &state);
         std::env::remove_var("FAKE_HC_EXEC");
         std::env::set_var("COS_HERDR_GRACE_SECS", "0");
+        std::env::set_var("COS_SKILLS_HOME", dir.join("user-home"));
+        std::env::set_var("CODEX_HOME", dir.join("codex-home"));
+        std::env::set_var("COS_PRIME_URL", "http://127.0.0.1:9/mcp");
     }
     Fake { state, _one: one }
 }
 
 impl Fake {
+    /// Hires plan against Prime at `url` (a stand-in) instead of the refused
+    /// default.
+    pub fn prime(&self, url: &str) {
+        // SAFETY: `self` holds `ONE`.
+        unsafe { std::env::set_var("COS_PRIME_URL", url) }
+    }
+
     /// `hc run` runs the agent to its end (`FAKE_HC_EXEC`).
     pub fn exec(&self, on: bool) {
         // SAFETY: `self` holds `ONE`.

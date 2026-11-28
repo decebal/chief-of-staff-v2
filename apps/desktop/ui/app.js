@@ -23,8 +23,13 @@ const ui = {
   inflight: false,
   again: false,
   // Each list has been read once: before that an empty list is not "none".
-  loaded: { agents: false, staff: false },
+  loaded: { agents: false, staff: false, skills: false },
   slots: null,
+  skills: null,
+  skillsError: null,
+  skillsLoading: false,
+  // A write that did not land, by skill name, shown beside its row.
+  skillErr: {},
 };
 
 // Basecoat's own variants read `.dark`; the tokens follow color-scheme.
@@ -124,7 +129,7 @@ function renderSlots() {
 }
 
 const VIEWS = ["today", "agents", "flows", "tax", "docs", "dash"];
-const SWITCH_PANES = ["staff", "runs", "scorecard"];
+const SWITCH_PANES = ["staff", "runs", "scorecard", "skills"];
 
 // The docs room names the business it was opened for; its saves carry it back.
 const docsUrl = () => `${REPORT}docs?t=${Date.now()}&business=${encodeURIComponent(ui.business)}`;
@@ -295,7 +300,7 @@ function reloadReport() {
 
 // ---- agents: panes
 
-const PANES = ["staff", "role", "runs", "run", "scorecard"];
+const PANES = ["staff", "role", "runs", "run", "scorecard", "skills"];
 
 function showPane(name) {
   ui.pane = name;
@@ -355,6 +360,136 @@ function render() {
   if (ui.pane === "runs") renderRuns();
   if (ui.pane === "run") renderRun();
   if (ui.pane === "scorecard") renderScores();
+  if (ui.pane === "skills") renderSkills();
+}
+
+// ---- skills: what the user decided about each skill on this machine
+
+async function refreshSkills() {
+  ui.skillsLoading = true;
+  try {
+    ui.skills = await invoke("skills_catalog");
+    ui.skillsError = null;
+  } catch (e) {
+    logDev("skills_catalog", e);
+    ui.skillsError = String(e);
+  } finally {
+    ui.skillsLoading = false;
+    ui.loaded.skills = true;
+  }
+  if (ui.pane === "skills") renderSkills();
+}
+
+const SKILL_GROUPS = [
+  [null, "Unreviewed", "Still load in every hire until you decide."],
+  ["relevant", "Relevant", "Hires in the roles named get these."],
+  ["irrelevant", "Irrelevant", "Switched off in every Claude hire."],
+];
+
+function renderSkills() {
+  const box = $("skills");
+  if (!ui.loaded.skills) {
+    if (!ui.skillsLoading) refreshSkills();
+    return fill(box, stateView("reading", { title: "Reading the skills on this machine…", line: true }));
+  }
+  const retry = { icon: "rotate-ccw", label: "Try again", onClick: refreshSkills };
+  if (ui.skillsError) {
+    return fill(box, stateView("unreachable", { title: "The skills could not be read", detail: ui.skillsError, action: retry }));
+  }
+  const s = ui.skills;
+  const graph =
+    s.graph.state === "fresh"
+      ? null
+      : stateView("unreachable", {
+          title:
+            s.graph.state === "none"
+              ? "Prime has not answered: no decisions can be shown yet."
+              : `Prime did not answer: these are the decisions read ${s.graph.read_at ?? "earlier"}.`,
+          line: true,
+          action: retry,
+        });
+  if (!s.rows.length) {
+    return fill(box, graph, stateView("empty", { title: "No skills in ~/.claude/skills, ~/.agents/skills or ~/.codex/skills.", line: true }));
+  }
+  const groups = SKILL_GROUPS.map(([verdict, label, line]) => {
+    const rows = s.rows.filter((r) => (r.verdict ?? null) === verdict);
+    return el(
+      "section",
+      { className: "skill-group" },
+      el("h3", {}, el("span", { textContent: `${label} ` }), el("span", { className: "num", textContent: String(rows.length) })),
+      el("p", { className: "muted small", textContent: line }),
+      rows.length
+        ? el("ul", { className: "skill-list" }, ...rows.map((r) => skillRow(r, s.roles)))
+        : stateView("clear", { title: "None.", line: true }),
+    );
+  });
+  fill(box, graph, ...groups);
+}
+
+function skillRow(r, roles) {
+  const err = ui.skillErr[r.name];
+  const set = (verdict, rolesNow = r.roles) => setSkill(r, verdict, rolesNow);
+  const chips =
+    r.verdict === "relevant"
+      ? el(
+          "div",
+          { className: "skill-roles", role: "group", ariaLabel: `Roles that use ${r.name}` },
+          ...roles.map((id) => {
+            const on = r.roles.includes(id);
+            const b = el("button", {
+              className: "btn",
+              type: "button",
+              textContent: id,
+              ariaPressed: String(on),
+              onClick: () => set("relevant", on ? r.roles.filter((x) => x !== id) : [...r.roles, id]),
+            });
+            b.dataset.variant = on ? "secondary" : "outline";
+            b.dataset.size = "sm";
+            return b;
+          }),
+        )
+      : null;
+  return el(
+    "li",
+    { className: "skill-row" },
+    el(
+      "div",
+      { className: "skill-main" },
+      el("strong", { textContent: r.name }),
+      el("span", { className: "muted small", textContent: ` ${r.roots.join(", ")}` }),
+      r.outside_cos ? badge("written outside cos", "warn") : null,
+      el("p", { className: "muted small", textContent: r.description || "No description." }),
+      r.requires.length ? el("p", { className: "small", textContent: `Requires ${r.requires.join(", ")}` }) : null,
+      chips,
+      err ? stateView("unreachable", { title: `Not recorded: ${err}`, line: true }) : null,
+    ),
+    el(
+      "div",
+      { className: "skill-actions" },
+      iconButton("circle-check", "Relevant", { variant: r.verdict === "relevant" ? "primary" : "outline", onClick: () => set("relevant") }),
+      iconButton("circle-x", "Irrelevant", { variant: r.verdict === "irrelevant" ? "primary" : "outline", onClick: () => set("irrelevant", []) }),
+    ),
+  );
+}
+
+async function setSkill(r, verdict, roles) {
+  delete ui.skillErr[r.name];
+  try {
+    await invoke("skills_set", {
+      business: ui.business,
+      decision: {
+        name: r.name,
+        verdict,
+        roles: verdict === "relevant" ? roles : [],
+        requires: verdict === "relevant" ? r.requires : [],
+        note: r.note ?? null,
+      },
+    });
+  } catch (e) {
+    logDev("skills_set", e);
+    ui.skillErr[r.name] = String(e);
+  }
+  await refreshSkills();
 }
 
 // ---- data
@@ -808,8 +943,38 @@ async function renderRun() {
   $("d-summary").textContent = state.summary ?? "";
   $("d-screen-box").hidden = !spec.terminal;
   renderRecorded(state);
+  renderRunSkills(spec, state);
   await runPage.seed(spec.id);
   if ($("d-screen-box").open) runPage.screen(spec.id);
+}
+
+const SKILL_WHY = { role: "its role", asked: "you added it", requires: "another skill needs it", project: "the repo's own copy" };
+
+function renderRunSkills(spec, state) {
+  const set = spec.skills;
+  $("d-skills-box").hidden = !set;
+  if (!set) return;
+  const bundled = new Set(state.skills_bundled ?? []);
+  const rows = set.picked.map((p) =>
+    el(
+      "li",
+      { className: "skill-row" },
+      el(
+        "div",
+        { className: "skill-main" },
+        el("strong", { textContent: p.name }),
+        el("span", { className: "muted small", textContent: ` ${SKILL_WHY[p.why] ?? p.why}` }),
+        p.digest ? el("span", { className: "mono small", textContent: p.digest.slice(0, 12) }) : null,
+        bundled.has(p.name) ? badge("in its session", "ok") : null,
+      ),
+    ),
+  );
+  const hidden = state.skills_hidden ?? set.hidden;
+  fill(
+    $("d-skills"),
+    ...(rows.length ? rows : [stateView("empty", { title: "No skill was picked for this hire.", line: true })]),
+    hidden.length ? el("li", { className: "muted small", textContent: `Switched off: ${hidden.join(", ")}` }) : null,
+  );
 }
 
 // What the run page reads besides the list: its seed log, and its screen
@@ -1089,7 +1254,7 @@ function renderScores() {
 
 // ---- hire
 
-const hire = { tasks: { brief: [], goals: [] }, edited: false, seq: 0, plan: null, bead: null, herdr: null };
+const hire = { tasks: { brief: [], goals: [] }, edited: false, seq: 0, plan: null, bead: null, herdr: null, skills: { add: [], remove: [] } };
 
 // Every hire runs in Herdr: without it the dialog says so, offers to start
 // it, and Hire stays off.
@@ -1189,6 +1354,7 @@ function hireArgs() {
     deadlineSecs: Number($("h-deadline").value) || 1800,
     count: Number($("h-count").value) || 1,
     contract: hire.edited ? { checks: lines("h-checks"), scope: lines("h-scope") } : {},
+    skills: hire.skills,
   };
   const w = work();
   if (w === "bead") {
@@ -1295,13 +1461,91 @@ function renderFit(plan, problem) {
     $("h-scope").value = (c.scope ?? []).join("\n");
   }
   $("h-go").disabled = Boolean(plan.refused) || hire.herdr === false;
+  renderHireSkills(plan.skills);
 }
+
+function renderHireSkills(set) {
+  const list = $("h-skills");
+  if (!set) {
+    fill(list, stateView("empty", { title: "This hire runs with the skills on this machine.", line: true }));
+    fill($("h-skill-notes"));
+    return;
+  }
+  const rows = set.picked.map((p) =>
+    el(
+      "li",
+      { className: "skill-row" },
+      el(
+        "div",
+        { className: "skill-main" },
+        el("strong", { textContent: p.name }),
+        el("span", { className: "muted small", textContent: ` ${SKILL_WHY[p.why] ?? p.why}` }),
+        p.description ? el("p", { className: "muted small", textContent: p.description }) : null,
+      ),
+      el(
+        "div",
+        { className: "skill-actions" },
+        iconButton("x", `Remove ${p.name}`, {
+          iconOnly: true,
+          onClick: () => {
+            hire.skills.add = hire.skills.add.filter((n) => n !== p.name);
+            if (!hire.skills.remove.includes(p.name)) hire.skills.remove.push(p.name);
+            checkFit();
+          },
+        }),
+      ),
+    ),
+  );
+  const removed = hire.skills.remove.map((n) =>
+    el(
+      "li",
+      { className: "skill-row muted" },
+      el("div", { className: "skill-main" }, el("strong", { textContent: n }), el("span", { className: "small", textContent: " removed" })),
+      el(
+        "div",
+        { className: "skill-actions" },
+        iconButton("rotate-ccw", `Put ${n} back`, {
+          iconOnly: true,
+          onClick: () => {
+            hire.skills.remove = hire.skills.remove.filter((x) => x !== n);
+            checkFit();
+          },
+        }),
+      ),
+    ),
+  );
+  fill(
+    list,
+    ...(rows.length || removed.length ? [...rows, ...removed] : [stateView("empty", { title: "No skill picked: add one below, or give the role skills in the Skills tab.", line: true })]),
+  );
+  fill($("h-skill-notes"), ...set.warnings.map((w) => el("li", { textContent: w })));
+}
+
+function fillSkillPicker() {
+  const names = (ui.skills?.rows ?? []).map((r) => r.name);
+  fill(
+    $("h-skill-add"),
+    el("option", { value: "", textContent: names.length ? "Pick a skill" : "No skills read yet" }),
+    ...names.map((n) => el("option", { value: n, textContent: n })),
+  );
+}
+
+$("h-skill-add-go").addEventListener("click", () => {
+  const n = $("h-skill-add").value;
+  if (!n) return;
+  hire.skills.remove = hire.skills.remove.filter((x) => x !== n);
+  if (!hire.skills.add.includes(n)) hire.skills.add.push(n);
+  checkFit();
+});
 
 // A role card opens this with its role picked; a brief action, a deliverable
 // or a Flows bead opens it with that work picked. A bead arrives as
 // `flow_bead` read it from its store.
 async function openHire({ role, deliverable, brief, bead } = {}) {
   hire.bead = bead ?? null;
+  hire.skills = { add: [], remove: [] };
+  fillSkillPicker();
+  if (!ui.loaded.skills) refreshSkills().then(fillSkillPicker);
   $("h-bead-choice").hidden = !bead;
   $("h-bead").hidden = !bead;
   if (bead) {

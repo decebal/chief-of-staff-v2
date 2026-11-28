@@ -22,6 +22,7 @@ pub mod history;
 pub mod kpis;
 pub mod mcp;
 pub mod pipeline;
+pub mod prime;
 pub mod proc;
 pub mod report;
 pub mod reports;

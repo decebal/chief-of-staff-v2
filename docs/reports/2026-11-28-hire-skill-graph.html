@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skills per hire</title>
+<style>
+  :root{color-scheme:light;--paper:#f5f4ef;--ink:#18342e;--muted:#586963;--line:#ced7ce;--panel:#fff;--green:#17694e;--green-bg:#e9f4ed;--amber:#785015;--amber-bg:#fff3d9;--red:#973e32;--red-bg:#fcebe7;--radius:12px;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-padding-top:80px}
+  body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:0 28px}
+  a{color:var(--green);text-underline-offset:3px}
+  a:focus-visible,summary:focus-visible,button:focus-visible{outline:3px solid var(--green);outline-offset:2px}
+  .skip{position:absolute;left:-9999px}.skip:focus{position:fixed;left:12px;top:12px;background:#fff;padding:10px;z-index:50}
+  header{padding:54px 0 10px}
+  h1{font-size:40px;line-height:1.15;margin:0 0 14px}
+  .eyebrow{font:600 12px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+  section{padding:40px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:25px;line-height:1.25;margin:0 0 14px}
+  h3{font-size:17px;margin:26px 0 8px}
+  code{font:12px/1.4 var(--mono);padding:2px 4px;background:#eef0eb;border-radius:3px;overflow-wrap:anywhere}
+  pre{margin:0;font:12px/1.65 var(--mono);background:#12241f;color:#dbeae3;padding:16px 18px;border-radius:9px;overflow-x:auto}
+  pre .del{color:#f0a89b;display:block}pre .add{color:#8fd3ad;display:block}
+  pre .ctx{color:#9ab3aa;display:block}pre .hdr{color:#7f9d93;display:block}
+  .tag{display:inline-block;font:600 11px var(--mono);letter-spacing:.05em;padding:3px 8px;border-radius:999px}
+  .tag.good{background:var(--green-bg);color:var(--green)}
+  .tag.bad{background:var(--red-bg);color:var(--red)}
+  .tag.warn{background:var(--amber-bg);color:var(--amber)}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:stretch}
+  .ba>div{display:flex;flex-direction:column;gap:10px}
+  .ba h4{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);display:flex;gap:9px;align-items:center;margin:0}
+  .copy{position:relative;margin:12px 0}
+  .copy button.cp{position:absolute;top:8px;right:8px;font:600 11px var(--mono);padding:5px 10px;border:1px solid #2f4a42;border-radius:6px;background:#1b332c;color:#cfe3da;cursor:pointer}
+  .copy button.cp.done{background:var(--green);border-color:var(--green);color:#fff}
+  figure{margin:0 0 22px}
+  figcaption{font-size:13px;line-height:1.6;color:var(--muted);padding-top:11px}
+  .capture-gap{border:1px dashed #aabbb0;border-radius:9px;min-height:160px;padding:26px;background:#eef1eb;display:flex;flex-direction:column;justify-content:center}
+  .step{display:grid;grid-template-columns:38px 1fr;gap:14px;padding:18px 0;border-top:1px solid var(--line)}
+  .step .n{font:700 15px var(--mono);color:var(--green)}
+  .pass{background:var(--green-bg);border-left:3px solid var(--green);padding:10px 14px;margin-top:10px;font-size:14px}
+  details{border:1px solid var(--line);background:var(--panel);border-radius:8px;margin-top:12px}
+  summary{cursor:pointer;padding:15px;font-weight:650;font-size:14px}
+  details>div{padding:0 18px 18px;font-size:14px}
+  table{border-collapse:collapse;width:100%;font-size:14px}
+  th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+  footer{padding:28px 0 50px;color:var(--muted);font-size:12px}
+  @media(max-width:850px){.wrap{padding:0 18px}.ba{grid-template-columns:1fr}h1{font-size:31px}}
+  @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  @media print{.skip{display:none}body{background:#fff}details>div{display:block}figure,.step,table{break-inside:avoid}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="wrap">
+  <p class="eyebrow">PR #66 · chief-of-staff-v2 · 2026-11-28</p>
+  <h1>A hire now runs with the skills you chose for its role, and the ones you marked irrelevant stay out of its session.</h1>
+  <p>For the user hiring Claude Code and Codex agents through <code>cos agents</code>. You mark each skill on the machine relevant or not, say which roles use it and what it needs; every hire then loads exactly that set, and the dialog and run page show it. Design: <a href="../plans/2026-11-28-hire-skill-graph-design.md">hire skill graph</a>.</p>
+</header>
+
+<main id="main">
+
+<section class="wrap">
+  <p class="eyebrow">01 / Before and after</p>
+  <h2>Before, a hire saw every skill on the machine; now it sees its set.</h2>
+  <div class="ba">
+    <div>
+      <h4><span class="tag bad">Before</span> <code>2e295db</code></h4>
+      <pre><span class="hdr">src/agents/harness.rs argv (Claude)</span>
+<span class="ctx">claude "&lt;prompt&gt;" --permission-mode acceptEdits</span>
+<span class="ctx">  --settings '{"sandbox":{…}}'</span>
+<span class="del">every ~/.claude/skills entry, relevant or not, in the session</span>
+<span class="del">Codex: all 321 skills on this machine listed</span></pre>
+    </div>
+    <div>
+      <h4><span class="tag good">After</span> <code>PR #66 head</code></h4>
+      <pre><span class="hdr">src/agents/harness.rs argv (Claude)</span>
+<span class="ctx">claude "&lt;prompt&gt;" --permission-mode acceptEdits</span>
+<span class="add">  --settings '{"sandbox":{…},"skillOverrides":{"seo-audit":"off",…}}'</span>
+<span class="add">  --plugin-dir out/agents/&lt;id&gt;/skills     # the picked set</span>
+<span class="add">Codex: -c skills.config=[{name="…",enabled=false},…]</span></pre>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">02 / What a person actually sees</p>
+  <h2>Real Claude loads the bundled skill and drops the hidden one.</h2>
+  <figure>
+    <pre>$ claude -p "List the exact names of every skill available to you, one per line, nothing else." \
+    --plugin-dir &lt;scratchpad&gt;/live/bundle \
+    --settings '{"sandbox":{…},"skillOverrides":{"proc-gc":"off"}}' --model haiku
+…
+ritual-full
+semantic-isa
+…
+cos-hire:hello-cos        ← the bundled skill, from a directory outside the working directory
+…                         ← proc-gc (in ~/.claude/skills) absent
+
+$ claude -p "Use the cos-hire:hello-cos skill and do what it says." --plugin-dir … --settings … --model haiku
+COS-HELLO-7391            ← the session read the bundled SKILL.md under the sandbox settings</pre>
+    <figcaption><strong>Claude Code CLI on this machine, 28 November 2026, run from the repo as its working directory.</strong> The bundle was a hand-built <code>cos-hire</code> plugin in this session's scratchpad, shaped as <code>skill_bundle::bundle</code> writes one; the settings are <code>CLAUDE_SANDBOX</code> plus one <code>skillOverrides</code> entry, as <code>harness::claude_settings</code> builds. This shows Claude's behaviour, not cos launching a hire end to end.</figcaption>
+  </figure>
+
+  <figure>
+    <pre>codex exec --ephemeral -s workspace-write   (temp git repo, stand-in skill .agents/skills/cos-spike)
+run 1, no override                                   321 skills listed, cos-spike among them
+run 2, -c 'skills.config=[{name="cos-spike",enabled=false}]'   320 listed, cos-spike absent
+run 3, cat a file outside the workspace              OUTSIDE-READ-OK</pre>
+    <figcaption><strong>Codex CLI 0.172.0, 28 November 2026.</strong> Full record: <a href="2026-11-28-codex-skill-switch-spike.md">Codex skill switch spike</a>.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="capture-gap">
+      <span class="tag warn">Not captured</span>
+      <h3 style="margin:12px 0 6px">The Skills pane, the hire dialog's Skills section and the run page's Skills fold.</h3>
+      <p style="margin:0;font-size:14px;color:var(--muted)">Screenshots in this repo come only from <code>task screenshots</code> on the demo home (never a real home: it would show this machine's skills and Prime facts), and the demo home has no skill roots or stand-in Prime yet. Their data paths are covered by <code>apps/desktop/tests/ipc.rs</code> (five skills tests) and the markup rules by <code>tests/design.rs</code>; how they look is not established. Needed: skill fixtures and a stand-in Prime in <code>examples/demo.rs</code>.</p>
+    </div>
+  </figure>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">03 / Prove it yourself</p>
+  <h2>Mark one skill irrelevant, then watch a planned hire switch it off.</h2>
+
+  <div class="step">
+    <span class="n">1</span>
+    <div>
+      <h3 style="margin-top:0">See what is left to decide.</h3>
+      <div class="copy"><button class="cp" data-copy="cos skills ls --unreviewed">Copy</button><pre>cos skills ls --unreviewed</pre></div>
+      <p class="pass"><strong>Pass:</strong> one line per skill under your skill roots, each <code>unreviewed</code>, its roots in brackets. If Prime is not answering, a <code>note:</code> line says so and the list still prints.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <span class="n">2</span>
+    <div>
+      <h3 style="margin-top:0">Record one decision. This writes to your Prime.</h3>
+      <div class="copy"><button class="cp" data-copy="cos skills set seo-audit --irrelevant">Copy</button><pre>cos skills set seo-audit --irrelevant</pre></div>
+      <p class="pass"><strong>Pass:</strong> <code>recorded seo-audit</code> on stderr, exit 0; <code>cos skills ls</code> now shows <code>seo-audit  irrelevant</code>. Use a skill name from step 1 if you have no <code>seo-audit</code>.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <span class="n">3</span>
+    <div>
+      <h3 style="margin-top:0">Plan a hire without starting it.</h3>
+      <div class="copy"><button class="cp" data-copy="cos --dry-run agents spawn --role builder --prompt &quot;Implement the cache&quot; --repo ~/Projects/founder-mode/chief-of-staff-v2">Copy</button><pre>cos --dry-run agents spawn --role builder --prompt "Implement the cache" --repo ~/Projects/founder-mode/chief-of-staff-v2</pre></div>
+      <p class="pass"><strong>Pass:</strong> the printed plan has a <code>skills</code> object whose <code>hidden</code> list holds <code>seo-audit</code>; <code>graph.state</code> is <code>stale</code> (a dry run reads the cached graph, never Prime).</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <span class="n">4</span>
+    <div>
+      <h3 style="margin-top:0">The same from the window.</h3>
+      <p>Chief of Staff → Agents → Skills: the skill sits under Irrelevant. Hire → pick Builder → the Skills section under the contract lists the picked skills with why each is there.</p>
+      <p class="pass"><strong>Pass:</strong> marking a skill Relevant with a role chip moves it, and the next plan in the hire dialog picks it with "its role".</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">04 / Traps</p>
+  <h2>A skill that still loads is not always this change failing.</h2>
+  <table>
+    <thead><tr><th>Symptom</th><th>Its tell</th><th>What it actually is</th></tr></thead>
+    <tbody>
+      <tr><td>An irrelevant skill still loads in a Claude hire</td><td>It comes from an installed plugin (<code>name:skill</code>), not <code>~/.claude/skills</code></td><td>Plugin skills are out of scope; the plan warns "skills from installed plugins still load".</td></tr>
+      <tr><td>A hidden skill is listed anyway</td><td>The hire's repo has its own <code>.claude/skills/&lt;name&gt;</code> or <code>.agents/skills/&lt;name&gt;</code></td><td>Repo skills win by design and are never hidden.</td></tr>
+      <tr><td>The plan's graph is <code>stale</code> or <code>none</code></td><td>A <code>Prime did not answer</code> warning</td><td>Prime is down or slow; the hire runs on the last graph read. Prime is asked at most once per 30 s.</td></tr>
+      <tr><td>A Codex hire refuses to start, naming <code>config.toml</code></td><td>Your <code>$CODEX_HOME/config.toml</code> does not parse or cannot be read</td><td>Intended: running on would re-enable skills you switched off there.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">05 / What this proves that the tests cannot</p>
+  <h2>The tests drive stand-ins; only a live run shows the harnesses obey the flags.</h2>
+  <p>Every cos test runs against a stand-in Prime (<code>tests/common/prime.rs</code>) and a stand-in Herdr, and asserts the command line cos builds. None shows that Claude loads a <code>--plugin-dir</code> outside its working directory, that <code>skillOverrides</code> removes a skill from its listing, or that Codex honours a per-invocation <code>skills.config</code>. The live runs above settle those three. The live Prime was read twice, read-only: <code>prime_search</code> returns the shape the stand-in serves; <code>tools/list</code> shows the input schemas the stand-in accepts and no output schema for <code>prime_add_node</code>.</p>
+  <p>Gates at the PR head: <code>task test</code> (fmt, clippy <code>-D warnings</code>, 46 test binaries, 0 failures), <code>task desktop-check</code>, and the desktop suite. Reviews: three design rounds, three code reviews (the repo's prove-it), three rounds on the design's "Built as" section; every review file sits beside the design.</p>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow">06 / Limits</p>
+  <h2>What I have NOT checked.</h2>
+  <ul>
+    <li>A full hire launched by cos in the real Herdr with the real Claude or Codex: the live checks drove the harnesses directly with the flags cos builds.</li>
+    <li>The Skills pane, hire dialog section and run page fold as rendered: no screenshots (see the capture gap).</li>
+    <li>The reply shape of a real <code>prime_add_node</code>: no write was made to the live store. If it carries no id, the fact is recorded and its <code>requires</code> edges are skipped with a warning.</li>
+    <li>Whether a skill Codex switched off can still be invoked by name, and any Codex version but 0.172.0.</li>
+    <li>Prime sync is off on this machine; facts written here do not reach the AllSource dashboard.</li>
+    <li>Linux: every run here was macOS.</li>
+  </ul>
+</section>
+
+</main>
+
+<footer class="wrap">Written for PR #66. Committed in the branch; not a hosted page.</footer>
+
+<script>
+  document.querySelectorAll("button.cp").forEach((b) => {
+    b.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(b.dataset.copy);
+      } catch {
+        // Clipboard permission can be refused; select the text so it stays copyable by hand.
+        const r = document.createRange();
+        r.selectNodeContents(b.parentElement.querySelector("pre"));
+        const s = getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+        return;
+      }
+      const was = b.textContent;
+      b.textContent = "Copied";
+      b.classList.add("done");
+      setTimeout(() => { b.textContent = was; b.classList.remove("done"); }, 1400);
+    });
+  });
+</script>
+</body>
+</html>

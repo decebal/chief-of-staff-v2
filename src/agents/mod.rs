@@ -36,6 +36,10 @@ pub mod ledger;
 pub mod osc;
 pub mod policy;
 pub mod seed;
+pub mod skill_bundle;
+pub mod skill_facts;
+pub mod skill_view;
+pub mod skills;
 pub mod slots;
 pub mod timeline;
 pub mod view;
@@ -49,6 +53,9 @@ pub const CEILING: Duration = Duration::from_secs(2 * 60 * 60);
 /// A run whose preparing process has not been seen within this is presumed
 /// to have lost it.
 pub const START_GRACE: Duration = Duration::from_secs(15);
+
+/// Seeding and the skill copy together, before Herdr starts the hire.
+pub const PREPARE_BUDGET: Duration = Duration::from_secs(300);
 
 /// What a run from before Herdr followed it says on its page.
 pub const LEGACY: &str =
@@ -120,6 +127,9 @@ pub struct Spec {
     pub workspace: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projects: Option<PathBuf>,
+    /// The skill set it was hired with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<skills::SkillSet>,
 }
 
 impl Spec {
@@ -235,6 +245,16 @@ pub struct State {
     pub seeded: Vec<String>,
     /// Build tools shimmed onto the agent's PATH to share the build slot.
     pub shimmed: Vec<String>,
+    /// Skills copied into its session plugin, `out/agents/<id>/skills`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills_bundled: Vec<String>,
+    /// Skills switched off for its session (`skillOverrides`, or Codex's
+    /// `skills.config`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills_hidden: Vec<String>,
+    /// A Codex hire's `skills.config` value, built before Herdr starts it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills_codex_config: Option<String>,
     /// Set once judged.
     pub verdict: Option<Verdict>,
     /// What made cos judge it: "done at turn 2", "it ended", "marked done".
@@ -319,6 +339,8 @@ pub struct Request {
     /// A role from `context/agents.json`: its contract and mandate fill what
     /// the request left empty.
     pub role: Option<String>,
+    /// The skill set the plan resolved; `None` runs with the machine's skills.
+    pub skills: Option<skills::SkillSet>,
 }
 
 /// One agent prompt from a saved run, numbered as the report numbers it.
@@ -576,6 +598,7 @@ fn record_run(triple: &Triple, mut req: Request, herdr_up: bool) -> Result<Spec>
         terminal: Some(follow::terminal_name(&id)),
         workspace: Some(std::path::absolute(&triple.workspace)?),
         projects: Some(std::path::absolute(&triple.projects)?),
+        skills: req.skills,
     };
     write_json(&d.join("spec.json"), &spec)?;
     events::record(
@@ -621,7 +644,12 @@ pub fn launch(home: &Path, id: &str, cos: &Path) -> Result<()> {
         follow::end(home, &spec, &mut state, Status::Failed, Some(why.clone()))?;
         bail!(why);
     }
-    let argv = environment(home, &spec, &state, cos, harness::argv(&spec));
+    let delivery = skill_bundle::Delivery {
+        bundle: (!state.skills_bundled.is_empty()).then(|| skill_bundle::bundle_dir(&d)),
+        hidden: state.skills_hidden.clone(),
+        codex_config: state.skills_codex_config.clone(),
+    };
+    let argv = environment(home, &spec, &state, cos, harness::argv(&spec, &delivery));
     let name = follow::terminal_name(id);
     let mut labels = vec![
         ("hire".to_owned(), id.to_owned()),
@@ -679,14 +707,31 @@ pub fn launch(home: &Path, id: &str, cos: &Path) -> Result<()> {
     }
 }
 
-/// Seeds a worktree hire and writes the build-tool shims.
+/// Seeds a worktree hire, delivers its skills and writes the build-tool
+/// shims. Seeding and the skill copy share one five-minute budget.
 fn prepare(home: &Path, spec: &Spec, state: &mut State, cos: &Path) -> Result<()> {
     let d = dir(home, &spec.id);
+    let started = std::time::Instant::now();
     if let (true, Some(repo)) = (spec.worktree, spec.repo.as_deref()) {
         state.status = Status::Seeding;
         write_state(home, &spec.id, state)?;
         state.seeded =
             seed::run(repo, &spec.workdir, &d.join("seed.log")).context("seed the worktree")?;
+    }
+    match (&spec.skills, spec.harness) {
+        (Some(set), Harness::Claude) => {
+            let left = PREPARE_BUDGET.saturating_sub(started.elapsed());
+            let roots = hire::skill_roots(home);
+            state.skills_bundled = skill_bundle::bundle(&d, &spec.workdir, set, &roots, left)
+                .context("bundle the hire's skills")?;
+            state.skills_hidden = skill_bundle::hidden(set, &spec.workdir);
+        }
+        (Some(set), Harness::Codex) => {
+            state.skills_hidden = skill_bundle::hidden_codex(set, &spec.workdir);
+            state.skills_codex_config = skill_bundle::codex_config(&state.skills_hidden)
+                .context("keep the user's Codex skills.config")?;
+        }
+        (None, _) => {}
     }
     let mut path = std::env::var("PATH").unwrap_or_default();
     // A cos started from the Dock has no login PATH: the tools in

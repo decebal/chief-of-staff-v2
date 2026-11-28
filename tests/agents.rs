@@ -80,6 +80,7 @@ fn request(harness: Harness, program: &str, repo: Option<PathBuf>, prompt: &str)
         },
         explicit: cos::agents::policy::Explicit { deadline: true },
         role: None,
+        skills: None,
     }
 }
 

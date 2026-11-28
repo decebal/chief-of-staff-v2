@@ -49,6 +49,7 @@ fn spec() -> Spec {
         terminal: Some("cos-r1".into()),
         workspace: None,
         projects: None,
+        skills: None,
     }
 }
 
@@ -493,6 +494,7 @@ fn request(program: &str, repo: Option<PathBuf>, prompt: &str) -> Request {
         },
         explicit: cos::agents::policy::Explicit { deadline: true },
         role: None,
+        skills: None,
     }
 }
 

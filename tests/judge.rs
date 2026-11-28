@@ -91,6 +91,7 @@ fn judged(
             contract,
             explicit: Default::default(),
             role: None,
+            skills: None,
         },
         Path::new(COS),
     )

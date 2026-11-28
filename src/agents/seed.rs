@@ -145,14 +145,14 @@ pub fn run(repo: &Path, tree: &Path, log: &Path) -> Result<Vec<String>> {
 }
 
 #[cfg(target_os = "macos")]
-fn clone_cmd(from: &Path, to: &Path) -> Command {
+pub(crate) fn clone_cmd(from: &Path, to: &Path) -> Command {
     let mut c = Command::new("cp");
     c.arg("-Rc").arg(from).arg(to);
     c
 }
 
 #[cfg(not(target_os = "macos"))]
-fn clone_cmd(from: &Path, to: &Path) -> Command {
+pub(crate) fn clone_cmd(from: &Path, to: &Path) -> Command {
     let mut c = Command::new("cp");
     c.args(["-R", "--reflink=auto"]).arg(from).arg(to);
     c

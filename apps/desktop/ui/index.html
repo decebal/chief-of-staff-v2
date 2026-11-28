@@ -118,6 +118,19 @@
             </div>
           </section>
 
+          <section class="hire-skills" aria-labelledby="h-skills-title">
+            <h3 id="h-skills-title">Skills</h3>
+            <ul id="h-skills" class="skill-list"></ul>
+            <div class="row">
+              <div class="field">
+                <label for="h-skill-add">Add a skill</label>
+                <select id="h-skill-add" class="select"></select>
+              </div>
+              <div class="choice end"><button id="h-skill-add-go" class="btn" data-variant="outline" data-size="sm" type="button"><i data-icon="plus"></i>Add</button></div>
+            </div>
+            <ul id="h-skill-notes" class="reasons"></ul>
+          </section>
+
           <div class="row">
             <div class="field">
               <label for="h-deadline">Deadline (s)</label>
@@ -252,6 +265,7 @@
               <button role="tab" aria-selected="true" data-pane="staff"><i data-icon="users"></i>Staff</button>
               <button role="tab" aria-selected="false" data-pane="runs"><i data-icon="list"></i>Runs <span id="runs-count" class="num"></span></button>
               <button role="tab" aria-selected="false" data-pane="scorecard"><i data-icon="trophy"></i>Scorecard</button>
+              <button role="tab" aria-selected="false" data-pane="skills"><i data-icon="layers"></i>Skills</button>
             </nav>
           </div>
           <div class="agents-bar-end">
@@ -271,6 +285,10 @@
         </div>
 
         <div id="pane-role" class="pane" hidden></div>
+
+        <div id="pane-skills" class="pane" hidden>
+          <div id="skills" class="skills"></div>
+        </div>
 
         <div id="pane-runs" class="pane" hidden>
           <div class="kit-view-toggle" role="group" aria-label="Runs as">
@@ -331,6 +349,7 @@
             <pre id="d-summary"></pre>
           </details>
           <details id="d-seed" class="card box" hidden><summary>Seed log</summary><pre id="d-seed-log"></pre></details>
+          <details id="d-skills-box" class="card box" hidden><summary>Skills</summary><ul id="d-skills" class="skill-list"></ul></details>
           <details id="d-screen-box" class="card box" hidden><summary>Its last screen in Herdr</summary><pre id="d-screen"></pre></details>
           <article class="card" data-size="sm" id="d-record-card" hidden>
             <header><h3>Your result</h3><p>What happened when you ran what it drafted. Stored on this run only; nothing is sent.</p></header>

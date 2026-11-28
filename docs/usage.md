@@ -438,7 +438,12 @@ cos agents open <id>                          # show its terminal in the Herdr w
 cos agents screen <id>                        # its screen and recent history (hc read)
 cos agents judge <id>                         # judge again, e.g. after finishing its work by hand
 cos agents spawn --deliverable D-1 --role reviewer   # hired as a reviewer: judged on REVIEW.md
-cos --dry-run agents spawn --deliverable D-1 --role tester   # the plan: repo, fit, contract; starts nothing
+cos agents spawn --role builder --skill rust-perf --no-skill tdd --prompt "…"   # its skills: the role's, plus, minus
+cos --dry-run agents spawn --deliverable D-1 --role tester   # the plan: repo, fit, contract, skills; starts nothing
+cos skills curate                             # mark each unreviewed skill relevant or not, and its roles
+cos skills set <name> --relevant --role builder --requires <name>   # one decision, scripted
+cos skills ls [--unreviewed] [--role <id>] [--json]   # every skill and what you decided
+cos skills show --role builder [--repo <path>]   # the skill set a hire would get
 cos agents record <id> --outcome passed --notes "…" --evidence <link>   # what you saw running its draft
 cos agents scorecard                          # how agents did, by role, harness, model and repo
 cos agents kill <id>
@@ -535,8 +540,29 @@ cos agents clean                              # remove finished worktrees (keeps
 - **Take over**: it is already yours in Herdr: `hc attach cos-<id>`, or
   Open in Herdr in the window. A run from before cos followed hires in
   Herdr reads, but cannot be resumed.
+- **Skills**: a hire's skill set is its role's relevant skills, plus
+  `--skill`, minus `--no-skill`, closed over `requires`. The decisions live
+  in Prime as `cos_skill` facts (`COS_PRIME_URL`, default
+  `http://127.0.0.1:3906/mcp`; loopback only); the skills themselves are
+  read from `~/.claude/skills`, `~/.agents/skills`, `~/.codex/skills`
+  (`COS_SKILLS_HOME` replaces `$HOME`) and `skills.roots` in
+  `context/agents.json`, which also takes `"unreviewed": "off"` to switch off
+  every skill nobody decided on. A Claude hire's skills are copied into
+  `out/agents/<id>/skills` and loaded with `--plugin-dir`; irrelevant
+  user-level skills are off for its session (`skillOverrides`); the repo's
+  own `.claude/skills` win. A Codex hire reads its picked skills' paths
+  from its prompt, and irrelevant skills in `~/.agents/skills` and
+  `~/.codex/skills` are off for its session (`-c skills.config=[…]`, the
+  entries already in `$CODEX_HOME/config.toml` kept; a config that does not
+  parse stops the hire before it starts, so it never runs with your own
+  switched-off skills back on). A skill whose files changed between the plan and
+  the hire fails the hire before Herdr starts it. Prime is asked at most once
+  per 30 s (`out/skills/graph.json` holds the last read); when it does not
+  answer the hire uses that read and says so. `cos skills set` and `curate`
+  refuse inside a hire and under `--dry-run`.
 - **From Claude Desktop or Codex**: the `spin_off`, `agents` and `stop_agent`
-  tools (local server only; the remote one never offers them).
+  tools (local server only; the remote one never offers them). `spin_off`
+  takes `skills_add` and `skills_remove`.
 - **In the browser**: `cos dash`, then `/agents`.
 
 `cos agents clean` refuses a worktree with uncommitted changes or new commits;
