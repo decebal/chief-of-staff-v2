@@ -100,7 +100,9 @@ pub fn hidden(set: &SkillSet, worktree: &Path) -> Vec<String> {
 /// `skills.tmp` and renames it, replacing anything an earlier launch left.
 /// A skill is copied only when the catalog of `roots`, scanned again here,
 /// holds an entry of that name at that canonical path: a path recorded in
-/// `spec.json` is never trusted on its own. Returns the names copied; none
+/// `spec.json` is never trusted on its own. The configured roots are the
+/// user's and, for a repo with a graph, the repo's export root (built by
+/// `repo_skills` from the digest). Returns the names copied; none
 /// copied leaves no directory.
 pub fn bundle(
     run_dir: &Path,

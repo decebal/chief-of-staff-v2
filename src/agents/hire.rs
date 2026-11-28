@@ -11,6 +11,7 @@
 //! is a refusal, never a scratch directory.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -19,9 +20,10 @@ use serde_json::Value;
 use super::fit::{self, Fit, Work};
 use super::judge::Contract;
 use super::policy::{self, Policy, Role};
+use super::repo_skills::{self, RepoSkills, State as RepoState};
 use super::skill_facts::{self, Mode};
-use super::skills::{self, Asked, SkillSet};
-use super::{Task, deliverable_task, infer_repo};
+use super::skills::{self, Asked, ResolveInputs, Root, SkillSet, Why};
+use super::{Spec, Task, deliverable_task, infer_repo};
 use crate::prime::Prime;
 
 /// What a hire asks of its skills, and where they are read from.
@@ -77,6 +79,12 @@ pub fn skill_roots(home: &Path) -> Vec<skills::Root> {
     skills::roots(&skills_home().unwrap_or_default(), &extra)
 }
 
+/// The repo's role set is read within this at plan: a hire never waits on it.
+const PLAN_READ: Duration = Duration::from_secs(2);
+
+/// The plan's line for a repo whose store is not built; launch replaces it.
+pub const BUILT_AT_LAUNCH: &str = "repo skills: built at launch";
+
 fn skill_set(
     at: &Where,
     policy: &Policy,
@@ -86,27 +94,173 @@ fn skill_set(
 ) -> Option<SkillSet> {
     let src = ask.source.as_ref()?;
     let settings = policy.skills_settings();
-    let catalog = skills::catalog(&skills::roots(&src.user_home, &settings.roots));
     let graph = skill_facts::read_graph(
         at.home,
         src.prime.as_ref().map_err(String::as_str),
         policy,
         ask.read,
     );
+    let repo_read = match (role, repo) {
+        (Some(r), Some(repo)) => Some(repo_skills::read(repo, &r.id, PLAN_READ)),
+        _ => None,
+    };
+    let inputs = ResolveInputs {
+        role: role.map(|r| r.id.clone()),
+        asked: ask.asked.clone(),
+        unreviewed: settings.unreviewed,
+        graph,
+    };
+    let user = skills::roots(&src.user_home, &settings.roots);
+    let mut set = compose(&inputs, &user, repo_read.as_ref(), repo);
+    finish(&mut set, settings.notes);
+    if let Some(line) = repo_read.as_ref().and_then(|r| plan_line(&r.state)) {
+        set.warnings.push(line);
+    }
+    Some(set)
+}
+
+/// The set `inputs` resolve to. The repo's export root, when it has one,
+/// comes first in the catalog, so its copy of a name is the one used. `dir`
+/// is the tree whose own skills are used in place.
+fn compose(
+    inputs: &ResolveInputs,
+    user: &[Root],
+    repo: Option<&RepoSkills>,
+    dir: Option<&Path>,
+) -> SkillSet {
+    let mut roots: Vec<Root> = repo.and_then(|r| r.root.clone()).into_iter().collect();
+    roots.extend_from_slice(user);
+    let names: &[String] = match repo {
+        Some(r) => &r.names,
+        None => &[],
+    };
     let mut set = skills::resolve(
-        &graph,
-        &catalog,
-        role.map(|r| r.id.as_str()),
-        &ask.asked,
-        settings.unreviewed,
-        &skills::project_skills(repo),
+        &inputs.graph,
+        &skills::catalog(&roots),
+        inputs.role.as_deref(),
+        &inputs.asked,
+        inputs.unreviewed,
+        &skills::project_skills(dir),
+        names,
     );
-    set.warnings.extend(settings.notes);
+    set.inputs = Some(inputs.clone());
+    set
+}
+
+/// The set `cos skills show` prints for `role`: a plan's resolve, with the
+/// repo's role set read as a plan reads it, and no resolve inputs in the output.
+pub fn show(
+    graph: &skills::Graph,
+    role: Option<&str>,
+    asked: &Asked,
+    unreviewed: skills::Unreviewed,
+    user: &[Root],
+    repo: Option<&Path>,
+) -> SkillSet {
+    let inputs = ResolveInputs {
+        role: role.map(str::to_owned),
+        asked: asked.clone(),
+        unreviewed,
+        graph: graph.clone(),
+    };
+    let read = match (role, repo) {
+        (Some(r), Some(dir)) => Some(repo_skills::read(dir, r, PLAN_READ)),
+        _ => None,
+    };
+    let mut set = compose(&inputs, user, read.as_ref(), repo);
+    if let Some(line) = read.as_ref().and_then(|r| plan_line(&r.state)) {
+        set.warnings.push(line);
+    }
+    set.inputs = None;
+    set
+}
+
+/// What every set carries after its resolve: the policy's notes, and the
+/// plugin line when a skill is switched on or off for the session.
+fn finish(set: &mut SkillSet, notes: Vec<String>) {
+    set.warnings.extend(notes);
     if !set.picked.is_empty() || !set.hidden.is_empty() {
         set.warnings
             .push("skills from installed plugins still load in every hire".into());
     }
-    Some(set)
+}
+
+fn plan_line(state: &RepoState) -> Option<String> {
+    match state {
+        RepoState::Stale => Some(BUILT_AT_LAUNCH.into()),
+        RepoState::Unavailable { why } => Some(format!("repo skills: none ({why})")),
+        RepoState::Fresh { .. } | RepoState::Absent => None,
+    }
+}
+
+/// A hire's set resolved again at launch, and the roots its bundle reads.
+pub struct Relaunch {
+    pub set: SkillSet,
+    pub roots: Vec<Root>,
+}
+
+/// Resolves a hire again at launch, its repo's graph read from the seeded
+/// worktree: a stale store is built there within `budget`. A failure keeps the
+/// repo's picks out and says why in the set's warnings; the hire still starts.
+/// `None` for a set with no resolve inputs (from before launches resolved).
+pub fn relaunch(home: &Path, spec: &Spec, budget: Duration) -> Option<Relaunch> {
+    let prev = spec.skills.as_ref()?;
+    let inputs = prev.inputs.as_ref()?;
+    let was_stale = prev.warnings.iter().any(|w| w == BUILT_AT_LAUNCH);
+    let was_in_play = was_stale
+        || prev.warnings.iter().any(|w| w.starts_with("repo skills:"))
+        || prev.picked.iter().any(|p| p.why == Why::RepoRole);
+    if !was_in_play {
+        return None;
+    }
+    let read = inputs
+        .role
+        .as_deref()
+        .map(|role| repo_skills::build(&spec.workdir, role, budget));
+    let user = skill_roots(home);
+    let mut set = compose(inputs, &user, read.as_ref(), Some(&spec.workdir));
+    finish(&mut set, policy::load(home).skills_settings().notes);
+    // A user skill changed since the plan keeps the planned set, so the bundle's
+    // digest check still refuses the hire.
+    let user_digests_hold = prev
+        .picked
+        .iter()
+        .filter(|p| !matches!(p.why, Why::RepoRole | Why::Project))
+        .all(|p| {
+            set.picked
+                .iter()
+                .any(|q| q.name == p.name && q.digest == p.digest)
+        });
+    if !user_digests_hold {
+        return None;
+    }
+    let picked = set.picked.iter().filter(|p| p.why == Why::RepoRole).count();
+    if let Some(line) = read
+        .as_ref()
+        .and_then(|r| launch_line(r, was_stale, was_in_play, picked))
+    {
+        set.warnings.push(line);
+    }
+    let roots = read.and_then(|r| r.root).into_iter().chain(user).collect();
+    Some(Relaunch { set, roots })
+}
+
+fn launch_line(
+    read: &RepoSkills,
+    was_stale: bool,
+    was_in_play: bool,
+    picked: usize,
+) -> Option<String> {
+    match &read.state {
+        RepoState::Fresh { .. } if was_stale => {
+            Some(format!("repo skills: built at launch, {picked} picked"))
+        }
+        RepoState::Fresh { .. } => None,
+        RepoState::Stale => Some("repo skills: none (no store after install)".into()),
+        RepoState::Unavailable { why } => Some(format!("repo skills: none ({why})")),
+        RepoState::Absent => was_in_play
+            .then(|| "repo skills: none (the worktree has no .allsource/roles.toml)".into()),
+    }
 }
 
 /// What to hire for.
@@ -275,13 +429,10 @@ impl Plan {
         if let Some(why) = self.refused {
             anyhow::bail!("not hired: {why}");
         }
-        let mut prompt = self.prompt;
-        if run.harness == super::Harness::Codex
-            && let Some(block) = self.skills.as_ref().and_then(SkillSet::codex_block)
-        {
-            prompt.push_str("\n\n");
-            prompt.push_str(&block);
-        }
+        let prompt = match run.harness {
+            super::Harness::Codex => skills::with_codex_block(&self.prompt, self.skills.as_ref()),
+            super::Harness::Claude => self.prompt,
+        };
         Ok(super::Request {
             harness: run.harness,
             program: run.program,

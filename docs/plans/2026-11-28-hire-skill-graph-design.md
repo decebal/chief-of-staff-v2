@@ -443,8 +443,10 @@ JSON and `--plugin-dir` path (E5), S5 the Codex prompt block (E6), S6
   comes from a TTY session, `cos skills set`, or `skills_set` with the
   window's own business, and the CLI paths refuse when `COS_RUN_ID` is set.
 - **VERIFY-B (S3):** the source path comes only from the catalog entry for a
-  VERIFY-R name: a direct child of a configured root, found by listing that
-  root (the entry itself may be a symlink, as `~/.agents/skills` entries
+  VERIFY-R name: a direct child of a configured root (the user's roots, and for
+  a hire into a repo with a skill graph the repo's export root, which cos
+  builds from the digest), found by listing that root (the entry itself may be
+  a symlink, as `~/.agents/skills` entries
   are; its canonical path is used). Below that top directory the tree holds
   no symlink, at most 20 MiB, and a regular `SKILL.md`, and its tree digest
   equals the set's. The destination is `skills.tmp/skills/<name>` with the

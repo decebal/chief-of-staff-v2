@@ -1272,16 +1272,16 @@ fn skills_cmd(cli: &Cli, home: &std::path::Path, cmd: &SkillsCmd) -> Result<()> 
             if let Some(r) = role {
                 ctx.policy.hire(r)?;
             }
-            let set = skills::resolve(
+            let set = agents::hire::show(
                 &ctx.graph,
-                &ctx.catalog,
                 role.as_deref(),
                 &skills::Asked {
                     add: add.clone(),
                     remove: no_skills.clone(),
                 },
                 ctx.unreviewed,
-                &skills::project_skills(repo.as_deref()),
+                &agents::hire::skill_roots(home),
+                repo.as_deref(),
             );
             println!("{}", serde_json::to_string_pretty(&set)?);
             Ok(())

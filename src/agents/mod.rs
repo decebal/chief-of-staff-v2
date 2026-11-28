@@ -35,6 +35,7 @@ pub mod judge;
 pub mod ledger;
 pub mod osc;
 pub mod policy;
+pub mod repo_skills;
 pub mod seed;
 pub mod skill_bundle;
 pub mod skill_facts;
@@ -623,12 +624,23 @@ fn record_run(triple: &Triple, mut req: Request, herdr_up: bool) -> Result<Spec>
 /// Runs a hire that is not yet working: until the worktree is seeded and its
 /// Herdr terminal is live. A `stop` file in the run directory ends it.
 pub fn launch(home: &Path, id: &str, cos: &Path) -> Result<()> {
+    launch_with_repo_budget(home, id, cos, PREPARE_BUDGET)
+}
+
+/// `launch`, with the repo's skills read within `repo_budget` (the rest of
+/// the prepare budget still bounds the whole).
+pub fn launch_with_repo_budget(
+    home: &Path,
+    id: &str,
+    cos: &Path,
+    repo_budget: Duration,
+) -> Result<()> {
     let d = run_dir(home, id)?.path;
     let spec: Spec = read_json(&d.join("spec.json"))?;
     let mut state: State = read_json(&d.join("state.json")).unwrap_or_default();
     let stop_file = d.join("stop");
     let stopped = || stop_file.exists();
-    let prepared = prepare(home, &spec, &mut state, cos);
+    let prepared = prepare(home, &spec, &mut state, cos, repo_budget);
     if stopped() {
         let _ = std::fs::remove_file(&stop_file);
         return follow::end(
@@ -644,6 +656,8 @@ pub fn launch(home: &Path, id: &str, cos: &Path) -> Result<()> {
         follow::end(home, &spec, &mut state, Status::Failed, Some(why.clone()))?;
         bail!(why);
     }
+    // Prepare may have rewritten the spec (a relaunched skill set, a Codex index).
+    let spec: Spec = read_json(&d.join("spec.json"))?;
     let delivery = skill_bundle::Delivery {
         bundle: (!state.skills_bundled.is_empty()).then(|| skill_bundle::bundle_dir(&d)),
         hidden: state.skills_hidden.clone(),
@@ -707,9 +721,16 @@ pub fn launch(home: &Path, id: &str, cos: &Path) -> Result<()> {
     }
 }
 
-/// Seeds a worktree hire, delivers its skills and writes the build-tool
-/// shims. Seeding and the skill copy share one five-minute budget.
-fn prepare(home: &Path, spec: &Spec, state: &mut State, cos: &Path) -> Result<()> {
+/// Seeds a worktree hire, resolves its skills again against that worktree,
+/// delivers them and writes the build-tool shims. Seeding and the skill copy
+/// share one five-minute budget.
+fn prepare(
+    home: &Path,
+    spec: &Spec,
+    state: &mut State,
+    cos: &Path,
+    repo_budget: Duration,
+) -> Result<()> {
     let d = dir(home, &spec.id);
     let started = std::time::Instant::now();
     if let (true, Some(repo)) = (spec.worktree, spec.repo.as_deref()) {
@@ -718,10 +739,22 @@ fn prepare(home: &Path, spec: &Spec, state: &mut State, cos: &Path) -> Result<()
         state.seeded =
             seed::run(repo, &spec.workdir, &d.join("seed.log")).context("seed the worktree")?;
     }
-    match (&spec.skills, spec.harness) {
+    let budget = repo_budget.min(PREPARE_BUDGET.saturating_sub(started.elapsed()));
+    let (skills, roots) = match hire::relaunch(home, spec, budget) {
+        Some(r) => {
+            let mut updated = spec.clone();
+            if spec.harness == Harness::Codex {
+                updated.prompt = skills::with_codex_block(&spec.prompt, Some(&r.set));
+            }
+            updated.skills = Some(r.set.clone());
+            write_json(&d.join("spec.json"), &updated)?;
+            (Some(r.set), r.roots)
+        }
+        None => (spec.skills.clone(), hire::skill_roots(home)),
+    };
+    match (&skills, spec.harness) {
         (Some(set), Harness::Claude) => {
             let left = PREPARE_BUDGET.saturating_sub(started.elapsed());
-            let roots = hire::skill_roots(home);
             state.skills_bundled = skill_bundle::bundle(&d, &spec.workdir, set, &roots, left)
                 .context("bundle the hire's skills")?;
             state.skills_hidden = skill_bundle::hidden(set, &spec.workdir);
