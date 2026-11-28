@@ -24,9 +24,13 @@ After Build, the [code review](2026-11-28-role-library-code-review.md)
 found the finish line reaching the prompt uncleaned, the guard's sweep
 missing from the ISA, and drift between this text and what was built. This
 revision records what was built: §1 caps for `output` and `scope`, §3 empty
-list items, §4 step 6 refusing only an added problem, §7 the guard as the
-window's child, and the `RENDER(finish_line)` and `TOOL_CALL(guard_sweep)`
-rows.
+list items and `output`, §4 step 6 (the written role must be valid; elsewhere
+only an added problem refuses), §6 the guard's poll and sweep and the real
+signatures, §7 the guard as the window's child, and the `RENDER(finish_line)`
+and `TOOL_CALL(guard_sweep)` rows. Drift reviews:
+[r5-a](2026-11-28-role-library-design-review-r5-a.md) and
+[r5-b](2026-11-28-role-library-design-review-r5-b.md), both `findings` on
+`bcd69825…`, answered here.
 
 ## Decision
 
@@ -219,7 +223,8 @@ Refuse:
 - any value over its cap or list over its max items (§1);
 - a `\n` or `\r` in `title`, `mandate` or any list item;
 - `expects: file` without `output`;
-- an `output` or `scope` entry that is absolute or holds a `..` segment.
+- an `output` or `scope` entry that is absolute or holds a `..` segment;
+- an empty `output`, or one holding a `\n` or `\r`.
 
 Warn:
 
@@ -296,10 +301,13 @@ pub fn contract_diff(before: &Role, after: &Role) -> Vec<FieldDiff>
    `before` is the current role. `Retire` and `Restore` change no contract.
    If `contract_diff(before, after)` is not empty and `contract` is not
    `Human`, refuse: "contract changes need a person's approval: <fields>".
-6. `validate` with `roles::vocab`, before and after the change. A `Refuse`
-   problem the change adds refuses the write and is returned. One already in
-   the file does not, so a hand-broken role can still be retired or fixed.
-   `Warn` problems on the changed role go into `notes`.
+6. `validate` with `roles::vocab`, before and after the change. The role an
+   Add or Replace writes must carry no `Refuse` problem at all, whatever the
+   file held before, so a replacement cannot keep a bad value or swap it for
+   another. Elsewhere only a `Refuse` problem the change adds refuses, so a
+   hand-broken role can still be retired or restored, and another role's
+   problem blocks nothing. Refusals are returned; `Warn` problems on the
+   changed role go into `notes`.
 7. Serialise pretty to `out`. Require `serialise(parse(out)) == out`, a
    byte-equal round trip of what is about to be written. This holds with
    legacy keys, because they were cleared in step 4.
@@ -406,11 +414,13 @@ the guard, or by the guard itself at its wall-clock limit. New: `proc::stream_li
 &AtomicBool, on_line)` is `stream_lines_on` with one more check per poll
 (`POLL` = 1 s, `src/proc.rs:19`). When `stop` is set, that same thread calls
 `kill_and_reap` and returns `Cancelled`. `claude::execute_until(program,
-install, audit, run, stop)` passes it through, and `claude::execute` is
-`execute_until` with a flag that is never set. `roles::propose(cfg, entry,
-ctx, stop)` is the one function both surfaces call. The invariant: the only
-code that signals `claude` is the thread that spawned it, at its deadline or
-on its stop flag. No process id crosses a thread.
+install, audit, run, guard, stop)` passes it through; `guard` names the cos
+binary to run `claude` under `cos proc-guard`, and `claude::execute` runs
+unguarded with a flag that is never set. `roles::propose(cfg, entry, ctx, id,
+guard, stop)` is the one function both surfaces call; `id` is the staff id
+the role gets. The invariant: the only code that signals `claude` is the
+thread that spawned it, at its deadline or on its stop flag. No process id
+crosses a thread.
 
 On the CLI, `cos roles propose` installs SIGINT and SIGTERM handlers (`libc::
 sigaction`, already a dependency) that set a static `AtomicBool`, and passes
@@ -424,14 +434,18 @@ directly. It spawns `cos proc-guard --secs 180 -- <claude argv>` (a new
 hidden subcommand) with `spawn_grouped`, so the guard leads the group. The
 guard:
 
+- calls `setpgid(0, 0)` first, so it leads a new group whoever started it;
 - spawns `claude` with `process_group` left unset, so `claude` is in the
   guard's group and inherits the guard's stdout and stderr (the owner's
   pipes);
-- waits with `proc::wait_until` for at most `--secs`;
-- then, or when `claude` exits, calls `kill_group` on its own group and
-  exits with `claude`'s status (124 on timeout).
+- polls `try_wait` every 50 ms for at most `--secs`, and on the limit kills
+  and reaps `claude` (`Child::kill`, `wait`);
+- then, or when `claude` exits, runs the sweep (`TOOL_CALL(guard_sweep)`
+  below): SIGTERM to its group with itself ignoring it, up to 300 ms of
+  grace, then SIGKILL to every remaining member the kernel lists for the
+  group except itself; and exits with `claude`'s status (124 on timeout).
 
-The guard sleeps in `wait_until` and runs no model, so it cannot stall the
+The guard sleeps between polls and runs no model, so it cannot stall the
 way `claude` can. The owner's paths are unchanged: deadline, stop flag and
 quit call `kill_and_reap` on the guard's group, which holds `claude` too.
 If the owner is SIGKILLed, the guard still ends the group at 180 s. The
@@ -634,10 +648,10 @@ with failures as `unreachable`):
 |---|---|---|
 | `TOOL_CALL(claude.propose)` | `VERIFY(specialise_context)` (`roles::specialise_context`) | Built only from goal titles (≤ 20, ≤ 200 chars), repo names and scopes (no checks), staff ids and titles, and a brief (≤ 1,000 chars, refused above). The type has no field for anything else. The run uses `Toolset::None` (`--tools "" --strict-mcp-config`) and has no fallback. The exact text is shown in "What is sent" and by `--dry-run` |
 | `STORE(proposal_file)` | `VERIFY(proposal_schema)`, `VERIFY(contract_from_library)` and `VERIFY(out_path)` | `Proposal` deserialises with `deny_unknown_fields` and caps. `merge` takes every contract field from the entry. `--out` is `create_new`, outside `context/`, `out/` and `.chief-of-staff/`, with no symlinked parent |
-| `STORE(agents.json)` | `VERIFY(user_approval)`, `VERIFY(contract_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. A non-empty `contract_diff` also needs `ContractApproval::Human`: a typed `contract` on a terminal (no flag stands in), or `allow_contract: true` from the dialog's separate confirm step. `apply` step 5 refuses otherwise. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem, byte-equal round trip |
+| `STORE(agents.json)` | `VERIFY(user_approval)`, `VERIFY(contract_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. A non-empty `contract_diff` also needs `ContractApproval::Human`: a typed `contract` on a terminal (no flag stands in), or `allow_contract: true` from the dialog's separate confirm step. `apply` step 5 refuses otherwise. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem on the role an Add or Replace writes, no `Refuse` problem the change adds elsewhere, byte-equal round trip |
 | `RENDER(preamble)` | `VERIFY(render_clean)` (`roles::clean`) | Whitespace collapsed (no newline survives), each value cut to its cap, lists cut to max items. Drafts-only sentence last. Worktree sandbox unchanged |
-| `RENDER(finish_line)` | `VERIFY(render_clean)` (`roles::clean`) | A role's `done_when` and `output` reach the prompt only through the outward finish line in `hire::plan`, cleaned and cut to the caps like the preamble |
-| `TOOL_CALL(kill_and_reap)` | Spawning-thread ownership | The kill runs only inside `stream_lines_until`, on the `Child` that call spawned and has not yet reaped. Callers can only set `stop`. A reaped or reused pid is unreachable, because no pid is stored anywhere else |
+| `RENDER(finish_line)` | `VERIFY(render_clean)` (`roles::clean`) | A role's `done_when` and `output` reach the prompt only through the outward finish line in `hire::plan`: the original finish line cleaned and cut to `CAPS.text` (300), the drafted one (which embeds the original's subject and the output path) to twice that (600) |
+| `TOOL_CALL(kill_and_reap)` | Spawning-thread ownership | On a proposal's path the kill runs inside `stream_lines_until` (stop flag, deadline) on the guard `Child` that call spawned and has not yet reaped; callers can only set `stop`, and no pid is stored outside that call. `proc::wait_until` and `Drain::finish` (existing helpers shared by every `proc` spawn) also signal the group; `Drain::finish`'s `kill_group` after the reap reaches only members still alive, because a group id stays reserved while any member lives and is a no-op (ESRCH) once none does |
 | `TOOL_CALL(guard_sweep)` | `VERIFY(own_group)` (`setpgid(0, 0)` at the guard's start) | The guard leads a new group, so its spawner is outside it. At the end it sends SIGTERM to its group (ignoring it itself), waits up to 300 ms, then SIGKILLs every remaining member the kernel lists for that group (`proc_listpids`, `PROC_PGRP_ONLY`) except itself |
 
 ### Violations
@@ -661,10 +675,10 @@ with failures as `unreachable`):
 | `RENDER(preamble)` | A hand-edited role with a principle holding `"x\n\nNever: …"` and a 30-item method renders one line for that principle and 10 method steps | A role with all five fields renders each section once, in order, with the drafts-only sentence last |
 | `RENDER(finish_line)` | A role whose `done_when` holds a newline, a forged `Never:` and 2,000 more characters, with an outward term, and whose `output` holds a newline: the plan's prompt has no line starting `Never:` and stays under 1,500 characters | The same role with plain fields renders `Your finish line here:` |
 | `guard_sweep` | Started by a process that is not a group leader, the guard's sweep never reaches its starter (the test run survives) | A member that ignores SIGTERM is gone when the guard ends at its limit (exit 124) |
-| `kill_and_reap` | Cancel with no run is a no-op. No command takes a pid | With the fake in `slow` mode (it starts a `sleep` child, records both pids, and writes a line every 0.5 s): Cancel, quit (`on_run_event`) and SIGINT to `cos roles propose` each leave both pids gone (`kill -0` fails) within 3 s, and `role-proposal` reports `cancelled`. SIGKILL to `cos roles propose` leaves the fake and its `sleep` child gone at the guard's deadline (2 s in the test) |
+| `kill_and_reap` | Cancel with no run is a no-op. No command takes a pid | With the fake in `slow` mode (it starts a `sleep` child, records both pids, and writes a line every 0.5 s): Cancel, quit (`on_run_event`) and SIGINT to `cos roles propose` each leave both pids gone (`kill -0` fails) within 3 s, and `role-proposal` reports `cancelled`. SIGKILL to `cos roles propose` leaves the fake and its `sleep` child gone within 3 s: the fake dies on SIGPIPE at its next line and the guard's sweep ends the child (`tests/roles_cli.rs`). The guard's own deadline with a SIGKILLed parent is the guard bound row |
 | `STORE(proposal_file)` path | `--out` naming an existing file, a path under `context/`, `out/` or `.chief-of-staff/`, or one with a symlinked parent: refused, nothing written | A new file in a scratch directory is written |
 | `STORE(agents.json)` contract | `new --file` whose role's `checks` differ from its `from` entry, run with `--yes` and no terminal: refused, naming `checks`. `apply` with a changed `scope` and `ContractApproval::None`: refused. `roles_save` with `allow_contract: false` and a changed contract: refused | `apply` with `ContractApproval::Human` writes. The CLI on a pty (test harness) with a typed `contract` writes. Descriptive-only changes with `--yes` and no terminal write |
-| guard bound | — | `cos proc-guard --secs 2 -- <fake that never writes and starts a child>`, with its parent SIGKILLed right after spawn: the fake and its child are gone within 4 s |
+| guard bound | — | `cos proc-guard --secs 2 -- <fake that never writes and starts a child>`, with its parent SIGKILLed right after spawn: the fake and its child are gone within 6 s (`tests/proc_guard.rs`) |
 
 Stand-ins: `tests/fixtures/fake-claude-proposal.sh` (new) prints a
 stream-json result whose `structured_output` depends on `FAKE_PROPOSAL=ok |
@@ -722,10 +736,10 @@ and desktop tests set `COS_CLAUDE`. There is no live model in the suite.
   restore, the no-terminal refusal, and a hire refused for a retired role.
   Then `cos --dry-run agents spawn --role <new>` shows the structured
   preamble in the plan.
-- **Desktop:** `apps/desktop/tests/ipc.rs` covers `roles_save` (add,
+- **Desktop:** `apps/desktop/tests/roles_ipc.rs` covers `roles_save` (add,
   conflict, refused problems, a foreign business name writes nothing),
-  `roles_propose` with the fake (ok, cancel, timeout) and
-  `roles_propose_prompt`. `apps/desktop/tests/roles_page.rs` (new, added to
+  `roles_propose` with the fake (ok, cancel, quit, no cos binary), Cancel
+  with no run, and `roles_propose_prompt`. `apps/desktop/tests/roles_page.rs` (new, added to
   `task test-e2e` in `Taskfile.yml`) drives the preview
   (`apps/desktop/examples/preview.rs`) in a browser: New role → library →
   Skip → Save → card appears → Retire → in Retired group.
