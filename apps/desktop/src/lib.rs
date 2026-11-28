@@ -96,6 +96,8 @@ pub struct AppState {
     settings: Settings,
     triple: Triple,
     cos: Option<PathBuf>,
+    /// The clone holding `CLAUDE.md` and `.claude/agents`: where a brain runs.
+    install: PathBuf,
     /// The variable that set the triple at start; a pinned window cannot switch.
     pinned: Option<&'static str>,
     registry: PathBuf,
@@ -211,6 +213,7 @@ impl AppState {
             settings,
             triple,
             cos,
+            install: s.install.clone(),
             pinned: pinned_by(&s.sources),
             registry: s.registry.clone(),
             notes,
@@ -243,6 +246,7 @@ struct Current {
     workspace: PathBuf,
     projects: PathBuf,
     cos: Option<PathBuf>,
+    install: PathBuf,
     slots: Option<usize>,
 }
 
@@ -263,6 +267,7 @@ impl App {
             workspace: st.triple.workspace.clone(),
             projects: st.triple.projects.clone(),
             cos: st.cos.clone(),
+            install: st.install.clone(),
             slots: st.settings.slots,
         }
     }
@@ -1253,15 +1258,192 @@ async fn herdr_start() -> Res<cos::herdr::Server> {
 async fn agents_roles(app: tauri::State<'_, App>) -> Res<Value> {
     let home = app.get().home;
     blocking(move || {
-        let p = agents::policy::load(&home);
+        let (p, digest) = agents::roles::read(&home)?;
         let roles: Vec<Value> = p
             .roles
             .iter()
-            .map(|r| json!({ "role": r, "terms": p.terms_for(None, Some(r)) }))
+            .map(|r| {
+                let problems: Vec<&agents::roles::Problem> = p
+                    .problems
+                    .iter()
+                    .filter(|x| x.role.as_deref() == Some(r.id.as_str()))
+                    .collect();
+                json!({ "role": r, "terms": p.terms_for(None, Some(r)), "problems": problems })
+            })
             .collect();
-        Ok(json!({ "roles": roles, "defaults": p.defaults, "note": p.note }))
+        let library: Vec<Value> = agents::roles::library()
+            .iter()
+            .map(|e| {
+                json!({ "id": e.id, "version": e.version, "title": e.role.title,
+                        "summary": e.summary, "sources": e.sources })
+            })
+            .collect();
+        Ok(
+            json!({ "roles": roles, "defaults": p.defaults, "note": p.note,
+                   "digest": digest, "library": library }),
+        )
     })
     .await
+}
+
+/// One library entry in full, for the role dialog's review step.
+#[tauri::command]
+fn roles_library_entry(id: String) -> Res<agents::roles::LibraryEntry> {
+    agents::roles::entry(&id)
+        .cloned()
+        .ok_or_else(|| format!("no library entry {id}"))
+}
+
+fn propose_config(s: &Current) -> cos::pipeline::Config {
+    cos::pipeline::Config {
+        home: s.home.clone(),
+        install: s.install.clone(),
+        workspace: s.workspace.clone(),
+        projects: s.projects.clone(),
+        budget: None,
+        bins: Default::default(),
+    }
+}
+
+fn propose_context(
+    s: &Current,
+    brief: Option<&str>,
+) -> anyhow::Result<agents::roles::SpecialiseContext> {
+    let p = agents::policy::load(&s.home);
+    let st = cos::state::read(&s.workspace).ok().flatten();
+    agents::roles::specialise_context(&p, st.as_ref(), &s.business, brief)
+}
+
+/// Exactly what Propose would send: the recruiter's agent file and the
+/// prompt. Shown in the dialog before anything leaves the machine.
+#[tauri::command]
+async fn roles_propose_prompt(
+    app: tauri::State<'_, App>,
+    business: String,
+    id: String,
+    brief: Option<String>,
+) -> Res<String> {
+    let s = app.get();
+    named(&s, &business)?;
+    blocking(move || {
+        let e =
+            agents::roles::entry(&id).ok_or_else(|| anyhow::anyhow!("no library entry {id}"))?;
+        let ctx = propose_context(&s, brief.as_deref())?;
+        Ok(agents::roles::sent_text(
+            &s.install,
+            &agents::roles::specialise_prompt(e, &ctx),
+        ))
+    })
+    .await
+}
+
+/// The proposal running for the window, if one is: its stop flag and a
+/// channel that closes when its thread has killed and reaped `claude`. No
+/// process id is held here; only the spawning thread signals the child.
+struct ProposeRun {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+#[derive(Default)]
+struct Proposing(Mutex<Option<ProposeRun>>);
+
+impl Proposing {
+    /// Sets the stop flag and waits at most `wait` for the run to end. The
+    /// run stays in the slot until its thread closes `done`, so a new
+    /// proposal cannot start while the old `claude` is still being reaped.
+    fn stop(&self, wait: Duration) {
+        let Ok(slot) = self.0.lock() else {
+            return;
+        };
+        if let Some(run) = slot.as_ref() {
+            run.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if !wait.is_zero() {
+                let _ = run.done.recv_timeout(wait);
+            }
+        }
+    }
+}
+
+/// Specialises a library entry in-process on a thread this window owns:
+/// `claude` under `cos proc-guard`, one at a time. Returns at once;
+/// `role-proposal` carries the result, the failure, or `cancelled`.
+#[tauri::command]
+fn roles_propose<R: Runtime>(
+    handle: AppHandle<R>,
+    app: tauri::State<'_, App>,
+    proposing: tauri::State<'_, Proposing>,
+    business: String,
+    id: String,
+    new_id: Option<String>,
+    brief: Option<String>,
+) -> Res<()> {
+    let s = app.get();
+    named(&s, &business)?;
+    let entry = agents::roles::entry(&id).ok_or_else(|| format!("no library entry {id}"))?;
+    let ctx = propose_context(&s, brief.as_deref()).map_err(chain)?;
+    let mut slot = proposing.0.lock().map_err(err)?;
+    if let Some(run) = slot.as_ref()
+        && run.done.try_recv() == Err(std::sync::mpsc::TryRecvError::Empty)
+    {
+        return Err("a proposal is already running".into());
+    }
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (tx, done) = std::sync::mpsc::channel();
+    *slot = Some(ProposeRun {
+        stop: stop.clone(),
+        done,
+    });
+    drop(slot);
+    std::thread::spawn(move || {
+        let cfg = propose_config(&s);
+        let out = agents::roles::propose(
+            &cfg,
+            entry,
+            &ctx,
+            new_id.as_deref(),
+            s.cos.as_deref(),
+            &stop,
+        );
+        let payload = match out {
+            Ok(p) => json!({ "ok": true, "proposal": p }),
+            Err(e) if e.is::<cos::proc::Cancelled>() => json!({ "ok": false, "cancelled": true }),
+            Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+        };
+        let _ = handle.emit("role-proposal", &payload);
+        drop(tx);
+    });
+    Ok(())
+}
+
+/// Stops the running proposal; its thread kills and reaps `claude` and
+/// sends `role-proposal` with `cancelled`.
+#[tauri::command]
+fn roles_propose_cancel(proposing: tauri::State<'_, Proposing>) -> Res<()> {
+    proposing.stop(Duration::ZERO);
+    Ok(())
+}
+
+/// The one way the window changes `context/agents.json`: `roles::apply` on
+/// the app business's home, with the digest the window read. A contract
+/// change needs `allow_contract`, which the dialog sets only from its
+/// separate confirm step.
+#[tauri::command]
+async fn roles_save(
+    app: tauri::State<'_, App>,
+    business: String,
+    change: agents::roles::Change,
+    digest: String,
+    allow_contract: bool,
+) -> Res<agents::roles::Written> {
+    let s = app.get();
+    named(&s, &business)?;
+    let approval = if allow_contract {
+        agents::roles::ContractApproval::Human
+    } else {
+        agents::roles::ContractApproval::None
+    };
+    blocking(move || agents::roles::apply(&s.home, change, &digest, approval)).await
 }
 
 /// How agents did, from every verdict in the ledger: by role, harness, model
@@ -2077,11 +2259,14 @@ pub fn emit_exited<R: Runtime>(app: &AppHandle<R>, notice: &servers::ExitNotice)
 
 /// The callback `.run()` takes: quit stops every server this instance started. Both
 /// events reach it on ⌘Q; the second `stop_owned` is a no-op.
-pub fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
-    if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event
-        && let Some(supervisor) = app.try_state::<servers::Supervisor>()
-    {
-        supervisor.stop_owned();
+pub fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: tauri::RunEvent) {
+    if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+        if let Some(supervisor) = app.try_state::<servers::Supervisor>() {
+            supervisor.stop_owned();
+        }
+        if let Some(p) = app.try_state::<Proposing>() {
+            p.stop(Duration::from_secs(3));
+        }
     }
 }
 
@@ -2090,6 +2275,7 @@ pub fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
 pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder<R> {
     builder
         .manage(Brief::default())
+        .manage(Proposing::default())
         .manage(FlowPages(Default::default()))
         .register_asynchronous_uri_scheme_protocol("cosreport", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
@@ -2185,6 +2371,11 @@ pub fn builder<R: Runtime>(builder: Builder<R>, start: Option<Start>) -> Builder
             herdr_start,
             agent_tasks,
             agents_roles,
+            roles_library_entry,
+            roles_propose_prompt,
+            roles_propose,
+            roles_propose_cancel,
+            roles_save,
             agents_scorecard,
             agents_rejudge,
             deliverables_open,
