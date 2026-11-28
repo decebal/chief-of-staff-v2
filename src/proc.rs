@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -175,6 +176,40 @@ pub fn stream_lines_on(
     clock: &dyn Clock,
     cmd: &mut Command,
     deadline: Duration,
+    on_line: impl FnMut(&str) -> Result<bool>,
+) -> Result<(ExitStatus, String)> {
+    stream_lines_on_until(clock, cmd, deadline, &AtomicBool::new(false), on_line)
+}
+
+/// The run was stopped through its flag before it ended.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+/// `stream_lines` that also ends when `stop` is set: within one `POLL` this
+/// thread, the one that spawned the child, kills the group and reaps it, and
+/// the call fails with [`Cancelled`]. Other threads only ever set the flag.
+pub fn stream_lines_until(
+    cmd: &mut Command,
+    deadline: Duration,
+    stop: &AtomicBool,
+    on_line: impl FnMut(&str) -> Result<bool>,
+) -> Result<(ExitStatus, String)> {
+    stream_lines_on_until(&SystemClock, cmd, deadline, stop, on_line)
+}
+
+fn stream_lines_on_until(
+    clock: &dyn Clock,
+    cmd: &mut Command,
+    deadline: Duration,
+    stop: &AtomicBool,
     mut on_line: impl FnMut(&str) -> Result<bool>,
 ) -> Result<(ExitStatus, String)> {
     let until = Deadline::on(clock, deadline);
@@ -184,6 +219,10 @@ pub fn stream_lines_on(
     let rx = lines(child.stdout.take().context("child stdout not piped")?);
 
     loop {
+        if stop.load(Ordering::SeqCst) {
+            kill_and_reap(&mut child);
+            return Err(Cancelled.into());
+        }
         if until.expired() {
             kill_and_reap(&mut child);
             bail!("timed out after {}s", until.total.as_secs());
@@ -304,6 +343,73 @@ pub fn kill_group(pgid: libc::pid_t) {
             libc::kill(-pgid, libc::SIGKILL);
         }
     }
+}
+
+/// Exit code of a guarded program that ran past the guard's limit.
+pub const GUARD_TIMEOUT: i32 = 124;
+
+/// `cmd` run under `cos proc-guard` (`cos` at `cos`): same program,
+/// arguments, directory and environment, with a wall-clock `limit` that
+/// holds even if whoever spawned the guard dies first.
+pub fn guarded(cos: &std::path::Path, cmd: &Command, limit: Duration) -> Command {
+    let mut g = Command::new(cos);
+    g.arg("proc-guard")
+        .arg("--secs")
+        .arg(limit.as_secs().max(1).to_string())
+        .arg("--")
+        .arg(cmd.get_program())
+        .args(cmd.get_args());
+    if let Some(dir) = cmd.get_current_dir() {
+        g.current_dir(dir);
+    }
+    for (k, v) in cmd.get_envs() {
+        match v {
+            Some(v) => g.env(k, v),
+            None => g.env_remove(k),
+        };
+    }
+    g
+}
+
+/// The body of `cos proc-guard`: leads a process group of its own, runs
+/// `program` in it, waits at most `limit`, then sends SIGTERM to the whole
+/// group except itself and returns the child's exit code, or
+/// [`GUARD_TIMEOUT`]. The guard only sleeps and waits, so it cannot stall the
+/// way the program it holds can.
+pub fn guard(
+    program: &std::ffi::OsStr,
+    args: &[std::ffi::OsString],
+    limit: Duration,
+) -> Result<i32> {
+    // SAFETY: moves only this process into a new group it leads, so the
+    // group-wide SIGTERM below can never reach whoever started the guard.
+    if unsafe { libc::setpgid(0, 0) } != 0 {
+        bail!("proc-guard could not lead a process group");
+    }
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn {program:?}"))?;
+    let until = Deadline::after(limit);
+    let code = loop {
+        if let Some(status) = child.try_wait()? {
+            break status.code().unwrap_or(1);
+        }
+        if until.expired() {
+            let _ = child.kill();
+            let _ = child.wait();
+            break GUARD_TIMEOUT;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    // SAFETY: changes this process's own SIGTERM disposition, then signals
+    // its own process group; no memory is touched.
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        libc::kill(0, libc::SIGTERM);
+    }
+    Ok(code)
 }
 
 /// Whether `pid` exists (a zombie counts).

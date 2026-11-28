@@ -35,6 +35,7 @@ pub mod judge;
 pub mod ledger;
 pub mod osc;
 pub mod policy;
+pub mod roles;
 pub mod seed;
 pub mod slots;
 pub mod timeline;

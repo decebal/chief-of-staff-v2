@@ -242,7 +242,10 @@ pub fn check(vocab: &Vocab, roles: &[Role], role: Option<&Role>, work: &Work) ->
         }
         return fit;
     }
-    let suggest = roles.iter().filter(|r| !r.head).find(|r| can(r));
+    let suggest = roles
+        .iter()
+        .filter(|r| !r.head && !r.retired)
+        .find(|r| can(r));
     fit.reason = Some(match role {
         Some(r) if !does(r) => format!(
             "the {} does {} work; this is {} work",

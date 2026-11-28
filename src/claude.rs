@@ -5,6 +5,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -191,11 +192,35 @@ pub fn transient(o: &Outcome) -> bool {
 /// Runs `run` and appends every tool call to `audit`. An error result comes
 /// back as a [`Failed`].
 pub fn execute(program: &Path, install: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
-    let mut cmd = command_with(program, install, run);
+    let cmd = command_with(program, install, run);
+    execute_cmd(cmd, audit, run, &AtomicBool::new(false))
+}
+
+/// [`execute`] that ends, killed and reaped by this thread, when `stop` is
+/// set (`proc::Cancelled`). `guard` names the `cos` binary to run `claude`
+/// under `cos proc-guard`, so the run ends at its deadline even if this
+/// process is killed first.
+pub fn execute_until(
+    program: &Path,
+    install: &Path,
+    audit: &Path,
+    run: &Run,
+    guard: Option<&Path>,
+    stop: &AtomicBool,
+) -> Result<Outcome> {
+    let cmd = command_with(program, install, run);
+    let cmd = match guard {
+        Some(cos) => proc::guarded(cos, &cmd, run.deadline),
+        None => cmd,
+    };
+    execute_cmd(cmd, audit, run, stop)
+}
+
+fn execute_cmd(mut cmd: Command, audit: &Path, run: &Run, stop: &AtomicBool) -> Result<Outcome> {
     let mut log = AuditLog::open(audit, run.agent)?;
     let mut outcome = None;
     let mut called = Vec::new();
-    let (status, stderr) = proc::stream_lines(&mut cmd, run.deadline, |line| {
+    let (status, stderr) = proc::stream_lines_until(&mut cmd, run.deadline, stop, |line| {
         if let Ok(raw) = serde_json::from_str::<Value>(line)
             && raw["type"] == "system"
             && raw["subtype"] == "init"

@@ -127,6 +127,16 @@ enum Cmd {
         #[command(subcommand)]
         cmd: BusinessCmd,
     },
+    /// Run a program in this process's group and end the group at --secs,
+    /// even if whoever started the guard is gone.
+    #[command(hide = true)]
+    ProcGuard {
+        #[arg(long)]
+        secs: u64,
+        program: std::ffi::OsString,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Independent design review of a commitment's draft, then your approval.
     Review {
         #[command(subcommand)]
@@ -441,6 +451,14 @@ fn run(cli: &Cli, auth: cos::auth::Source) -> Result<()> {
     match &cli.cmd {
         Cmd::Ritual { cmd } => ritual_cmd(cmd),
         Cmd::Business { cmd } => business_cmd(cli, cmd),
+        Cmd::ProcGuard {
+            secs,
+            program,
+            args,
+        } => {
+            let code = cos::proc::guard(program, args, Duration::from_secs(*secs))?;
+            std::process::exit(code)
+        }
         // This takes its paths as arguments and never resolves a triple.
         Cmd::Agents {
             cmd:
@@ -569,6 +587,7 @@ fn run_on(cli: &Cli, t: &Triple, auth: cos::auth::Source, cmd: &Cmd) -> Result<(
         Cmd::Review { cmd } => review_cmd(&ws, cmd),
         Cmd::Ritual { .. } => unreachable!("run dispatches ritual before a triple resolves"),
         Cmd::Business { .. } => unreachable!("run dispatches business before a triple resolves"),
+        Cmd::ProcGuard { .. } => unreachable!("run dispatches proc-guard before a triple resolves"),
     }
 }
 

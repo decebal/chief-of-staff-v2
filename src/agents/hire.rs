@@ -49,6 +49,9 @@ pub struct Plan {
     pub warnings: Vec<String>,
     /// Why nothing will start, when it will not.
     pub refused: Option<String>,
+    /// What the hire reads before the prompt (`policy::preamble`), when it
+    /// has a role.
+    pub preamble: Option<String>,
 }
 
 pub struct Where<'a> {
@@ -161,6 +164,7 @@ pub fn plan(
         contract,
         warnings,
         refused,
+        preamble: role.map(policy::preamble),
     })
 }
 

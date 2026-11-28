@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use super::fit::Vocab;
 use super::judge::Expects;
+use super::roles;
 use super::{Harness, Request};
 
 /// A key a file may still carry from before hires ran in Herdr.
@@ -97,6 +98,27 @@ pub struct Role {
     pub scope: Vec<String>,
     #[serde(default)]
     pub deadline_secs: Option<u64>,
+    /// Standards a top practitioner in this role holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub principles: Vec<String>,
+    /// The steps it follows, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub method: Vec<String>,
+    /// What it refuses to do.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anti_patterns: Vec<String>,
+    /// The exact shape of what it hands back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+    /// When it stops and leaves the question for the user.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub escalation: Vec<String>,
+    /// The library entry it was made from, `<id>@<version>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Kept so the ledger and scorecard still name it; never hired.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
     #[serde(default, rename = "budget_usd", skip_serializing)]
     pub retired_budget: Retired,
     #[serde(default, rename = "stall_secs", skip_serializing)]
@@ -190,6 +212,12 @@ impl Policy {
         if r.head {
             bail!("{} hires; it is not hired", r.title);
         }
+        if r.retired {
+            bail!(
+                "the {} is retired; restore it with `cos roles restore {id}`",
+                r.title
+            );
+        }
         Ok(r)
     }
 
@@ -264,22 +292,63 @@ pub fn scratch_ok(r: &Role) -> bool {
     r.repo == Some(false) && r.expects != Expects::Diff
 }
 
-/// What the agent reads first: its role, its mandate, what it must leave.
+/// What the agent reads first: its role, its mandate, how it works, what it
+/// must leave. Every value goes through [`roles::clean`] and the caps.
 pub fn preamble(r: &Role) -> String {
-    let mut s = format!("Role: {}. {}", r.title, r.mandate.trim());
-    match (r.expects, r.output.as_deref()) {
-        (Expects::File, Some(out)) => s.push_str(&format!(
-            " Leave your result in `{out}`; you are judged on that file."
-        )),
-        (Expects::Nothing, Some(out)) => s.push_str(&format!(
-            " Change nothing in the repo; write your answer to `{out}` only."
-        )),
-        (Expects::Nothing, None) => s.push_str(" Change nothing in the repo."),
-        _ => {}
-    }
-    s.push_str(
-        " Drafts only: nothing outward-facing; this hire grants nothing outside the worktree.",
+    let c = &roles::CAPS;
+    let mut s = format!(
+        "Role: {}. {}",
+        roles::clean(&r.title, c.title),
+        roles::clean(&r.mandate, c.mandate)
     );
+    let bullets = |s: &mut String, head: &str, items: &[String], cap: roles::ListCap| {
+        let items = roles::clean_list(items, cap);
+        if !items.is_empty() {
+            s.push_str(&format!("\n\n{head}"));
+            for i in items {
+                s.push_str(&format!("\n- {i}"));
+            }
+        }
+    };
+    bullets(&mut s, "Principles:", &r.principles, c.principles);
+    let steps = roles::clean_list(&r.method, c.method);
+    if !steps.is_empty() {
+        s.push_str("\n\nMethod:");
+        for (n, step) in steps.iter().enumerate() {
+            s.push_str(&format!("\n{}. {step}", n + 1));
+        }
+    }
+    bullets(&mut s, "Never:", &r.anti_patterns, c.anti_patterns);
+    if let Some(f) = r
+        .output_format
+        .as_deref()
+        .map(|f| roles::clean(f, c.output_format))
+        .filter(|f| !f.is_empty())
+    {
+        s.push_str(&format!("\n\nHand back: {f}"));
+    }
+    bullets(
+        &mut s,
+        "Stop and leave it for the user when:",
+        &r.escalation,
+        c.escalation,
+    );
+    let out = r.output.as_deref().map(|o| roles::clean(o, c.output));
+    let mut tail = match (r.expects, out) {
+        (Expects::File, Some(out)) => {
+            format!("Leave your result in `{out}`; you are judged on that file. ")
+        }
+        (Expects::Nothing, Some(out)) => {
+            format!("Change nothing in the repo; write your answer to `{out}` only. ")
+        }
+        (Expects::Nothing, None) => "Change nothing in the repo. ".to_owned(),
+        _ => String::new(),
+    };
+    tail.push_str(
+        "Drafts only: nothing outward-facing; this hire grants nothing outside the worktree.",
+    );
+    s.push_str(if s.contains('\n') { "\n\n" } else { " " });
+    s.push_str(&tail);
     s
 }
 
