@@ -131,6 +131,10 @@ pub fn plan(
     let contract = contract(&policy, role, repo.as_deref(), asked, done_when.as_deref());
     let mut prompt = task.prompt.clone();
     if let (Some(draft), Some(original)) = (&contract.done_when, &contract.finish_line) {
+        let (draft, original) = (
+            super::roles::clean(draft, 2 * super::roles::CAPS.text),
+            super::roles::clean(original, super::roles::CAPS.text),
+        );
         prompt.push_str(&format!(
             "\n\nYour finish line here: {draft} The deliverable's own finish line, \"{original}\", is a step for the user, outside your sandbox."
         ));
