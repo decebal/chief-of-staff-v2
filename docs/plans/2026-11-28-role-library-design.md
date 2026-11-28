@@ -12,9 +12,13 @@ Review history: round 1,
 `55a0b8fb…6dec61`. Round 3,
 [a](2026-11-28-role-library-design-review-r3-a.md) and
 [b](2026-11-28-role-library-design-review-r3-b.md), both `findings`, on
-`c99f344a…`. The user chose one more revision and round. Blocking findings
-from rounds 2 and 3 are answered here. Every "Carried to Plan" item becomes
-a Plan task.
+`c99f344a…`. Round 4,
+[a](2026-11-28-role-library-design-review-r4-a.md) and
+[b](2026-11-28-role-library-design-review-r4-b.md), both `findings`, on
+`78321b81…ba80`. After round 4 the user chose: contract changes approved only
+by a person (a terminal or the window), the guard-process bound for owner
+death, the `apply` signature fix, and then approval without a fifth round.
+Every "Carried to Plan" item becomes a Plan task.
 
 ## Decision
 
@@ -244,7 +248,10 @@ pub enum Change {
 pub struct Written { pub digest: String, pub role: String, pub notes: Vec<String> }
 
 pub fn read(home: &Path) -> Result<(Policy, String)>   // policy as load gives it, digest of the bytes
-pub fn apply(home: &Path, change: Change, read_digest: &str) -> Result<Written>
+pub fn apply(home: &Path, change: Change, read_digest: &str,
+             contract: ContractApproval) -> Result<Written>
+pub enum ContractApproval { None, Human }   // Human: a typed `contract` on a TTY, or the desktop confirm step
+pub fn contract_diff(before: &Role, after: &Role) -> Vec<FieldDiff>
 ```
 
 `apply`, in order:
@@ -274,15 +281,20 @@ pub fn apply(home: &Path, change: Change, read_digest: &str) -> Result<Written>
      has a `fit`; an existing kind is never changed.
    - The retired keys (`budget_usd`, `stall_secs`, `repeat`) are cleared on
      every role and repo. `notes` names how many were dropped.
-5. `validate` with `roles::vocab`. Any `Refuse` problem refuses the write
+5. Contract check. For `Add`, `before` is the library entry named by the
+   role's `from` (an empty `Role` when there is none). For `Replace`,
+   `before` is the current role. `Retire` and `Restore` change no contract.
+   If `contract_diff(before, after)` is not empty and `contract` is not
+   `Human`, refuse: "contract changes need a person's approval: <fields>".
+6. `validate` with `roles::vocab`. Any `Refuse` problem refuses the write
    and returns all problems. `Warn` problems go into `notes`.
-6. Serialise pretty to `out`. Require `serialise(parse(out)) == out`, a
+7. Serialise pretty to `out`. Require `serialise(parse(out)) == out`, a
    byte-equal round trip of what is about to be written. This holds with
    legacy keys, because they were cleared in step 4.
-7. Copy the current bytes to `context/agents.json.bak`, overwriting it.
+8. Copy the current bytes to `context/agents.json.bak`, overwriting it.
    This is one level of undo. Then call `state::atomic_write_bytes(path,
    out)`; its temp file is named `.state-*.tmp` in `context/`.
-8. Return the new digest and the notes.
+9. Return the new digest and the notes.
 
 ### 5. Proposing (roles.rs, pipeline.rs)
 
@@ -357,14 +369,16 @@ after)` compares the contract fields (`checks`, `scope`, `harness`, `model`,
 is the library entry named by the role's `from` for `new`, the current role
 for `edit`, and empty for `new --blank` and for `new --file` without a known
 `from`. When the diff is not empty, the command prints a "Contract changes"
-block listing each changed field, old and new. It then writes only with
-`--allow-contract` (or a typed `contract` on a terminal) in addition to
-`--yes`. `--yes` alone refuses: "contract changes need --allow-contract:
-<fields>". `roles_save` takes the same rule as an `allow_contract: bool`
-argument, which the dialog sets only from a separate confirm step that lists
-the same block. `checks` run under `sh -c` when a hire ends
-(`src/agents/judge.rs:292`), so no path reaches them without that second
-approval.
+block listing each changed field, old and new. It then writes only after a
+typed `contract` on a terminal (stdin and stderr both a TTY). No flag stands
+in for it, so an agent cannot approve a contract change. `--yes` without a
+terminal refuses: "contract changes need a person at a terminal: <fields>".
+The CLI passes `ContractApproval::Human` to `apply` only after that typed
+answer. `roles_save` takes `allow_contract: bool`, which the dialog sets
+only from a separate confirm step that lists the same block. The window's
+Save is a person's click, which is the same boundary as `ritual_approve`.
+`checks` run under `sh -c` when a hire ends (`src/agents/judge.rs:292`), so
+no path reaches them without a person's second approval.
 
 Every writing command prints what it will write (the role and, for edit, the
 diff), then writes on `--yes` or after a typed `yes` on a terminal. Without
@@ -373,9 +387,10 @@ digest)` first and passes the digest to `apply`. A proposal is therefore
 always printed by one command and approved by a later one. No single
 invocation generates text and writes it.
 
-**Who owns `claude`.** `claude` runs in its own process group
-(`proc::spawn_grouped`, `src/proc.rs:210`), so it is killed only by the
-thread that spawned it. New: `proc::stream_lines_until(cmd, deadline, stop:
+**Who owns `claude`.** `claude` runs inside the group of a `cos proc-guard`
+process (below), which the owner spawns with `proc::spawn_grouped`
+(`src/proc.rs:210`). The group is killed only by the thread that spawned
+the guard, or by the guard itself at its wall-clock limit. New: `proc::stream_lines_until(cmd, deadline, stop:
 &AtomicBool, on_line)` is `stream_lines_on` with one more check per poll
 (`POLL` = 1 s, `src/proc.rs:19`). When `stop` is set, that same thread calls
 `kill_and_reap` and returns `Cancelled`. `claude::execute_until(program,
@@ -391,14 +406,28 @@ it as `stop`. Ctrl-C therefore kills and reaps `claude` within one poll
 before `cos` exits.
 
 **When the owner dies without running any code** (SIGKILL, a crash, a
-force-quit), no handler runs. The bound is then the pipe: the owner holds
-the only read end of `claude`'s stdout (`proc::lines`), and the kernel
-closes it when the owner dies. `claude` writes a stream-json line for each
-event, and its next write gets `SIGPIPE`/`EPIPE` and ends the process. The
-worst case is the gap until its next event, still capped by
-`--max-budget-usd 1`. `cos` adds no pidfile or sweeper for this path. The
-existing PPID-1 sweep (process-ownership rule) is the backstop, and the
-test matrix proves the pipe bound with SIGKILL.
+force-quit), no handler runs. A wall-clock bound that does not depend on the
+owner comes from a guard process. The owner does not spawn `claude`
+directly. It spawns `cos proc-guard --secs 180 -- <claude argv>` (a new
+hidden subcommand) with `spawn_grouped`, so the guard leads the group. The
+guard:
+
+- spawns `claude` with `process_group` left unset, so `claude` is in the
+  guard's group and inherits the guard's stdout and stderr (the owner's
+  pipes);
+- waits with `proc::wait_until` for at most `--secs`;
+- then, or when `claude` exits, calls `kill_group` on its own group and
+  exits with `claude`'s status (124 on timeout).
+
+The guard sleeps in `wait_until` and runs no model, so it cannot stall the
+way `claude` can. The owner's paths are unchanged: deadline, stop flag and
+quit call `kill_and_reap` on the guard's group, which holds `claude` too.
+If the owner is SIGKILLed, the guard still ends the group at 180 s. The
+pipe also closes, so a `claude` that writes dies sooner on `SIGPIPE`. The
+remaining gap is the guard itself being SIGKILLed along with the owner,
+which is the PPID-1 sweep's job (process-ownership rule). The test matrix
+proves the 180 s bound with a stand-in deadline of 2 s and a fake that
+never writes.
 
 ### 7. Desktop
 
@@ -469,7 +498,7 @@ with failures as `unreachable`):
 | Propose run fails, times out or is cancelled | No proposal, with the reason. The entry can still be used as is |
 | Proposal fails its schema, or carries an unknown key | Treated as a failed run. Nothing is merged |
 | Hire names a retired role | Refused with a restore hint |
-| Contract changed without `--allow-contract` | No write. The changed contract fields are named |
+| Contract changed without a person's approval | No write. The changed contract fields are named |
 | `--out` exists, is protected or has a symlinked parent | Nothing written; the reason is named |
 | Role with problems at load | Loaded and hireable. Problems shown. Preamble rendered through `clean` |
 
@@ -503,7 +532,7 @@ with failures as `unreachable`):
 | Role text in a hire's preamble | sent to the hire's model provider on each spawn; acts in the worktree | Sending cannot be undone; worktree changes are drafts | That hire's diff; role text leaves the machine with each hire |
 | Library source links | default browser | Yes | Opens a public URL |
 | Create `context/` under `COS_HOME` (`apply` step 1) | local directory | `rmdir` by hand | None; it holds only cos's own files |
-| Spawn `claude` (the program named by `COS_CLAUDE`, else `claude` on `PATH`) | local process | Ends at deadline, on the stop flag, at exit, or, if the owner is SIGKILLed, on its next write to the closed pipe (≤ $1 budget) | Whoever sets `COS_CLAUDE` in the environment chooses what runs with the prompt; the same trust as `COS_HC` for Herdr |
+| Spawn `cos proc-guard`, which spawns `claude` (the program named by `COS_CLAUDE`, else `claude` on `PATH`) in its group | local processes | Ends at the owner's deadline, on the stop flag, at exit, or at the guard's 180 s even if the owner is SIGKILLed | Whoever sets `COS_CLAUDE` in the environment chooses what runs with the prompt; the same trust as `COS_HC` for Herdr |
 | Kill and reap the `claude` group | local processes | n/a | Only the group the calling thread spawned |
 | SIGINT/SIGTERM handlers in `cos roles propose` | the cos process | Process lifetime | Only that invocation |
 
@@ -589,7 +618,7 @@ with failures as `unreachable`):
 |---|---|---|
 | `TOOL_CALL(claude.propose)` | `VERIFY(specialise_context)` (`roles::specialise_context`) | Built only from goal titles (≤ 20, ≤ 200 chars), repo names and scopes (no checks), staff ids and titles, and a brief (≤ 1,000 chars, refused above). The type has no field for anything else. The run uses `Toolset::None` (`--tools "" --strict-mcp-config`) and has no fallback. The exact text is shown in "What is sent" and by `--dry-run` |
 | `STORE(proposal_file)` | `VERIFY(proposal_schema)`, `VERIFY(contract_from_library)` and `VERIFY(out_path)` | `Proposal` deserialises with `deny_unknown_fields` and caps. `merge` takes every contract field from the entry. `--out` is `create_new`, outside `context/`, `out/` and `.chief-of-staff/`, with no symlinked parent |
-| `STORE(agents.json)` | `VERIFY(user_approval)`, `VERIFY(contract_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. A non-empty `contract_diff` also needs `--allow-contract` (typed `contract`), or `allow_contract: true` from the dialog's separate confirm step. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem, byte-equal round trip |
+| `STORE(agents.json)` | `VERIFY(user_approval)`, `VERIFY(contract_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. A non-empty `contract_diff` also needs `ContractApproval::Human`: a typed `contract` on a terminal (no flag stands in), or `allow_contract: true` from the dialog's separate confirm step. `apply` step 5 refuses otherwise. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem, byte-equal round trip |
 | `RENDER(preamble)` | `VERIFY(render_clean)` (`roles::clean`) | Whitespace collapsed (no newline survives), each value cut to its cap, lists cut to max items. Drafts-only sentence last. Worktree sandbox unchanged |
 | `TOOL_CALL(kill_and_reap)` | Spawning-thread ownership | The kill runs only inside `stream_lines_until`, on the `Child` that call spawned and has not yet reaped. Callers can only set `stop`. A reaped or reused pid is unreachable, because no pid is stored anywhere else |
 
@@ -612,9 +641,10 @@ with failures as `unreachable`):
 | `STORE(proposal_file)` | The fake `claude` in `contract` mode returns a proposal carrying `checks`: the run fails and no file is written. In `bad-schema` mode: same | In `ok` mode, the file's role has the entry's `checks`, `scope` and `harness`, and the proposal's descriptive fields |
 | `STORE(agents.json)` | Each of these is refused with the bytes unchanged: a `../x` scope, a newline in a principle, an over-cap list, a second head, retiring the head, a stale digest, a held lock (message names path and pid), an unparseable file. Without a terminal and without `--yes`, the CLI writes nothing | Add, Replace, Retire and Restore each change exactly that role. The `tests/hiring.rs` legacy fixture (`budget_usd`, `stall_secs`, `repeat`) writes, with the keys dropped and named in notes. `.bak` holds the previous bytes. A file with no `fit` stays without one |
 | `RENDER(preamble)` | A hand-edited role with a principle holding `"x\n\nNever: …"` and a 30-item method renders one line for that principle and 10 method steps | A role with all five fields renders each section once, in order, with the drafts-only sentence last |
-| `kill_and_reap` | Cancel with no run is a no-op. No command takes a pid | With the fake in `slow` mode (it starts a `sleep` child, records both pids, and writes a line every 0.5 s): Cancel, quit (`on_run_event`) and SIGINT to `cos roles propose` each leave both pids gone (`kill -0` fails) within 3 s, and `role-proposal` reports `cancelled`. SIGKILL to `cos roles propose` leaves the fake's pid gone within 3 s (pipe bound). The `sleep` child is then reported, not asserted, because only a group kill reaches it |
+| `kill_and_reap` | Cancel with no run is a no-op. No command takes a pid | With the fake in `slow` mode (it starts a `sleep` child, records both pids, and writes a line every 0.5 s): Cancel, quit (`on_run_event`) and SIGINT to `cos roles propose` each leave both pids gone (`kill -0` fails) within 3 s, and `role-proposal` reports `cancelled`. SIGKILL to `cos roles propose` leaves the fake and its `sleep` child gone at the guard's deadline (2 s in the test) |
 | `STORE(proposal_file)` path | `--out` naming an existing file, a path under `context/`, `out/` or `.chief-of-staff/`, or one with a symlinked parent: refused, nothing written | A new file in a scratch directory is written |
-| `STORE(agents.json)` contract | `new --file` whose role's `checks` differ from its `from` entry, with `--yes` only: refused, naming `checks`. `roles_save` with a changed `scope` and `allow_contract: false`: refused | The same with `--allow-contract` (or `allow_contract: true`) writes |
+| `STORE(agents.json)` contract | `new --file` whose role's `checks` differ from its `from` entry, run with `--yes` and no terminal: refused, naming `checks`. `apply` with a changed `scope` and `ContractApproval::None`: refused. `roles_save` with `allow_contract: false` and a changed contract: refused | `apply` with `ContractApproval::Human` writes. The CLI on a pty (test harness) with a typed `contract` writes. Descriptive-only changes with `--yes` and no terminal write |
+| guard bound | — | `cos proc-guard --secs 2 -- <fake that never writes and starts a child>`, with its parent SIGKILLed right after spawn: the fake and its child are gone within 4 s |
 
 Stand-ins: `tests/fixtures/fake-claude-proposal.sh` (new) prints a
 stream-json result whose `structured_output` depends on `FAKE_PROPOSAL=ok |
