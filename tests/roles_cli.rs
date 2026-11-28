@@ -177,6 +177,52 @@ fn a_dry_run_prints_what_would_be_sent_and_calls_nothing() {
 }
 
 #[test]
+fn a_dry_run_writes_nothing_for_any_command() {
+    let h = home("dry-writes");
+    ok(&h, &["roles", "new", "sre", "--yes"]);
+    let before = agents_json(&h).unwrap();
+    ok(&h, &["--dry-run", "roles", "new", "debugger", "--yes"]);
+    ok(&h, &["--dry-run", "roles", "retire", "sre", "--yes"]);
+    let mut r = policy::load(&h).role("sre").unwrap().clone();
+    r.mandate = "Something else.".into();
+    let file = h.join("sre.json");
+    std::fs::write(&file, serde_json::to_string(&r).unwrap()).unwrap();
+    let out = ok(
+        &h,
+        &[
+            "--dry-run",
+            "roles",
+            "edit",
+            "sre",
+            "--file",
+            file.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert!(out.contains("not written"), "{out}");
+    assert_eq!(
+        agents_json(&h).unwrap(),
+        before,
+        "a dry run changed agents.json"
+    );
+}
+
+#[test]
+fn an_out_path_through_a_symlink_is_refused() {
+    let h = home("out-symlink");
+    let real = h.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    std::os::unix::fs::symlink(&real, h.join("link")).unwrap();
+    let out = h.join("link/sre.json");
+    fails(
+        &h,
+        &["roles", "propose", "sre", "--out", out.to_str().unwrap()],
+        "goes through a symlink",
+    );
+    assert!(!real.join("sre.json").exists());
+}
+
+#[test]
 fn an_unparseable_file_is_never_overwritten() {
     let h = home("broken");
     std::fs::create_dir_all(h.join("context")).unwrap();

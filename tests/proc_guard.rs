@@ -107,6 +107,35 @@ fn the_guard_passes_through_the_exit_code_and_times_out_with_124() {
 }
 
 #[test]
+fn a_child_that_ignores_sigterm_still_ends_with_the_guard() {
+    let dir = scratch("stubborn");
+    let p = dir.join("stubborn.sh");
+    std::fs::write(
+        &p,
+        format!(
+            "#!/bin/bash\n(trap '' TERM; exec /bin/sh -c 'echo $$ > {d}/child; exec sleep 600') &\nwait\n",
+            d = dir.display()
+        ),
+    )
+    .unwrap();
+    let mut perm = std::fs::metadata(&p).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
+    std::fs::set_permissions(&p, perm).unwrap();
+    let mut guard = Command::new(COS)
+        .args(["proc-guard", "--secs", "1", "--"])
+        .arg(&p)
+        .spawn()
+        .unwrap();
+    let child = pid(&dir, "child");
+    let status = guard.wait().unwrap();
+    assert_eq!(status.code(), Some(cos::proc::GUARD_TIMEOUT));
+    assert!(
+        gone_within(child, Duration::from_secs(3)),
+        "a member that ignores SIGTERM outlived the guard"
+    );
+}
+
+#[test]
 fn the_stop_flag_kills_and_reaps_from_the_spawning_thread() {
     let dir = scratch("stop");
     let prog = silent(&dir);

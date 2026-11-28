@@ -292,6 +292,9 @@ enum RolesCmd {
         id: String,
         #[arg(long)]
         library: bool,
+        /// Accepted for symmetry with `list`; the output is always JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Specialise a library entry to this business (a paid run, no tools).
     /// Writes only --out; add it with `new --file`. With --dry-run, prints
@@ -1026,7 +1029,7 @@ fn roles_cmd(cli: &Cli, t: &Triple, cfg: &Config, cmd: &RolesCmd) -> Result<()> 
             retired,
             json,
         } => cli::list(home, *library, *retired, *json),
-        RolesCmd::Show { id, library } => cli::show(home, id, *library),
+        RolesCmd::Show { id, library, .. } => cli::show(home, id, *library),
         RolesCmd::Propose {
             library_id,
             id,
@@ -1067,11 +1070,11 @@ fn roles_cmd(cli: &Cli, t: &Triple, cfg: &Config, cmd: &RolesCmd) -> Result<()> 
                 },
                 _ => anyhow::bail!("name a library entry, --file <role.json> or --blank <id>"),
             };
-            cli::new(home, from, *yes)
+            cli::new(home, from, *yes, cli.dry_run)
         }
-        RolesCmd::Edit { id, file, yes } => cli::edit(home, id, file, *yes),
-        RolesCmd::Retire { id, yes } => cli::set_retired(home, id, true, *yes),
-        RolesCmd::Restore { id, yes } => cli::set_retired(home, id, false, *yes),
+        RolesCmd::Edit { id, file, yes } => cli::edit(home, id, file, *yes, cli.dry_run),
+        RolesCmd::Retire { id, yes } => cli::set_retired(home, id, true, *yes, cli.dry_run),
+        RolesCmd::Restore { id, yes } => cli::set_retired(home, id, false, *yes, cli.dry_run),
     }
 }
 

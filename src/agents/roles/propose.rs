@@ -240,5 +240,44 @@ pub fn propose(
         .context("the proposal run returned no structured_output")?;
     let p: Proposal =
         serde_json::from_value(value).context("the proposal did not match its schema")?;
+    check(&p)?;
     Ok(merge(entry, &p, id))
+}
+
+/// The caps and one-line rules held here too: a model's schema is a request,
+/// not a guarantee.
+pub fn check(p: &Proposal) -> Result<()> {
+    let mut bad = Vec::new();
+    for (field, v, cap, one_line) in [
+        ("title", &p.title, CAPS.title, true),
+        ("mandate", &p.mandate, CAPS.mandate, true),
+        ("serves", &p.serves, CAPS.text, false),
+        ("sandbox", &p.sandbox, CAPS.text, false),
+        ("judged", &p.judged, CAPS.text, false),
+        ("done_when", &p.done_when, CAPS.text, false),
+        ("output_format", &p.output_format, CAPS.output_format, false),
+        ("rationale", &p.rationale, CAPS.rationale, false),
+    ] {
+        if v.trim().is_empty() || v.chars().count() > cap || (one_line && v.contains(['\n', '\r']))
+        {
+            bad.push(field);
+        }
+    }
+    for (field, items, cap) in [
+        ("principles", &p.principles, CAPS.principles),
+        ("method", &p.method, CAPS.method),
+        ("anti_patterns", &p.anti_patterns, CAPS.anti_patterns),
+        ("escalation", &p.escalation, CAPS.escalation),
+    ] {
+        let item_bad = |i: &String| {
+            i.trim().is_empty() || i.chars().count() > cap.chars || i.contains(['\n', '\r'])
+        };
+        if items.is_empty() || items.len() > cap.items || items.iter().any(item_bad) {
+            bad.push(field);
+        }
+    }
+    if !bad.is_empty() {
+        bail!("the proposal breaks its caps: {}", bad.join(", "));
+    }
+    Ok(())
 }

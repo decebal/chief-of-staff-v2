@@ -230,6 +230,8 @@ fn a_run_returns_the_merged_proposal_and_refuses_anything_else() {
     let e = format!("{:#}", run(&home, "contract").unwrap_err());
     assert!(e.contains("checks") || e.contains("unknown field"), "{e}");
     assert!(run(&home, "bad-schema").is_err());
+    let e = format!("{:#}", run(&home, "overcap").unwrap_err());
+    assert!(e.contains("breaks its caps: method"), "{e}");
 }
 
 #[test]

@@ -46,6 +46,10 @@ fn business(root: &Path) -> Business {
 }
 
 fn open(root: &Path) -> (tauri::App<MockRuntime>, Win, Business) {
+    open_with(root, Some(cos_bin()))
+}
+
+fn open_with(root: &Path, cos: Option<PathBuf>) -> (tauri::App<MockRuntime>, Win, Business) {
     let b = business(root);
     let install = root.join("install");
     std::fs::create_dir_all(&install).unwrap();
@@ -59,7 +63,7 @@ fn open(root: &Path) -> (tauri::App<MockRuntime>, Win, Business) {
         ui_state_file: root.join("ui-state.json"),
         dashboards_file: None,
         sources: Sources::default(),
-        cos_bin: Some(cos_bin()),
+        cos_bin: cos,
         slots: Some(2),
     };
     cos::business::add(&start.registry, "acme", b.clone(), false).unwrap();
@@ -184,6 +188,15 @@ fn saving_goes_through_the_write_path_and_its_refusals() {
         .to_owned();
     let invalid = save(json!({ "add": bad }), &digest, false).unwrap_err();
     assert!(invalid.to_string().contains("output"), "{invalid}");
+}
+
+#[test]
+fn without_a_cos_binary_nothing_is_proposed_unguarded() {
+    let root = scratch("no-cos");
+    let (_app, w, _b) = open_with(&root, None);
+    let args = json!({ "business": "acme", "id": "sre", "newId": null, "brief": null });
+    let e = call(&w, "roles_propose", args).unwrap_err();
+    assert!(e.to_string().contains("no cos binary"), "{e}");
 }
 
 fn pid(dir: &Path, name: &str) -> libc::pid_t {

@@ -302,7 +302,7 @@ fn role_file(path: &Path) -> Result<Role> {
 }
 
 /// `cos roles new`.
-pub fn new(home: &Path, from: NewFrom, yes: bool) -> Result<()> {
+pub fn new(home: &Path, from: NewFrom, yes: bool, dry_run: bool) -> Result<()> {
     let role = match from {
         NewFrom::Library { id, new_id } => {
             let e = entry(id).with_context(|| format!("no library entry {id}"))?;
@@ -330,13 +330,26 @@ pub fn new(home: &Path, from: NewFrom, yes: bool) -> Result<()> {
         .and_then(|(e, _)| entry(e))
         .map(|e| e.role.clone())
         .unwrap_or_default();
+    if dry_run {
+        return not_written(&contract_diff(&before, &role));
+    }
     let approval = approve(yes, &contract_diff(&before, &role))?;
     written(&apply(home, Change::Add(role), &digest, approval)?);
     Ok(())
 }
 
+/// `--dry-run`: says what a write would need, writes nothing.
+fn not_written(contract: &[FieldDiff]) -> Result<()> {
+    show_diff(
+        "Contract changes (would need a person at a terminal):",
+        contract,
+    );
+    eprintln!("dry run: context/agents.json not written");
+    Ok(())
+}
+
 /// `cos roles edit`.
-pub fn edit(home: &Path, id: &str, file: &Path, yes: bool) -> Result<()> {
+pub fn edit(home: &Path, id: &str, file: &Path, yes: bool, dry_run: bool) -> Result<()> {
     let role = role_file(file)?;
     let (p, digest) = read(home)?;
     let current = p.role(id).with_context(|| format!("no role {id}"))?;
@@ -348,6 +361,9 @@ pub fn edit(home: &Path, id: &str, file: &Path, yes: bool) -> Result<()> {
         );
     }
     show_diff(&format!("Changes to {id}:"), &all);
+    if dry_run {
+        return not_written(&contract_diff(current, &role));
+    }
     let approval = approve(yes, &contract_diff(current, &role))?;
     written(&apply(
         home,
@@ -362,9 +378,12 @@ pub fn edit(home: &Path, id: &str, file: &Path, yes: bool) -> Result<()> {
 }
 
 /// `cos roles retire` / `restore`.
-pub fn set_retired(home: &Path, id: &str, retired: bool, yes: bool) -> Result<()> {
+pub fn set_retired(home: &Path, id: &str, retired: bool, yes: bool, dry_run: bool) -> Result<()> {
     let (_, digest) = read(home)?;
     eprintln!("{} {id}", if retired { "retire" } else { "restore" });
+    if dry_run {
+        return not_written(&[]);
+    }
     let approval = approve(yes, &[])?;
     let change = if retired {
         Change::Retire(id.to_owned())

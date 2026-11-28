@@ -1380,6 +1380,10 @@ fn roles_propose<R: Runtime>(
 ) -> Res<()> {
     let s = app.get();
     named(&s, &business)?;
+    let guard = s.cos.clone().ok_or(
+        "no cos binary to guard the proposal: set COS_BIN, build it (`cargo build`), or `task install`"
+            .to_owned(),
+    )?;
     let entry = agents::roles::entry(&id).ok_or_else(|| format!("no library entry {id}"))?;
     let ctx = propose_context(&s, brief.as_deref()).map_err(chain)?;
     let mut slot = proposing.0.lock().map_err(err)?;
@@ -1397,14 +1401,7 @@ fn roles_propose<R: Runtime>(
     drop(slot);
     std::thread::spawn(move || {
         let cfg = propose_config(&s);
-        let out = agents::roles::propose(
-            &cfg,
-            entry,
-            &ctx,
-            new_id.as_deref(),
-            s.cos.as_deref(),
-            &stop,
-        );
+        let out = agents::roles::propose(&cfg, entry, &ctx, new_id.as_deref(), Some(&guard), &stop);
         let payload = match out {
             Ok(p) => json!({ "ok": true, "proposal": p }),
             Err(e) if e.is::<cos::proc::Cancelled>() => json!({ "ok": false, "cancelled": true }),

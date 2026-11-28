@@ -409,7 +409,39 @@ pub fn guard(
         libc::signal(libc::SIGTERM, libc::SIG_IGN);
         libc::kill(0, libc::SIGTERM);
     }
+    let me = std::process::id() as libc::pid_t;
+    let grace = Instant::now() + SWEEP_GRACE;
+    while Instant::now() < grace && group_members(me).iter().any(|&p| p != me) {
+        thread::sleep(Duration::from_millis(20));
+    }
+    for p in group_members(me).into_iter().filter(|&p| p != me) {
+        // SAFETY: a member of the group this guard leads; it cannot be the
+        // guard's spawner, which `setpgid` above left outside it.
+        unsafe {
+            libc::kill(p, libc::SIGKILL);
+        }
+    }
     Ok(code)
+}
+
+/// How long the guard's group has to end on SIGTERM before SIGKILL.
+const SWEEP_GRACE: Duration = Duration::from_millis(300);
+
+/// `PROC_PGRP_ONLY` from `<libproc.h>`; the libc crate does not export it.
+const PROC_PGRP_ONLY: u32 = 2;
+
+/// Every process in group `pgid`, from the kernel's process table.
+fn group_members(pgid: libc::pid_t) -> Vec<libc::pid_t> {
+    let mut pids = vec![0 as libc::pid_t; 256];
+    let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+    // SAFETY: the buffer is `bytes` long and only written by the call.
+    let n = unsafe {
+        libc::proc_listpids(PROC_PGRP_ONLY, pgid as u32, pids.as_mut_ptr().cast(), bytes)
+    };
+    let got = (n.max(0) as usize) / std::mem::size_of::<libc::pid_t>();
+    pids.truncate(got.min(pids.len()));
+    pids.retain(|&p| p > 0);
+    pids
 }
 
 /// Whether `pid` exists (a zombie counts).
