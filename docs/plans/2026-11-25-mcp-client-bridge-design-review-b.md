@@ -6,7 +6,7 @@ verdict: findings
 
 ## Earlier findings
 
-Round-3 New findings (from `2026-11-25-mcp-client-bridge-design-review-b-r3.md`):
+Round-3 New findings (from `docs/archive/plans/2026-11-25-mcp-client-bridge-design-review-b-r3.md`):
 
 1. closed: own group killed before final write. Self-cleanup kills every group in the set except the run's own, waits, writes the final state, then exits (design 108-112). Reaping writes only after the kills (design 153-159). Owner-death row exits 76 after the write (design 695). Code: `proc::kill_group` is `kill(-pgid, SIGKILL)` (`src/proc.rs:238-245`), so the design's "never the run's own group" rule is what keeps the run alive through the write.
 

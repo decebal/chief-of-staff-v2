@@ -902,13 +902,13 @@ Should- and nit-level items from review round 2. Plan turns each into a task.
 
 ## Review history
 
-- Round 1: [r1-a](2026-11-25-rv2-kit-desktop-design-review-r1-a.md) (3
+- Round 1: [r1-a](../archive/plans/2026-11-25-rv2-kit-desktop-design-review-r1-a.md) (3
   blocking, 8 should, 4 nit) and
-  [r1-b](2026-11-25-rv2-kit-desktop-design-review-r1-b.md) (3 blocking, 14
+  [r1-b](../archive/plans/2026-11-25-rv2-kit-desktop-design-review-r1-b.md) (3 blocking, 14
   should, 4 nit), both against sha256 `951469c8…`. All closed in revision 2.
-- Round 2: [r2-a](2026-11-25-rv2-kit-desktop-design-review-r2-a.md) (3 new
+- Round 2: [r2-a](../archive/plans/2026-11-25-rv2-kit-desktop-design-review-r2-a.md) (3 new
   blocking: boundary statuses, `el()` prop sink, now-dependent cache) and
-  [r2-b](2026-11-25-rv2-kit-desktop-design-review-r2-b.md) (3 new blocking:
+  [r2-b](../archive/plans/2026-11-25-rv2-kit-desktop-design-review-r2-b.md) (3 new blocking:
   boundary statuses, merged-day gap, audit sink), both against sha256
   `67d70e79…`. The blocking findings are closed in revision 3, and should and
   nit items are under Carried to Plan.

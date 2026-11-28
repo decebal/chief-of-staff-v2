@@ -978,18 +978,18 @@ No test touches the real `~/Library`, `~/.codex`, launchd or Herdr.
 ## Review history
 
 - Round 1 (design sha256 `dde02984…`): reviews
-  [a](2026-11-25-mcp-client-bridge-design-review-a-r1.md) and
-  [b](2026-11-25-mcp-client-bridge-design-review-b-r1.md), both `findings`
+  [a](../archive/plans/2026-11-25-mcp-client-bridge-design-review-a-r1.md) and
+  [b](../archive/plans/2026-11-25-mcp-client-bridge-design-review-b-r1.md), both `findings`
   (10 blocking, 35 should, 13 nit together). This revision answers each.
 - Round 2 (sha256 `e344c79c…`): reviews
-  [a](2026-11-25-mcp-client-bridge-design-review-a-r2.md) and
-  [b](2026-11-25-mcp-client-bridge-design-review-b-r2.md), both `findings`.
+  [a](../archive/plans/2026-11-25-mcp-client-bridge-design-review-a-r2.md) and
+  [b](../archive/plans/2026-11-25-mcp-client-bridge-design-review-b-r2.md), both `findings`.
   Blocking: grandchild groups unowned (both), readers writing `lost` (a),
   no app view for a run link (b), hire bindings not closed (a). Answered
   here. Their `Carried to Plan` items go to the Plan.
 - Round 3 (sha256 `8738f295…`): reviews
-  [a](2026-11-25-mcp-client-bridge-design-review-a-r3.md) and
-  [b](2026-11-25-mcp-client-bridge-design-review-b-r3.md), both `findings`
+  [a](../archive/plans/2026-11-25-mcp-client-bridge-design-review-a-r3.md) and
+  [b](../archive/plans/2026-11-25-mcp-client-bridge-design-review-b-r3.md), both `findings`
   (8 blocking; 6 are the run's groups surviving a run that died without
   cleanup). The owner asked for one more revision. It is built on **The
   invariant**: owner reaping on any exit, signals, self-cleanup order, group

@@ -1,7 +1,7 @@
 # Multiple businesses in one cos: plan critique
 
 Three independent read-only critics (coverage, dependency graph and feasibility, verifiability)
-reviewed the first draft of [the plan](2026-11-12-multi-business-plan.md) against the approved
+reviewed the first draft of [the plan](../../plans/2026-11-12-multi-business-plan.md) against the approved
 design and the code. 7 blocking and 33 should-fix findings; all are resolved in the plan.
 
 | Finding | Resolution in the plan |

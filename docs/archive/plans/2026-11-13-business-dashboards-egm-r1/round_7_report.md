@@ -1,6 +1,6 @@
 # EGM review, round 7
 
-*   **Document:** [business dashboards design](../2026-11-13-business-dashboards-design.md)
+*   **Document:** [business dashboards design](../../../plans/2026-11-13-business-dashboards-design.md)
 *   **Round:** 7
 *   **Reviewers:** design, comprehension, structural, style, codebase, readiness
 *   **Findings:** 54 (27 major, 27 nit)
