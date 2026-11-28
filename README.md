@@ -150,11 +150,34 @@ cos agents scorecard                                                   # every v
 
 Full flags: [Usage › Spin off agents](docs/usage.md#spin-off-agents).
 
+### The staff: roles from a specialist library
+
+Each role an agent is hired into carries its principles, method, what it never does, the
+exact shape of what it hands back and when it stops for you; every hire reads them in its
+preamble. `cos` ships twelve specialist definitions (staff engineer, principal reviewer,
+application security reviewer, SRE, test, performance, technical writer, release manager,
+accessibility auditor, data analyst, product researcher, debugger), each citing the public
+standard it draws on.
+
+```sh
+cos roles list --library                       # the twelve, with their sources
+cos roles new appsec-reviewer --yes            # add one as it is
+cos roles propose sre --brief "our Rust services" --out sre.json   # a version for this business; writes only sre.json
+cos roles new --file sre.json                  # read it, then add it
+cos roles retire reviewer --yes                # kept for its runs and scores, no longer hired
+```
+
+`propose` runs Claude with no tools and shows it only goal titles, repo names and scopes and
+the staff's titles (`cos --dry-run roles propose …` prints exactly that); the role's contract
+(its checks, scope and harness) always comes from the library entry. A change to a contract
+needs you typing `contract` at a terminal; no flag stands in for it. The desktop Staff tab
+does the same through New role, Edit and Retire.
+
 ## Where it runs
 
 | | |
 |---|---|
-| **Terminal** | `cos brief` · `cos ask "release review or bug fix today?"` · `cos state …` · `cos handoff D-1` · `cos report` · `cos agents spawn` / `watch` / `show` / `judge` / `scorecard` · `cos staff-sync` · `cos review` |
+| **Terminal** | `cos brief` · `cos ask "release review or bug fix today?"` · `cos state …` · `cos handoff D-1` · `cos report` · `cos agents spawn` / `watch` / `show` / `judge` / `scorecard` · `cos roles list` / `propose` / `new` / `edit` / `retire` · `cos staff-sync` · `cos review` |
 | **Browser, live** | `cos dash` → `127.0.0.1:8790`, reloads after every run or state change; `/agents` for running agents; localhost only |
 | **Desktop** | `task desktop`: the report plus an agent launcher (any number, any repo, Claude Code or Codex) with live status, logs, stop and clean, in one Tauri window ([apps/desktop](apps/desktop/README.md)) |
 | **Claude Desktop · Codex** | `task install-mcp` registers `cos mcp`: `latest_brief` / `plan` / `handoff` / `agents` (free), `brief` / `ask` / `spin_off` (paid), `stop_agent` |

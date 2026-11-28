@@ -171,6 +171,32 @@ waits on one. Shell commands get no network in either harness, so a push, a
 PR comment or a mail asks you in Herdr. Herdr measures no spend, so a run in
 Herdr has no cost recorded and no spend cap; its deadline is the cap.
 
+### Roles and the library
+
+A role in `context/agents.json` carries a contract (checks, scope, expects,
+output, harness) and, optionally, how it works: principles, method,
+anti-patterns, output format and escalation rules. `policy::preamble` renders
+them into every hire's prompt through `roles::clean` and one caps table, so a
+hand-edited role cannot open a section of its own or outgrow about 2,400
+tokens. `templates/roles/` ships twelve specialist entries, compiled in, each
+citing its public source.
+
+`roles::apply` is the only writer of agents.json: a lock naming its pid, the
+digest the caller read, a refusal for a file that does not parse, a person's
+approval for any contract change (a typed `contract` at a terminal, or the
+window's confirm step), no new refuse-level problem, a byte-equal round trip,
+one `.bak`, an atomic replace. `load` never drops a role from a file that
+parses; problems are reported and the preamble is bounded instead.
+
+`cos roles propose` and the window's Propose run the `recruiter` agent with
+no tools and no MCP servers and a closed schema of descriptive fields; the
+contract is merged from the entry. The run is shown goal titles, repo names
+and scopes and staff titles, never repo checks. `claude` runs under
+`cos proc-guard`, which leads its process group and ends it at the limit even
+if its owner is killed; Cancel, quit and Ctrl-C only set a stop flag, and the
+thread that spawned `claude` kills and reaps it
+([design](plans/2026-11-28-role-library-design.md)).
+
 `tests/agents.rs` drives a stand-in herdr-core (`tests/fixtures/fake-hc.sh`)
 and a stand-in agent (`fake-agent.sh`): the terminal's name, label and argv,
 judged once on done, the deadline's interrupt then kill, blocked as waiting
