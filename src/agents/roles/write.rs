@@ -218,6 +218,7 @@ pub fn apply(
         ));
     }
     let before_problems = refuse_keys(&p);
+    let writes_role = matches!(change, Change::Add(_) | Change::Replace { .. });
 
     let (id, before, after) = match change {
         Change::Add(role) => {
@@ -294,12 +295,16 @@ pub fn apply(
         ));
     }
 
+    // The role an Add or Replace writes must be free of refuse-level problems
+    // whatever the file held before; elsewhere only a problem the change adds
+    // refuses, so a hand-broken role can still be retired.
     let problems = validate(&p, &vocab(&p));
     let added: Vec<String> = problems
         .iter()
         .filter(|x| x.level == Level::Refuse)
         .filter(|x| {
-            !before_problems.contains(&(x.role.clone(), x.field.clone(), x.message.clone()))
+            (writes_role && x.role.as_deref() == Some(id.as_str()))
+                || !before_problems.contains(&(x.role.clone(), x.field.clone(), x.message.clone()))
         })
         .map(|x| {
             format!(

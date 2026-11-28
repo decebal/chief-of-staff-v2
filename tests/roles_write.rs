@@ -305,3 +305,54 @@ fn a_broken_role_already_in_the_file_does_not_block_retiring_it() {
     )
     .expect("an unrelated role's problem blocks nothing");
 }
+
+#[test]
+fn replacing_a_broken_role_must_leave_it_valid() {
+    let h = home("replace-broken");
+    let mut p = policy::seed();
+    let mut broken = analyst();
+    broken.scope = vec!["../everything".into()];
+    p.roles.push(broken.clone());
+    put(&h, &serde_json::to_string_pretty(&p).unwrap());
+
+    let mut still = broken.clone();
+    still.scope = vec!["/etc".into()];
+    still.principles = vec!["one\ntwo".into()];
+    refused(&h, "scope", || {
+        roles::apply(
+            &h,
+            Change::Replace {
+                id: "analyst".into(),
+                role: still.clone(),
+            },
+            &digest(&h),
+            ContractApproval::Human,
+        )
+    });
+    let mut same_bad = broken.clone();
+    same_bad.mandate = "A new mandate, the bad scope kept.".into();
+    refused(&h, "scope", || {
+        roles::apply(
+            &h,
+            Change::Replace {
+                id: "analyst".into(),
+                role: same_bad.clone(),
+            },
+            &digest(&h),
+            ContractApproval::None,
+        )
+    });
+
+    let mut fixed = broken;
+    fixed.scope = vec!["notes".into()];
+    roles::apply(
+        &h,
+        Change::Replace {
+            id: "analyst".into(),
+            role: fixed,
+        },
+        &digest(&h),
+        ContractApproval::Human,
+    )
+    .expect("a replacement that leaves the role valid is written");
+}

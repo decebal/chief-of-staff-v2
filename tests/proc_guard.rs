@@ -93,6 +93,26 @@ fn the_guard_ends_its_group_at_the_limit_after_its_parent_is_killed() {
 }
 
 #[test]
+fn the_sweep_never_reaches_the_process_that_started_the_guard() {
+    let dir = scratch("starter");
+    // The starter is a plain shell in the test's own group, not a group leader;
+    // it runs the guard to its limit, then records that it is still alive.
+    let starter = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "{COS} proc-guard --secs 1 -- /bin/sleep 30; echo alive > {}/starter",
+            dir.display()
+        ))
+        .status()
+        .unwrap();
+    assert!(starter.success(), "the starter was signalled: {starter:?}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("starter")).unwrap().trim(),
+        "alive"
+    );
+}
+
+#[test]
 fn the_guard_passes_through_the_exit_code_and_times_out_with_124() {
     let ok = Command::new(COS)
         .args(["proc-guard", "--secs", "5", "--", "/bin/sh", "-c", "exit 3"])

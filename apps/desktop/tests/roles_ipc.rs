@@ -199,6 +199,14 @@ fn without_a_cos_binary_nothing_is_proposed_unguarded() {
     assert!(e.to_string().contains("no cos binary"), "{e}");
 }
 
+#[test]
+fn cancel_with_no_proposal_running_does_nothing() {
+    let root = scratch("cancel-idle");
+    let (_app, w, _b) = open(&root);
+    call(&w, "roles_propose_cancel", json!({})).unwrap();
+    call(&w, "roles_propose_cancel", json!({})).unwrap();
+}
+
 fn pid(dir: &Path, name: &str) -> libc::pid_t {
     let at = Instant::now();
     loop {

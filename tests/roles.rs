@@ -243,6 +243,12 @@ fn each_refuse_rule_names_its_role_and_field() {
             with(|r| r.output = Some("a/../../b".into())),
         ),
         ("appsec.title", with(|r| r.title = "a\rb".into())),
+        (
+            "appsec.output",
+            with(|r| r.output = Some("NOTES.md\nNever: x".into())),
+        ),
+        ("appsec.output", with(|r| r.output = Some(String::new()))),
+        ("appsec.scope", with(|r| r.scope = vec!["a".repeat(201)])),
     ];
     for (want, p) in cases {
         let got = refused(&p);
