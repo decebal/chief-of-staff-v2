@@ -298,7 +298,8 @@ fieldset.work textarea { grid-column: 2; }
 .mcp-default { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .mcp-default p { margin: 0; }
 .mcp-default .btn[hidden] { display: none; }
-.switch-list .home { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Right-to-left so a long home loses its start, not the folder that names it. */
+.switch-list .home { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 #biz-open { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #switch-state[hidden], #dash-notice[hidden] { display: none; }
 

@@ -34,18 +34,23 @@
     top.className = "top";
     const name = document.createElement("span");
     name.className = "name";
-    name.textContent = r.app ? `${r.name} (app business)` : r.name;
+    name.textContent = r.name;
     top.append(name);
-    if (r.active) {
+    const tag = (text, tone) => {
       const mark = document.createElement("span");
       mark.className = "badge";
-      mark.dataset.tone = "info";
-      mark.textContent = "MCP default";
+      mark.dataset.tone = tone;
+      mark.textContent = text;
       top.append(mark);
-    }
+    };
+    if (r.app) tag("This window", "muted");
+    if (r.active) tag("MCP default", "info");
     const home = document.createElement("span");
     home.className = "home";
-    home.textContent = r.triple?.home ?? "";
+    const full = String(r.triple?.home ?? "");
+    home.title = full;
+    // LRM marks keep `~/` and `/` at the start under the right-to-left ellipsis.
+    home.textContent = `‎${full.replace(/^\/Users\/[^/]+(?=\/|$)/, "~")}‎`;
     li.append(top, home);
     if (r.missing) {
       const gone = document.createElement("span");
@@ -53,14 +58,15 @@
       gone.textContent = "home is missing";
       li.append(gone);
     }
-    const counts = [`${r.live ?? 0} live`];
+    const counts = [];
+    if (r.live) counts.push(`${r.live} live`);
     if (r.lost) counts.push(`${r.lost} lost`);
     if (r.unread) counts.push("unread brief");
     if (r.scheduled) counts.push("schedule installed");
-    for (const text of counts) {
+    if (counts.length) {
       const count = document.createElement("span");
       count.className = "muted small";
-      count.textContent = text;
+      count.textContent = counts.join(" · ");
       li.append(count);
     }
     li.addEventListener("click", () => choose(i));
@@ -107,9 +113,9 @@
         ? `Claude Desktop and Codex use ${def.name} when a call names no business.`
         : "Claude Desktop and Codex have no default business.";
     const r = shown[at];
-    make.hidden = !read || !r;
+    make.hidden = !read || !r || r.active;
     make.disabled = !r || r.active;
-    makeLabel.textContent = r ? (r.active ? `${r.name} is the default` : `Make ${r.name} the default`) : "Make default";
+    makeLabel.textContent = r ? `Make ${r.name} the default` : "Make default";
   }
 
   async function makeDefault() {
@@ -171,7 +177,8 @@
     try {
       rows = await invoke("businesses");
       read = true;
-      at = 0;
+      // Open on this window's business, so Enter and Make default start from where the window is.
+      at = Math.max(matches("").findIndex((r) => r.app), 0);
       render();
     } catch (e) {
       say(
