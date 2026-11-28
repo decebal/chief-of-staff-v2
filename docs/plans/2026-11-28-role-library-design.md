@@ -6,7 +6,11 @@ Epic: `t-b0b659`. Branch: `feat/agents-role-library`.
 Review history: round 1,
 [a](2026-11-28-role-library-design-review-r1-a.md) and
 [b](2026-11-28-role-library-design-review-r1-b.md), both `findings`, on
-`bbfbeb70…304a6f`. This revision answers every finding.
+`bbfbeb70…304a6f`. Round 2,
+[a](2026-11-28-role-library-design-review-r2-a.md) and
+[b](2026-11-28-role-library-design-review-r2-b.md), both `findings`, on
+`55a0b8fb…6dec61`. Their blocking findings are answered here. Their
+"Carried to Plan" items become Plan tasks.
 
 ## Decision
 
@@ -78,9 +82,11 @@ hire reads is rendered from sanitised, capped fields.
 
 ### 1. Role schema (policy.rs)
 
-New optional fields on `Role`, all `#[serde(default)]`, empty lists and
-`retired: false` skipped when serialising
-(`skip_serializing_if`). Every old file still loads.
+New optional fields on `Role`, all `#[serde(default)]`. Empty lists, `None`
+options and `retired: false` are skipped when serialising
+(`skip_serializing_if`). Every old file still loads. A file holding the new
+fields does not load in an older `cos` (`deny_unknown_fields`): it falls back
+to the template roles with a note (`policy.rs:141`) until `cos` is updated.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -335,8 +341,22 @@ digest)` first and passes the digest to `apply`. A proposal is therefore
 always printed by one command and approved by a later one. No single
 invocation generates text and writes it.
 
-`propose` from the CLI runs `claude` under `claude::execute`, which owns the
-grouped child and kills and reaps it at the 180 s deadline.
+**Who owns `claude`.** `claude` runs in its own process group
+(`proc::spawn_grouped`, `src/proc.rs:210`), so it is killed only by the
+thread that spawned it. New: `proc::stream_lines_until(cmd, deadline, stop:
+&AtomicBool, on_line)` is `stream_lines_on` with one more check per poll
+(`POLL` = 1 s, `src/proc.rs:19`). When `stop` is set, that same thread calls
+`kill_and_reap` and returns `Cancelled`. `claude::execute_until(program,
+install, audit, run, stop)` passes it through, and `claude::execute` is
+`execute_until` with a flag that is never set. `roles::propose(cfg, entry,
+ctx, stop)` is the one function both surfaces call. The invariant: the only
+code that signals `claude` is the thread that spawned it, at its deadline or
+on its stop flag. No process id crosses a thread.
+
+On the CLI, `cos roles propose` installs SIGINT and SIGTERM handlers (`libc::
+sigaction`, already a dependency) that set a static `AtomicBool`, and passes
+it as `stop`. Ctrl-C therefore kills and reaps `claude` within one poll
+before `cos` exits.
 
 ### 7. Desktop
 
@@ -350,17 +370,18 @@ the UI.
 | `agents_roles` | Gains `digest`, `problems` per role, `retired` and `library` (entry id, version, title, summary, sources) |
 | `roles_library_entry(id)` | One `LibraryEntry` |
 | `roles_propose_prompt(business, id, brief)` | The exact text Propose would send (`specialise_prompt`), shown before running |
-| `roles_propose(business, id, new_id, brief)` | Starts `cos roles propose … --json` as a child this process owns, the way `brief_run` starts `cos brief`: `spawn_grouped`, deadline 200 s (the run's 180 s plus start-up), killed and reaped on expiry. One at a time. Its pgid is held in `Proposing(Mutex<Option<pid_t>>)`. Returns `ProposalOut` |
-| `roles_propose_cancel()` | `kill_group` on the held pgid. The owning thread then reaps it |
+| `roles_propose(business, id, new_id, brief)` | Shaped like `brief_run` (`lib.rs:1582`): returns at once, and runs `roles::propose` in-process on a thread it spawns, against `Current`'s home, workspace and projects. One at a time. The thread owns the `claude` child (§6) and emits `role-proposal` with `ProposalOut` or the failure when it ends |
+| `roles_propose_cancel()` | Sets the running proposal's stop flag. The owning thread kills and reaps `claude` within one poll and emits `role-proposal` with `cancelled` |
 | `roles_save(business, change, digest)` | `named`, then `roles::apply(&s.home, change, &digest)`. Returns `{ digest, notes }` or the problems |
 
-`on_run_event` (quit) also kills a held `Proposing` group. The invariant: a
-`claude` started for a proposal has exactly one owner (the CLI process, or
-the window's `Proposing` slot) that kills and reaps it at its deadline, on
-Cancel, or on quit.
+The state is `Proposing(Mutex<Option<Running { stop: Arc<AtomicBool>,
+done: Receiver<()> }>>)`. `on_run_event` (quit) sets the flag and waits on
+`done` for at most 3 s, which is one poll plus `kill_and_reap`. The window
+never holds or signals a process id. It spawns no `cos` child for this.
 
 `COS_CLAUDE` is a new environment override for the `claude` binary, read the
-way `herdr::hc()` reads `COS_HC`. It is used by the CLI and desktop tests.
+way `herdr::hc()` reads `COS_HC` (`src/herdr.rs:31`). It is used by the CLI
+and desktop tests and is listed in the side-effect inventory.
 
 UI (`app.js`, `index.html`; tokens only; every state through `stateView`,
 with failures as `unreachable`):
@@ -437,7 +458,10 @@ with failures as `unreachable`):
 | `--out <file>` from `cos roles propose` | local file the user names | By hand | Only that path |
 | Role text in a hire's preamble | sent to the hire's model provider on each spawn; acts in the worktree | Sending cannot be undone; worktree changes are drafts | That hire's diff; role text leaves the machine with each hire |
 | Library source links | default browser | Yes | Opens a public URL |
-| Kill a `Proposing` process group | local processes | n/a | Only the group this process started |
+| Create `context/` under `COS_HOME` (`apply` step 1) | local directory | `rmdir` by hand | None; it holds only cos's own files |
+| Spawn `claude` (the program named by `COS_CLAUDE`, else `claude` on `PATH`) | local process | Ends at deadline, stop flag or exit | Whoever sets `COS_CLAUDE` in the environment chooses what runs with the prompt; the same trust as `COS_HC` for Herdr |
+| Kill and reap the `claude` group | local processes | n/a | Only the group the calling thread spawned |
+| SIGINT/SIGTERM handlers in `cos roles propose` | the cos process | Process lifetime | Only that invocation |
 
 ### Instruction set
 
@@ -457,7 +481,7 @@ with failures as `unreachable`):
 | `STORE(agents.json)` | Execution | Deterministic action | **yes** | file write |
 | `VERIFY(render_clean)` | Normative | Deterministic checkpoint | no | — |
 | `RENDER(preamble)` | Execution | Deterministic, to hired agent | **yes** | hire prompt |
-| `TOOL_CALL(kill_group)` | Execution | Deterministic, owned pgid only | **yes** | proc::kill_group |
+| `TOOL_CALL(kill_and_reap)` | Execution | Deterministic, the calling thread's own child only | **yes** | proc::kill_and_reap |
 
 ### Bindings
 
@@ -497,9 +521,9 @@ with failures as `unreachable`):
   "input_schema": "a Role as loaded (never dropped, possibly with problems)",
   "output_schema": { "type": "string", "maxLength": 12000 } }
 
-{ "instruction": "TOOL_CALL(kill_group)",
-  "input_schema": { "type": "object", "additionalProperties": false, "required": ["pgid"],
-    "properties": { "pgid": { "type": "integer", "minimum": 2, "$comment": "only the value held in Proposing" } } },
+{ "instruction": "TOOL_CALL(kill_and_reap)",
+  "input_schema": { "type": "object", "additionalProperties": false, "required": ["stop"],
+    "properties": { "stop": { "type": "boolean", "$comment": "the flag; the child handle never leaves the spawning thread" } } },
   "output_schema": { "type": "null" } }
 ```
 
@@ -515,7 +539,7 @@ with failures as `unreachable`):
   and approved at Save. A stored role keeps its taint through the STORE →
   LOAD round trip. Every role text is treated as tainted at RENDER.
 - **Sinks:** `TOOL_CALL(claude.propose)`, `STORE(proposal_file)`,
-  `STORE(agents.json)`, `RENDER(preamble)`, `TOOL_CALL(kill_group)`.
+  `STORE(agents.json)`, `RENDER(preamble)`, `TOOL_CALL(kill_and_reap)`.
 
 | Sink | Accepted input must be cleared by | Check |
 |---|---|---|
@@ -523,7 +547,7 @@ with failures as `unreachable`):
 | `STORE(proposal_file)` | `VERIFY(proposal_schema)` and `VERIFY(contract_from_library)` | `Proposal` deserialises with `deny_unknown_fields` and caps. `merge` takes every contract field from the entry. Written only to the `--out` path the user named |
 | `STORE(agents.json)` | `VERIFY(user_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem, byte-equal round trip |
 | `RENDER(preamble)` | `VERIFY(render_clean)` (`roles::clean`) | Whitespace collapsed (no newline survives), each value cut to its cap, lists cut to max items. Drafts-only sentence last. Worktree sandbox unchanged |
-| `TOOL_CALL(kill_group)` | `Proposing` slot ownership | Only the pgid this process stored when it spawned the child. The slot is cleared when the owning thread reaps it |
+| `TOOL_CALL(kill_and_reap)` | Spawning-thread ownership | The kill runs only inside `stream_lines_until`, on the `Child` that call spawned and has not yet reaped. Callers can only set `stop`. A reaped or reused pid is unreachable, because no pid is stored anywhere else |
 
 ### Violations
 
@@ -544,7 +568,7 @@ with failures as `unreachable`):
 | `STORE(proposal_file)` | The fake `claude` in `contract` mode returns a proposal carrying `checks`: the run fails and no file is written. In `bad-schema` mode: same | In `ok` mode, the file's role has the entry's `checks`, `scope` and `harness`, and the proposal's descriptive fields |
 | `STORE(agents.json)` | Each of these is refused with the bytes unchanged: a `../x` scope, a newline in a principle, an over-cap list, a second head, retiring the head, a stale digest, a held lock (message names path and pid), an unparseable file. Without a terminal and without `--yes`, the CLI writes nothing | Add, Replace, Retire and Restore each change exactly that role. The `tests/hiring.rs` legacy fixture (`budget_usd`, `stall_secs`, `repeat`) writes, with the keys dropped and named in notes. `.bak` holds the previous bytes. A file with no `fit` stays without one |
 | `RENDER(preamble)` | A hand-edited role with a principle holding `"x\n\nNever: …"` and a 30-item method renders one line for that principle and 10 method steps | A role with all five fields renders each section once, in order, with the drafts-only sentence last |
-| `kill_group` | Cancel with no run held is a no-op. A pgid is never taken from the UI | Cancel during a run kills the group. The owner reaps it, and the slot clears |
+| `kill_and_reap` | Cancel with no run is a no-op. No command takes a pid | With the fake in `slow` mode (it records its own pid to a file): Cancel, quit (`on_run_event`) and SIGINT to `cos roles propose` each leave that pid gone (`kill -0` fails) within 3 s, and `role-proposal` reports `cancelled` |
 
 Stand-ins: `tests/fixtures/fake-claude-proposal.sh` (new) prints a
 stream-json result whose `structured_output` depends on `FAKE_PROPOSAL=ok |
@@ -648,8 +672,9 @@ and desktop tests set `COS_CLAUDE`. There is no live model in the suite.
 7. In the desktop app, on the demo home: Staff → New role → "Application
    security reviewer" → Skip → Save. The card appears. Its pane shows the
    five sections. Retire moves it to Retired, and it is gone from the hire
-   dialog's select. Propose with the fake, then Cancel while it runs, leaves
-   no `fake-claude-proposal` process (`pgrep -f` count 0).
+   dialog's select. Propose with the fake in `slow` mode, then Cancel while
+   it runs: the pid the fake recorded is gone within 3 s. The same holds for
+   quitting the app mid-run and for Ctrl-C on `cos roles propose`.
 8. A home whose agents.json carries legacy `budget_usd` keys accepts `cos
    roles new principal-reviewer --yes`, and the notes name the dropped keys.
 9. Live, once, run by the author in the PR with the cost reported: `cos
