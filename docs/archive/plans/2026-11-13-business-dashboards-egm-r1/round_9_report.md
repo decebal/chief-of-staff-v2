@@ -1,6 +1,6 @@
 # EGM round 9
 
-- **Document:** [business dashboards design](../2026-11-13-business-dashboards-design.md)
+- **Document:** [business dashboards design](../../../plans/2026-11-13-business-dashboards-design.md)
 - **Round:** 9
 - **Reviewers:** design, comprehension, structural, style, codebase, readiness
 - **Findings:** 38 (critical 0, major 15, nit 23)

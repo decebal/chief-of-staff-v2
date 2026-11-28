@@ -301,6 +301,8 @@ cos --home /tmp/cos-demo dash
 | [Hire skill graph plan](docs/plans/2026-11-28-hire-skill-graph-plan.md) | gates, testing trophy and the twelve stories that build it |
 | [Hire skill graph evidence](docs/reports/2026-11-28-hire-skill-graph.html) | live Claude and Codex runs with the flags cos builds, steps to see a skill switched off, and what was not checked |
 | [Codex skill switch spike](docs/reports/2026-11-28-codex-skill-switch-spike.md) | one Codex invocation can switch a skill off with `-c skills.config`, and reads files outside its workspace |
+| [Hire skill graph: what shipped](docs/reports/2026-11-28-hire-skill-graph-reflect.md) | the Reflect report: gates and what each caught, drift against the design, the follow-up beads |
+| [Archived plan reviews](docs/archive/plans/README.md) | intermediate review rounds of shipped designs; each design's Review history summarises them |
 
 ## License
 

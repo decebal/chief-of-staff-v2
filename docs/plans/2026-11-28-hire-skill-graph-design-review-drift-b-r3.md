@@ -6,7 +6,7 @@ verdict: findings
 
 ## Earlier findings
 
-Round-2 review: `docs/plans/2026-11-28-hire-skill-graph-design-review-drift-b-r2.md`.
+Round-2 review: `docs/archive/plans/2026-11-28-hire-skill-graph-design-review-drift-b-r2.md`.
 
 1. closed: codex config parse, read and non-array failures fail the hire before Herdr. `codex_config` returns `Result` (`src/agents/skill_bundle.rs:35-66`); `prepare` propagates (`src/agents/mod.rs:730-731`); `launch` bails before `harness::argv` and `herdr::run` (`mod.rs:642-646`). Missing-file gap is new, see New finding 2. Test (`tests/hiring.rs:912-919`) not re-read this round.
 2. closed for `skills_hidden` (`mod.rs:726,729,744`). E11 retention: open.

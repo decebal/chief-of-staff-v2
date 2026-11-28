@@ -1,23 +1,23 @@
 # Multiple businesses in one cos: design
 
 Brief: [2026-11-12-multi-business-brief.md](2026-11-12-multi-business-brief.md). Earlier review
-rounds: round 1 [Goldfish](2026-11-12-multi-business-design-review-r1.md) and
-[EGM](2026-11-12-multi-business-egm-r1/consolidated_review_report.md); round 2
-[Goldfish](2026-11-12-multi-business-design-review-r2.md) and
-[EGM](2026-11-12-multi-business-egm-r2/consolidated_review_report.md); round 3
-[Goldfish](2026-11-12-multi-business-design-review-r3.md) and
-[EGM](2026-11-12-multi-business-egm-r3/consolidated_review_report.md); verification
-[Goldfish](2026-11-12-multi-business-design-review-r4.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r5.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r6.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r7.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r8.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r9.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r10.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r11.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r12.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r13.md) and
-[Goldfish](2026-11-12-multi-business-design-review-r14.md).
+rounds: round 1 [Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r1.md) and
+[EGM](../archive/plans/2026-11-12-multi-business-egm-r1/consolidated_review_report.md); round 2
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r2.md) and
+[EGM](../archive/plans/2026-11-12-multi-business-egm-r2/consolidated_review_report.md); round 3
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r3.md) and
+[EGM](../archive/plans/2026-11-12-multi-business-egm-r3/consolidated_review_report.md); verification
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r4.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r5.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r6.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r7.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r8.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r9.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r10.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r11.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r12.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r13.md) and
+[Goldfish](../archive/plans/2026-11-12-multi-business-design-review-r14.md).
 
 ## Problem
 

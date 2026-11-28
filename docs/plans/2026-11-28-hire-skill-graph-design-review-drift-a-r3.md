@@ -6,7 +6,7 @@ verdict: findings
 
 ## Earlier findings
 
-Round 2 findings (`docs/plans/2026-11-28-hire-skill-graph-design-review-drift-a-r2.md`).
+Round 2 findings (`docs/archive/plans/2026-11-28-hire-skill-graph-design-review-drift-a-r2.md`).
 
 Round 2 new blocking:
 

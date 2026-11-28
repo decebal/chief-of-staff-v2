@@ -3,7 +3,7 @@
 Design: [2026-11-12-multi-business-design.md](2026-11-12-multi-business-design.md) (approved,
 sha256 c4ee8b6472135f922e7fc4fc79854b5b8cfdb0ad8f8523e0914ad47dcefaa66b). Epic `t-0c18d3`, branch
 `feat/multi-business`, PR #24. Plan critique:
-[2026-11-12-multi-business-plan-critique.md](2026-11-12-multi-business-plan-critique.md).
+[2026-11-12-multi-business-plan-critique.md](../archive/plans/2026-11-12-multi-business-plan-critique.md).
 
 ### Quality gates
 

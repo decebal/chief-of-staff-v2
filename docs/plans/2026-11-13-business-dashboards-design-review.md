@@ -26,9 +26,9 @@ The owner also declined to re-hire `ritual-goldfish` on this digest. The run on 
 
 | Review | Digest | Verdict | File |
 |---|---|---|---|
-| EGM stages 5-7 | `a853bd18…` (superseded) | findings | `2026-11-13-business-dashboards-egm-r1/goldfish_review_report.md` |
+| EGM stages 5-7 | `a853bd18…` (superseded) | findings | `docs/archive/plans/2026-11-13-business-dashboards-egm-r1/goldfish_review_report.md` |
 | Hired ritual-goldfish `20261113-225320-f142` | `a853bd18…` (superseded) | findings: 0 blocking, 2 should, 2 nit, all applied in round 5 follow-up | agent output `REVIEW.md` |
-| EGM rounds 2-13 | successive revisions | findings | `2026-11-13-business-dashboards-egm-r1/round_2_report.md` … `round_13_report.md` |
+| EGM rounds 2-13 | successive revisions | findings | `docs/archive/plans/2026-11-13-business-dashboards-egm-r1/round_2_report.md` … `round_13_report.md` |
 
 ## Owner decisions taken during review
 

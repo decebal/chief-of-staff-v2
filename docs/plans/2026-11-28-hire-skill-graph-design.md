@@ -615,9 +615,13 @@ against stand-ins; no test reaches the real Prime or real skill roots.
 
 ## Review history
 
-Three rounds, two fresh-context reviewers per round
-(`…-design-review-{a,b}-r1.md`, `…-r2.md`, and `…-review-{a,b}.md` for
-round 3). Round 3 left blocking items open; on 2026-11-28 the user chose, in
+Three rounds, two fresh-context reviewers per round: rounds 1 and 2 in
+[`docs/archive/plans/`](../archive/plans/README.md), round 3 beside this
+design ([a](2026-11-28-hire-skill-graph-design-review-a.md),
+[b](2026-11-28-hire-skill-graph-design-review-b.md)). The Built as section
+had three more rounds, the last beside this design
+([a](2026-11-28-hire-skill-graph-design-review-drift-a-r3.md),
+[b](2026-11-28-hire-skill-graph-design-review-drift-b-r3.md)). Round 3 left blocking items open; on 2026-11-28 the user chose, in
 conversation, "Honest limit only" for hire writes to Prime and "Approve,
 carry to Plan". The round-3 mechanical items (skillOverrides for a
 hidden-only set, VERIFY-D/S8, the E4 delete row) and the stated Prime-write

@@ -474,9 +474,9 @@ blocked beads, and hires sourced from its beads.
 
 ## Review history
 
-- Round 1: [review-a](2026-11-26-flows-today-motion-design-review-r1-a.md) (1
+- Round 1: [review-a](../archive/plans/2026-11-26-flows-today-motion-design-review-r1-a.md) (1
   blocking, 10 should, 6 nit) and
-  [review-b](2026-11-26-flows-today-motion-design-review-r1-b.md) (1 blocking, 8
+  [review-b](../archive/plans/2026-11-26-flows-today-motion-design-review-r1-b.md) (1 blocking, 8
   should, 3 nit), against sha256 `25020671…`. Closed in revision 2:
   - `agents::list` reconciles on render, so the change adds `snapshot` and
     `phase`;
@@ -486,8 +486,8 @@ blocked beads, and hires sourced from its beads.
   - plus scan plumbing, the brief-state message, ribbon reuse, drift scope,
     `color-mix` syntax, shimmer as a variant, the report script gate,
     gradient contrast, the kit sheet in `flows.html`, and the ARIA fixes.
-- Round 2: [r2-a](2026-11-26-flows-today-motion-design-review-r2-a.md)
-  (2 blocking) and [r2-b](2026-11-26-flows-today-motion-design-review-r2-b.md)
+- Round 2: [r2-a](../archive/plans/2026-11-26-flows-today-motion-design-review-r2-a.md)
+  (2 blocking) and [r2-b](../archive/plans/2026-11-26-flows-today-motion-design-review-r2-b.md)
   (1 blocking), against sha256 `5b3e5e99…`. Closed in revision 3:
   - live hires come from a read-only `agents_snapshot` command, not
     `agents_list`;
