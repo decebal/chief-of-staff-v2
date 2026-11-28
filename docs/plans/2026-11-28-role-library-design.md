@@ -3,6 +3,11 @@
 Date: 2026-11-28. Brief: [2026-11-28-role-library-brief.md](2026-11-28-role-library-brief.md).
 Epic: `t-b0b659`. Branch: `feat/agents-role-library`.
 
+Review history: round 1,
+[a](2026-11-28-role-library-design-review-r1-a.md) and
+[b](2026-11-28-role-library-design-review-r1-b.md), both `findings`, on
+`bbfbeb70…304a6f`. This revision answers every finding.
+
 ## Decision
 
 `cos` ships a library of specialist role definitions as data
@@ -11,59 +16,117 @@ fields: `principles`, `method`, `anti_patterns`, `output_format`,
 `escalation`. It also gains `from` for provenance and `retired`. One module,
 `src/agents/roles.rs`, owns the library, the validator and the only write to
 `context/agents.json`. The write runs under a lock with a digest check and an
-atomic replace, and refuses any policy that fails validation. A headless run
-with no tools specialises a library entry to the business and returns a
-proposal limited to descriptive fields. The proposal is written only when the
-user approves it. The CLI (`cos roles …`) and the desktop Staff tab (New
-role, Edit, Retire, Restore) both call that module. Every hire's preamble
-carries the role's structured fields.
+atomic replace, and refuses a policy that fails validation.
+
+Making a proposal and writing it are separate steps. `cos roles propose`
+runs a headless `claude` with no tools to specialise a library entry and
+prints or saves a role proposal, writing nothing to the policy. `cos roles
+new` writes a role (from a library entry, a proposal file or blank) on the
+user's approval. The desktop Staff tab runs `propose` as a child it owns,
+shows the proposal in a form, and saves through the same write path.
+
+Loading never drops a role. Problems are reported per role. The preamble a
+hire reads is rendered from sanitised, capped fields.
 
 ## Context
 
 - `src/agents/policy.rs`: `Role` (L56), `Policy` (L110), `load` (L137) falls
   back to the template's roles when the file has none and to defaults with a
-  `note` when it does not parse. `preamble` (L268) puts title, mandate and
-  the output rule in front of every hire's prompt. `Policy::hire` (L182)
-  refuses an unknown role or the head.
-- `templates/context/agents.json`: the seed. 10 roles with one-line mandates,
-  `defaults`, `repos`, and the `fit` vocabulary (`kinds`, `needs`,
-  `outward_done`, `ops`).
-- `src/agents/fit.rs`: `Vocab`. A role's `work` names `fit.kinds`, and its
-  `drafts` names `fit.needs`.
-- `src/agents/hire.rs` `plan` and `contract` read roles through `Policy`.
-  `src/agents/ledger.rs` keys verdict rows by role id, so ids must stay
-  stable.
-- `apps/desktop/src/lib.rs` `agents_roles` (L1253) is read-only. The UI is
-  in `apps/desktop/ui/app.js`: `renderStaff` and `roleCard` (L431–535),
-  `renderRole` (L540), and the hire dialog's `fillRole` (L1152).
-- `src/claude.rs` `Run` with `Toolset::None` and `json_schema` already
-  supports a no-tools structured run, and `proc` owns the child.
-- `src/state.rs` `atomic_write` (L548): temp file, fsync, rename, fsync dir.
+  single `note: Option<String>` when it does not parse. It fills `fit` from
+  the seed when the file has none (L149). `Terms` and `Role` carry
+  `budget_usd`, `stall_secs` and `repeat` as `skip_serializing` retired keys
+  (L44–49, L100–105). `preamble` (L268) puts title, mandate and the output
+  rule in front of a hire's prompt. `Policy::apply` (L220) adds it (L250).
+  `Policy::hire` (L182) refuses an unknown role or the head.
+- `templates/context/agents.json`: the seed, holding 10 roles with one-line
+  mandates, `defaults`, `repos` and the `fit` vocabulary.
+- `src/agents/fit.rs`: `Vocab`. `check` matches a role's `work` against the
+  task's kinds with `r.work.contains(k)` (L218) and tolerates unknown names.
+  `suggest` takes the first non-head role that fits (L245), and `refusal`
+  names it (L116).
+- `src/agents/hire.rs`: `Plan` (L33) carries `prompt`, the task prompt.
+  `cos --dry-run agents spawn` prints the plan as JSON (`src/main.rs:988`).
+  The preamble is not in the plan; it is added when the request is recorded
+  (`src/agents/mod.rs:513` via `Policy::apply`).
+- `src/agents/ledger.rs`: rows are keyed by run, with `role` as a field
+  (L39–41). `by_role` groups by it (L186), so a role id must stay stable for
+  the scorecard.
+- `apps/desktop/src/lib.rs`: `agents_roles` (L1253) is read-only. `named`
+  (L279) is the business guard on writes such as `ritual_approve` (L1708).
+  `brief_run` (L1582) runs `cos brief` as an owned child through
+  `pipeline::brief_child` (`src/pipeline.rs` L686), which uses
+  `proc::spawn_grouped`, `wait_until` and `kill_group`. `on_run_event`
+  (L2080) stops owned servers on quit. Commands are reachable from the
+  `main` window only (`apps/desktop/capabilities/default.json`).
+- UI: `apps/desktop/ui/app.js` holds `renderStaff`, `roleCard` (L431–535),
+  `renderRole` (L540), `ROLE_ICON` (L409) and the hire dialog's `fillRole`
+  (L1152). `apps/desktop/ui/states.js` holds the state kinds (L117–129);
+  failures use `unreachable`. `tests/design.rs` keeps a loader list
+  (L1531–1543) that must name every function rendering a loading state.
+- `src/claude.rs`: `Run`, with `Toolset::None` (L140) giving `--tools ""
+  --strict-mcp-config`. No caller uses it today. `execute` (L193) opens the
+  audit log `out/audit/<day>.jsonl` and passes the prompt as `-p <prompt>`
+  (L121). `src/pipeline.rs` `Bins` (L38) names the `claude` binary; tests
+  substitute `tests/fixtures/fake-claude.sh` (`tests/sleep.rs:16`), which
+  always returns a brief-shaped `structured_output`.
+- `src/state.rs`: `atomic_write_bytes` (L555) uses a temp file named
+  `.state-<pid>-<nanos>.tmp`, fsync, rename and dir fsync. Its `Lock` (L597)
+  is private.
 - Nothing writes `context/agents.json` today. The user edits it by hand.
 
 ## Design
 
 ### 1. Role schema (policy.rs)
 
-New optional fields on `Role`, all `#[serde(default)]`. An old file still
-loads.
+New optional fields on `Role`, all `#[serde(default)]`, empty lists and
+`retired: false` skipped when serialising
+(`skip_serializing_if`). Every old file still loads.
 
-| Field | Type | Meaning | Cap |
-|---|---|---|---|
-| `principles` | `Vec<String>` | Standards a top practitioner holds ("every finding cites file:line") | 3–10 items when present, ≤ 300 chars each |
-| `method` | `Vec<String>` | Ordered steps the role follows | ≤ 12, ≤ 300 |
-| `anti_patterns` | `Vec<String>` | What it refuses to do | ≤ 10, ≤ 300 |
-| `output_format` | `Option<String>` | Exact shape of what it hands back | ≤ 1500 |
-| `escalation` | `Vec<String>` | When it stops and leaves the question for the user | ≤ 8, ≤ 300 |
-| `from` | `Option<String>` | `<library-id>@<version>` it was made from | — |
-| `retired` | `bool` | Kept for history, not offered for hire | — |
+| Field | Type | Meaning |
+|---|---|---|
+| `principles` | `Vec<String>` | Standards a top practitioner holds |
+| `method` | `Vec<String>` | Ordered steps the role follows |
+| `anti_patterns` | `Vec<String>` | What it refuses to do |
+| `output_format` | `Option<String>` | Exact shape of what it hands back |
+| `escalation` | `Vec<String>` | When it stops and leaves the question for the user |
+| `from` | `Option<String>` | `<library-id>@<version>` it was made from |
+| `retired` | `bool` | Kept for history, not offered for hire |
 
-`Policy::hire` refuses a retired role: "the <title> is retired; restore it
-with `cos roles restore <id>`". `preamble` appends, after the mandate and
-when present: `Principles:` (bullets), `Method:` (numbered), `Never:`
-(bullets), `Hand back:` (output_format), `Stop and leave it for the user
-when:` (bullets). The existing output rule and the drafts-only sentence stay
-last. The caps bound the preamble at about 1,500 words in the worst case.
+**Caps** (`roles::CAPS`, one table used by the validator, the proposal
+schema and the renderer):
+
+| Field | Max items | Max chars per item / value |
+|---|---|---|
+| `title` | — | 60 |
+| `mandate` | — | 600 |
+| `serves`, `sandbox`, `judged`, `done_when` | — | 300 each |
+| `principles` | 8 | 240 |
+| `method` | 10 | 240 |
+| `anti_patterns` | 8 | 240 |
+| `escalation` | 6 | 240 |
+| `output_format` | — | 1,200 |
+| proposal `rationale` | — | 800 |
+| user `brief` to propose | — | 1,000 |
+
+Worst case for the structured sections is 1,920 + 2,400 + 1,920 + 1,440 +
+1,200 characters, plus the 600-character mandate: 9,480 characters, about
+2,400 tokens per hire. A role may hold any count from 0 to the max. The
+library's minimum counts (§2) apply to library entries only.
+
+**Retired.** `Policy::hire` refuses a retired role: "the <title> is retired;
+restore it with `cos roles restore <id>`". `fit::check` and `fit::refusal`
+skip retired roles when choosing a suggestion, so a retired role is never
+suggested.
+
+**Preamble.** `preamble` appends after the mandate, when non-empty:
+`Principles:` (bullets), `Method:` (numbered), `Never:` (bullets), `Hand
+back:` (output_format), `Stop and leave it for the user when:` (bullets).
+The existing output rule and the drafts-only sentence stay last. The
+renderer, not the validator, is the boundary at this sink. Every value is
+rendered through `roles::clean(s, cap)`, which replaces each run of
+whitespace (newlines included) with one space, trims, and truncates to the
+cap. Lists are cut to their max items. A hand-edited role therefore cannot
+forge a section or exceed the bound, even though load does not refuse it.
 
 ### 2. The library (roles.rs, templates/roles/)
 
@@ -80,238 +143,329 @@ One JSON file per entry:
 }
 ```
 
-`LibraryEntry { id, version: u32, summary, sources: Vec<Cite>, fit_kinds:
-BTreeMap<String, Vec<String>>, role: Role }`, `deny_unknown_fields`.
-`roles::library()` returns every entry. It is built from a `const` list of
-`include_str!` paths, and `tests/roles.rs` fails when a file under
+`LibraryEntry { id, version: u32, summary, sources: Vec<Cite { title, url
+}>, fit_kinds: BTreeMap<String, Vec<String>>, role: Role }`, with
+`deny_unknown_fields`. `roles::library()` returns every entry from a `const`
+list of `include_str!` paths.
+
+First entries (12):
+
+| id | Draws on | Expects | work |
+|---|---|---|---|
+| `staff-engineer` | Google eng practices, "A Philosophy of Software Design" | diff | code, test |
+| `principal-reviewer` | Google code review guide | file `REVIEW.md` | review |
+| `appsec-reviewer` | OWASP ASVS 5.0, CWE Top 25 | file `SECURITY-REVIEW.md` | security, review |
+| `sre` | Google SRE book (SLOs, error budgets, toil); `drafts: ["live"]` | file `RELIABILITY.md` | reliability |
+| `test-engineer` | Testing trophy, property-based testing | diff | test |
+| `performance-engineer` | Brendan Gregg's USE method | file `PERF.md` | performance |
+| `technical-writer` | Diátaxis | diff | docs |
+| `release-manager` | SemVer 2.0, Keep a Changelog | diff | release |
+| `accessibility-auditor` | WCAG 2.2 AA | file `A11Y.md` | accessibility, review |
+| `data-analyst` | "Trustworthy Online Controlled Experiments"; `repo: false` | file `ANALYSIS.md` | analysis, research |
+| `product-researcher` | Jobs to be Done; `repo: false` | file `RESEARCH.md` | research |
+| `debugger` | Agans' nine rules of debugging | `none`, output `ANSWER.md` | locate |
+
+`tests/roles.rs` holds every entry to these rules: it parses, `id` equals
+`role.id`, it passes `validate`, it cites at least one source with an
+`https` URL, it has at least 5 principles, 5 method steps, 4 anti-patterns,
+3 escalation rules and a non-empty output format, and it is listed in the
+`include_str!` list. That last rule fails when a file under
 `templates/roles/` is missing from the list.
 
-First entries (12), each with at least 5 principles, 5 method steps, 4
-anti-patterns, an output format, 3 escalation rules and at least one cited
-public source:
-
-| id | Draws on | Expects |
-|---|---|---|
-| `staff-engineer` | Google eng practices, "A Philosophy of Software Design" | diff |
-| `principal-reviewer` | Google code review guide | file `REVIEW.md` |
-| `appsec-reviewer` | OWASP ASVS 5.0, CWE Top 25 | file `SECURITY-REVIEW.md` |
-| `sre` | Google SRE book (SLOs, error budgets, toil); drafts for `live` | file `RELIABILITY.md` |
-| `test-engineer` | Testing trophy, property-based testing | diff |
-| `performance-engineer` | Brendan Gregg's USE method | file `PERF.md` |
-| `technical-writer` | Diátaxis | diff |
-| `release-manager` | SemVer 2.0, Keep a Changelog | diff |
-| `accessibility-auditor` | WCAG 2.2 AA | file `A11Y.md` |
-| `data-analyst` | "Trustworthy Online Controlled Experiments"; no repo | file `ANALYSIS.md` |
-| `product-researcher` | Jobs to be Done; no repo | file `RESEARCH.md` |
-| `debugger` | Agans' nine rules of debugging | nothing (answer file) |
-
-New `fit.kinds` used by these entries (`security`, `performance`,
-`accessibility`, `analysis`, `reliability`) go into the template's `fit` as
-well. When a home's own `fit` lacks one of them, adopting the entry adds the
-entry's `fit_kinds` to the written file. It never changes a kind that
-already exists.
+New kinds (`security`, `performance`, `accessibility`, `analysis`,
+`reliability`) are added to the template's `fit.kinds`. `ROLE_ICON` gains a
+Lucide icon for each of the 12 ids.
 
 The template's seed roles stay as they are. A user upgrades one by opening
 Edit and choosing "Start from a library entry", which loads that entry's
 descriptive fields into the form.
 
-### 3. Validation (roles.rs)
+### 3. Validation and load (roles.rs, policy.rs)
 
-`roles::validate(policy: &Policy, vocab: &Vocab) -> Result<(), Vec<Problem>>`,
-deterministic, no I/O. `Problem { role: Option<String>, field, message }`.
+`roles::validate(policy: &Policy, vocab: &Vocab) -> Vec<Problem>` is
+deterministic and does no I/O. `Problem { role: Option<String>, field:
+String, message: String, level: Level }`, where `Level` is `Refuse` or
+`Warn`.
 
-- Ids match `^[a-z][a-z0-9-]{1,39}$` and are unique.
-- Exactly one role has `head: true`.
-- `title` is 1–60 chars, `mandate` 1–600. Each list stays inside its caps,
-  and no list item is empty.
-- `expects: file` requires `output`. `output` and every `scope` entry are
-  relative paths with no `..` segment and no leading `/`.
-- Every `work` value is a key of the vocab's `kinds`, and every `drafts`
-  value a key of its `needs`.
-- `from`, when set, names a library entry and a version ≤ the entry's
-  current version.
+Refuse:
+
+- an id not matching `^[a-z][a-z0-9-]{1,39}$`, or a duplicate id;
+- anything other than exactly one role with `head: true`;
+- an empty `title` or `mandate`;
+- any value over its cap or list over its max items (§1);
+- a `\n` or `\r` in `title`, `mandate` or any list item;
+- `expects: file` without `output`;
+- an `output` or `scope` entry that is absolute or holds a `..` segment.
+
+Warn:
+
+- a `work` value that is not a key of the vocab's `kinds`;
+- a `drafts` value that is not a key of `needs`;
+- a `from` that names no library entry, or a version above the entry's
+  current one.
+
+**Load never drops a role.** `Policy` gains `problems: Vec<Problem>`
+(`#[serde(skip)]`), filled by `load` from `validate` against the effective
+vocab. `load` keeps every role and its existing fallbacks, unchanged. The
+fallback to template roles still happens only when the file has none.
+`note` stays for whole-file failures. No problem found at load blocks a
+hire. The renderer's `clean` (§1) bounds what reaches the hire. The Staff
+tab and `cos roles list` show each problem next to its role. A role that
+loads today keeps hiring tomorrow.
+
+**Effective vocab** is the file's `fit` when present, else the template's.
+The write path and `load` use the same function, `roles::vocab(&Policy)`.
 
 ### 4. The write path (roles.rs): the only writer of agents.json
 
 ```rust
 pub enum Change {
-    Add(Role),                 // id must be new
+    Add(Role),                     // id must be new
     Replace { id: String, role: Role },
     Retire(String),
     Restore(String),
 }
-pub struct Written { pub digest: String, pub role: String }
+pub struct Written { pub digest: String, pub role: String, pub notes: Vec<String> }
 
-pub fn apply(home: &Path, change: Change, read_digest: &str,
-             fit_kinds: &BTreeMap<String, Vec<String>>) -> Result<Written>
+pub fn read(home: &Path) -> Result<(Policy, String)>   // policy as load gives it, digest of the bytes
+pub fn apply(home: &Path, change: Change, read_digest: &str) -> Result<Written>
 ```
 
-In order:
+`apply`, in order:
 
-1. Take `context/agents.json.lock` with `create_new`. A held lock is refused
-   ("another edit is in progress"), never stolen, and removed on drop. This
-   is the same shape as `state::commit`.
+1. `create_dir_all(home/context)`. Take `context/agents.json.lock` with
+   `create_new`, writing the pid. A `Lock` guard (copied from `state.rs`'s
+   shape; that one is private) removes it on drop. If the lock is held, the
+   write is refused: "another edit holds <path> (pid N, running|not
+   running); if no edit is in progress, delete <path>". The lock is never
+   taken over silently.
 2. Read the file's bytes. If they do not parse, refuse with the parse error
    and write nothing. A broken file the user is editing is never
-   overwritten. If the file is missing, start from the template's
-   `defaults`, `roles` and `fit`.
+   overwritten. If the file is missing, start from an empty `Policy`.
 3. Compare `sha256(bytes)` (`"absent"` for a missing file) with
-   `read_digest`, the digest the caller saw when it read. On a mismatch,
-   refuse: "agents.json changed since you read it; reload".
-4. Apply the change to the parsed `Policy`. If the file had no `roles`,
-   materialise the template's roles first so the change does not drop them.
-   `Replace` and `Retire` of the head are refused, and `Replace` may not
-   change `id` or `head`. Missing `fit_kinds` are merged in.
-5. `validate` with the effective vocab. Any problem refuses the write and
-   returns the problems.
-6. Serialise pretty, parse the result back, and require it to equal the
-   policy (round-trip). Then `state::atomic_write_bytes`.
-7. Return the new digest.
+   `read_digest`. On a mismatch, refuse: "agents.json changed since you read
+   it (read <a>, now <b>); reload".
+4. Apply the change to the parsed `Policy`:
+   - If the file had no `roles`, materialise the template's roles first, so
+     the change does not drop them. `notes` then says: "agents.json now
+     holds the template's 10 roles; later template changes to them will not
+     reach this home". `fit` and `defaults` are not materialised. A file
+     without `fit` keeps taking the template's at load.
+   - `Replace` keeps `id` and `head` as they were. `Replace`, `Retire` and
+     `Restore` of the head are refused.
+   - When the written role's `from` names a library entry, its `fit_kinds`
+     missing from the file's own `fit.kinds` are added. Only when the file
+     has a `fit`; an existing kind is never changed.
+   - The retired keys (`budget_usd`, `stall_secs`, `repeat`) are cleared on
+     every role and repo. `notes` names how many were dropped.
+5. `validate` with `roles::vocab`. Any `Refuse` problem refuses the write
+   and returns all problems. `Warn` problems go into `notes`.
+6. Serialise pretty to `out`. Require `serialise(parse(out)) == out`, a
+   byte-equal round trip of what is about to be written. This holds with
+   legacy keys, because they were cleared in step 4.
+7. Copy the current bytes to `context/agents.json.bak`, overwriting it.
+   This is one level of undo. Then call `state::atomic_write_bytes(path,
+   out)`; its temp file is named `.state-*.tmp` in `context/`.
+8. Return the new digest and the notes.
 
-`roles::read(home) -> (Policy, digest)` is what every caller reads first.
+### 5. Proposing (roles.rs, pipeline.rs)
 
-### 5. Specialising (roles.rs + pipeline)
+```rust
+pub struct SpecialiseContext {
+    business: String,          // ≤ 80 chars
+    goals: Vec<String>,        // ≤ 20, each cut to 200 chars
+    repos: Vec<RepoScope>,     // ≤ 30: { name, scope: Vec<String> }
+    staff: Vec<(String, String)>, // (id, title) of every non-retired role
+    brief: Option<String>,     // ≤ 1,000 chars; longer is refused, not cut
+}
+pub fn specialise_context(policy: &Policy, state: Option<&Value>, business: &str,
+                          brief: Option<&str>) -> Result<SpecialiseContext>
+pub fn specialise_prompt(entry: &LibraryEntry, ctx: &SpecialiseContext) -> String
+```
 
-`roles::specialise_prompt(entry: &LibraryEntry, ctx: &SpecialiseContext) ->
-String`. `SpecialiseContext { business: String, goals: Vec<String>, repos:
-Vec<RepoTerms>, staff: Vec<(String, String)>, brief: Option<String> }` holds:
+`specialise_context` is pure. Goal titles come from `state["goals"][*]
+["title"]` (callers pass `state::read(workspace)`). Repo names and `scope`
+come from `policy.repos`. Each repo's `checks` are not sent, because a check
+can carry a token or a host, and the proposal cannot set checks anyway.
+Nothing else reaches the prompt: no mail, calendar, tickets, briefs, facts,
+deliverables or journal.
 
-- goal titles from the workspace's `state.json` (titles only),
-- repo directory names with their policy `checks` and `scope`,
-- the current staff's ids and titles (to avoid duplicates),
-- an optional free-text brief from the user ("focus on our Rust services"),
-  at most 1,000 chars.
+`Config::propose_run(prompt) -> Run` uses agent `recruiter` (new
+`.claude/agents/recruiter.md`: specialises role definitions and writes
+nothing), model `sonnet`, `Toolset::None`, a $1.00 budget, a 180 s deadline
+and `json_schema = roles::proposal_schema()`. `Toolset::None` has no caller
+today. Acceptance 9 is a live run that proves it returns
+`structured_output`. If it does not, the run falls back to
+`Toolset::Brain(vec![])`, meaning `ToolSearch` with an empty allowlist and
+no connector tools.
 
-Nothing else goes in: no mail, calendar, tickets, briefs or facts.
+`Proposal` is a closed type (`deny_unknown_fields`, and `additionalProperties:
+false` in the schema). It holds only `title`, `mandate`, `serves`, `sandbox`,
+`judged`, `done_when`, `principles`, `method`, `anti_patterns`,
+`output_format`, `escalation` and `rationale`, each within §1's caps.
+Deserialising a proposal that carries any other key (`checks`, `scope`,
+`harness`, …) fails.
 
-`Config::specialise_run(prompt) -> Run` has agent `recruiter` (new
-`.claude/agents/recruiter.md`: specialises role definitions, writes nothing),
-model `sonnet`, `Toolset::None`, budget $1.00, deadline 180 s, and
-`json_schema = roles::proposal_schema()`.
+`roles::merge(entry, proposal, id: Option<&str>) -> Role` takes every
+contract field (`expects`, `output`, `checks`, `scope`, `harness`, `model`,
+`repo`, `deadline_secs`, `work`, `drafts`) from the library entry and the
+descriptive ones from the proposal. `id` is the caller's `--id`, else the
+entry's. `from` is set to `id@version`.
 
-`Proposal` is closed (`additionalProperties: false`) and holds only
-descriptive fields: `title`, `mandate`, `serves`, `sandbox`, `judged`,
-`done_when`, `principles`, `method`, `anti_patterns`, `output_format`,
-`escalation`, and `rationale` (shown to the user, never stored).
-
-`roles::merge(entry, proposal) -> Role` takes every contract field (`id`,
-`expects`, `output`, `checks`, `scope`, `harness`, `model`, `repo`,
-`deadline_secs`, `work`, `drafts`) from the library entry and the
-descriptive ones from the proposal. It sets `from = id@version`. The model
-cannot set a check command, a scope path or a harness, because the schema
-has no field for them.
-
-The proposal is returned to the caller as `{ role, rationale, diff }`. `diff`
-lists each changed field against the library entry. Nothing is written.
+The result, `ProposalOut { role: Role, rationale: String, diff:
+Vec<FieldDiff> }`, is printed or saved. Nothing is written to the policy.
 
 ### 6. CLI (src/main.rs → `cos roles`)
 
-| Command | Does |
-|---|---|
-| `cos roles list [--library] [--retired] [--json]` | Staff (or library) with id, title, from and status |
-| `cos roles show <id> [--library] [--json]` | One role or entry in full. `--json` prints the role for editing |
-| `cos roles new <library-id> [--id <id>] [--specialise] [--brief "…"] [--yes]` | Builds the role from the entry, optionally specialised, then prints the role and the diff. Writes on `--yes`, or after a typed `yes` on a terminal. Refuses without a terminal and without `--yes` |
-| `cos roles new --blank <id> --title "…" --mandate "…" [--yes]` | A minimal role with `expects: diff` |
-| `cos roles edit <id> --file <role.json> [--yes]` | Replaces the role with the file's role (validated). Prints the field diff first |
-| `cos roles retire <id> [--yes]` / `cos roles restore <id>` | Flips `retired` |
+| Command | Does | Writes |
+|---|---|---|
+| `cos roles list [--library] [--retired] [--json]` | Staff (or library) with id, title, from, status and problems | nothing |
+| `cos roles show <id> [--library] [--json]` | One role or entry in full. `--json` prints the role, ready to edit | nothing |
+| `cos roles propose <library-id> [--id <id>] [--brief "…"] [--out <file>] [--json]` | Runs the recruiter, then prints the rationale and the field diff and saves the role JSON to `--out`. `cos --dry-run roles propose …` prints the exact prompt and sends nothing | the `--out` file only |
+| `cos roles new <library-id> [--id <id>] [--yes]` | Adds the entry's role as is | agents.json |
+| `cos roles new --file <role.json> [--yes]` | Adds the role in the file, e.g. a proposal | agents.json |
+| `cos roles new --blank <id> --title "…" --mandate "…" [--yes]` | Adds a minimal role with `expects: diff` | agents.json |
+| `cos roles edit <id> --file <role.json> [--yes]` | Replaces the role, printing the field diff first | agents.json |
+| `cos roles retire <id> [--yes]` / `cos roles restore <id> [--yes]` | Flips `retired` | agents.json |
 
-Every write reads `(policy, digest)` first and passes the digest to `apply`.
-The confirm prompt is the same shape as `cos ritual approve`.
+Every writing command prints what it will write (the role and, for edit, the
+diff), then writes on `--yes` or after a typed `yes` on a terminal. Without
+a terminal and without `--yes`, it refuses. Every write reads `(policy,
+digest)` first and passes the digest to `apply`. A proposal is therefore
+always printed by one command and approved by a later one. No single
+invocation generates text and writes it.
+
+`propose` from the CLI runs `claude` under `claude::execute`, which owns the
+grouped child and kills and reaps it at the 180 s deadline.
 
 ### 7. Desktop
 
-Tauri commands, each in a `blocking` thread like `agents_roles`:
+The commands are registered for the `main` window, the same boundary
+`ritual_approve` has. Each command that names a business checks it with
+`named(&s, &business)` and works on `Current.home`, never on a path from
+the UI.
 
-- `agents_roles` gains `digest`, `retired` per entry, and `library` (entry
-  id, version, title, summary, sources).
-- `roles_library_entry(id) -> LibraryEntry`.
-- `roles_specialise(business, id, brief) -> { role, rationale, diff }`. The
-  `claude` child runs under `proc` with the run's deadline. `named(&s,
-  &business)` guards it the way `ritual_approve` is guarded.
-- `roles_save(business, change, digest) -> { digest }`. Here `change` is the
-  serialised `Change`, routed to `roles::apply`.
+| Command | Does |
+|---|---|
+| `agents_roles` | Gains `digest`, `problems` per role, `retired` and `library` (entry id, version, title, summary, sources) |
+| `roles_library_entry(id)` | One `LibraryEntry` |
+| `roles_propose_prompt(business, id, brief)` | The exact text Propose would send (`specialise_prompt`), shown before running |
+| `roles_propose(business, id, new_id, brief)` | Starts `cos roles propose … --json` as a child this process owns, the way `brief_run` starts `cos brief`: `spawn_grouped`, deadline 200 s (the run's 180 s plus start-up), killed and reaped on expiry. One at a time. Its pgid is held in `Proposing(Mutex<Option<pid_t>>)`. Returns `ProposalOut` |
+| `roles_propose_cancel()` | `kill_group` on the held pgid. The owning thread then reaps it |
+| `roles_save(business, change, digest)` | `named`, then `roles::apply(&s.home, change, &digest)`. Returns `{ digest, notes }` or the problems |
 
-UI (`app.js`, `index.html`; tokens only, every state through `stateView`):
+`on_run_event` (quit) also kills a held `Proposing` group. The invariant: a
+`claude` started for a proposal has exactly one owner (the CLI process, or
+the window's `Proposing` slot) that kills and reaps it at its deadline, on
+Cancel, or on quit.
 
-- **Staff pane header:** a "New role" button opens the role dialog at the
-  library step.
+`COS_CLAUDE` is a new environment override for the `claude` binary, read the
+way `herdr::hc()` reads `COS_HC`. It is used by the CLI and desktop tests.
+
+UI (`app.js`, `index.html`; tokens only; every state through `stateView`,
+with failures as `unreachable`):
+
+- **Staff pane header:** a "New role" button opens the role dialog at
+  step 1. Problems from `agents_roles` show as a warning line on each
+  affected card.
 - **Role dialog**, three steps in one `<dialog>`:
-  1. *Start from*: library cards (title, summary, sources as links that open
-     in the browser) plus "Blank".
-  2. *Specialise* (optional): a brief textarea and a "Specialise for
-     <business>" button. While the run is going, a `stateView("reading")`
-     and Cancel. After 6 s a slow state appears, and on error an error state
-     with Try again. "Skip" takes the entry as is.
-  3. *Review and save*: a form over the typed fields. Lists are textareas,
-     one item per line. Every field the proposal changed against the entry
-     carries a "changed" badge, and the rationale shows above the form.
-     Contract fields are shown read-only with an "Edit contract" disclosure
-     that makes them editable. Validation problems from `roles_save` render
-     next to their field. Save writes and closes.
+  1. *Start from*: library cards (title, summary, and sources as links that
+     open in the default browser through the existing navigation hook) plus
+     "Blank".
+  2. *Specialise* (optional): an id field, a brief textarea, and a
+     disclosure "What is sent" showing `roles_propose_prompt`'s text. A
+     "Propose for <business>" button runs it. While it runs, the dialog
+     shows `stateView("reading")` with Cancel (`roles_propose_cancel`).
+     After 6 s it shows the slow state, and on failure `unreachable` with
+     Try again. "Skip" takes the entry as is.
+  3. *Review and save*: a form over the typed fields, with lists as
+     textareas, one item per line. Each field the proposal changed against
+     the entry carries a "changed" badge, and the rationale shows above the
+     form. Contract fields are read-only behind an "Edit contract"
+     disclosure. Problems returned by `roles_save` render next to their
+     field, and its notes show after saving. Save is the approval.
 - **Role pane:** sections for Principles, Method, Never, Hand back and
-  Escalates when, when present. Actions are Edit (the same dialog at step 3
-  with the current role, plus "Start from a library entry") and Retire
-  (confirm). The head shows neither.
-- **Retired roles** sit in a collapsed "Retired" group under the grid, each
-  with Restore. The hire dialog's role select leaves them out.
-- A digest conflict shows "The staff changed since you opened this. Reload
-  and re-apply?" with Reload. The form's content is kept in the dialog.
+  Escalates when, when non-empty. Actions are Edit (the dialog at step 3
+  with the role, plus "Start from a library entry") and Retire (confirm).
+  The head shows neither.
+- **Retired** roles sit in a collapsed group under the grid, each with
+  Restore. The hire dialog's role select leaves them out.
+- **Digest conflict:** "The staff changed since you opened this. Reload and
+  re-apply?" with Reload. The form's content is kept.
+- The dialog's loader functions are added to `tests/design.rs`'s loader
+  list.
 
 ### 8. Errors
 
 | Case | Behaviour |
 |---|---|
 | agents.json does not parse | No write. The message names the file and the parse error |
-| Lock held | No write: "another edit is in progress" |
+| Lock held | No write. The message names the lock path, its pid and whether that pid runs |
 | Digest mismatch | No write: reload prompt |
-| Validation problems | No write. Problems are returned per field |
-| Specialise run fails or times out | No proposal, with the reason. The entry can still be used as is |
-| Proposal fails its schema | Treated as a failed run. Nothing is merged |
+| Refuse problems | No write. Problems are returned per field |
+| Propose run fails, times out or is cancelled | No proposal, with the reason. The entry can still be used as is |
+| Proposal fails its schema, or carries an unknown key | Treated as a failed run. Nothing is merged |
 | Hire names a retired role | Refused with a restore hint |
+| Role with problems at load | Loaded and hireable. Problems shown. Preamble rendered through `clean` |
 
 ## Semantic ISA
 
 ### Scope
 
-- **Agent:** the recruiter brain proposes a specialised role definition.
-  The write path persists roles the user approved, and the hire preamble
-  hands a role's text to a hired agent.
-- **Environment:** `context/agents.json` (local file), the `claude` CLI
-  (network to Anthropic), and a hired agent's worktree (through the
-  preamble).
-- **Harms, ranked:** (1) a model-authored check command or scope runs or
-  widens what a hire may touch; (2) a write corrupts or clobbers the user's
-  agents.json; (3) business data leaves the machine beyond what specialising
-  needs; (4) a hired agent is steered outside its sandbox by role text.
+- **Agent:** the recruiter proposes a specialised role definition. The write
+  path persists roles the user approved, and the hire preamble hands a
+  role's text to a hired agent.
+- **Environment:** `context/agents.json` and its `.bak` and `.lock`; the
+  `claude` CLI (network to Anthropic, and the local audit log); the desktop
+  window; a hired agent's worktree.
+- **Harms, ranked:** (1) model-authored text becomes a check command, a scope
+  path or a harness; (2) a write corrupts or clobbers the user's
+  agents.json; (3) business data leaves the machine beyond what proposing
+  needs; (4) role text steers a hire outside its sandbox or forges its
+  preamble; (5) a `claude` child outlives its owner.
 
 ### Side-effect inventory
 
 | Capability | System | Reversible? | Who is affected if it misfires |
 |---|---|---|---|
-| Write `context/agents.json` | local file | Yes, but only by hand. The file is gitignored and not versioned, so `apply` keeps `agents.json.bak` (previous bytes) before each replace | The user: every later hire |
-| Specialise run (`claude -p`) | Anthropic API | Sending can't be undone | The user's goal titles and repo names leave the machine |
-| Role text in a hire's preamble | hired agent in its worktree | Yes (worktree, drafts only) | That hire's diff |
-| `agents.json.lock` create/remove | local file | Yes | Concurrent edits |
+| Write `context/agents.json` | local file (gitignored) | One level, through `.bak` | The user: every later hire |
+| Write `context/agents.json.bak` | local file | Overwritten each write | The user's undo |
+| Create/remove `context/agents.json.lock` | local file | Yes; a stale one is named, never taken over | Concurrent edits |
+| Propose run (`claude -p`) | Anthropic API | Sending cannot be undone | Goal titles, repo names and scopes, staff titles and the brief leave the machine |
+| `-p <prompt>` in the child's argv | local process table | Gone when the child exits (≤ 180 s) | Local users who can run `ps` |
+| Audit log append (`out/audit/<day>.jsonl`) | local file (gitignored) | By hand | The stream, including the proposal text, kept locally |
+| `--out <file>` from `cos roles propose` | local file the user names | By hand | Only that path |
+| Role text in a hire's preamble | sent to the hire's model provider on each spawn; acts in the worktree | Sending cannot be undone; worktree changes are drafts | That hire's diff; role text leaves the machine with each hire |
+| Library source links | default browser | Yes | Opens a public URL |
+| Kill a `Proposing` process group | local processes | n/a | Only the group this process started |
 
 ### Instruction set
 
 | Instruction | Core | Governance property | Sink? | Replaces capability |
 |---|---|---|---|---|
-| `LOAD(library_entry)` | Memory | Deterministic I/O, compiled-in data | no | — |
+| `LOAD(library_entry)` | Memory | Deterministic, compiled-in | no | — |
 | `LOAD(policy, digest)` | Memory | Deterministic I/O | no | file read |
-| `LOAD(specialise_context)` | Memory | Allowlisted fields only | no | state.json read |
-| `TOOL_CALL(claude.specialise)` | Execution | Deterministic action, network | **yes** | claude -p |
+| `LOAD(goal_titles)` | Memory | Allowlisted field of state.json | no | state.json read |
+| `VERIFY(specialise_context)` | Normative | Deterministic checkpoint | no | — |
+| `TOOL_CALL(claude.propose)` | Execution | Deterministic action, network | **yes** | claude -p |
 | `GENERATE(proposal)` | Cognitive | Probabilistic output | no | — |
 | `VERIFY(proposal_schema)` | Normative | Deterministic checkpoint | no | — |
+| `VERIFY(contract_from_library)` | Normative | Deterministic checkpoint (`merge`) | no | — |
+| `STORE(proposal_file)` | Execution | Deterministic, user-named path | **yes** | file write |
 | `VERIFY(user_approval)` | Normative | Human checkpoint | no | — |
 | `VERIFY(policy_valid)` | Normative | Deterministic checkpoint | no | — |
 | `STORE(agents.json)` | Execution | Deterministic action | **yes** | file write |
+| `VERIFY(render_clean)` | Normative | Deterministic checkpoint | no | — |
 | `RENDER(preamble)` | Execution | Deterministic, to hired agent | **yes** | hire prompt |
+| `TOOL_CALL(kill_group)` | Execution | Deterministic, owned pgid only | **yes** | proc::kill_group |
 
 ### Bindings
 
+`Role` below means the serde shape of `policy::Role` (§1), with
+`deny_unknown_fields`.
+
 ```json
-{ "instruction": "TOOL_CALL(claude.specialise)",
+{ "instruction": "TOOL_CALL(claude.propose)",
   "input_schema": { "type": "object", "additionalProperties": false,
     "required": ["entry_id", "business", "goals", "repos", "staff"],
     "properties": {
@@ -319,86 +473,101 @@ UI (`app.js`, `index.html`; tokens only, every state through `stateView`):
       "business": { "type": "string", "maxLength": 80 },
       "goals": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 200 } },
       "repos": { "type": "array", "maxItems": 30, "items": { "type": "object", "additionalProperties": false,
-        "required": ["name"], "properties": { "name": { "type": "string" },
-          "checks": { "type": "array", "items": { "type": "string" } },
+        "required": ["name", "scope"], "properties": {
+          "name": { "type": "string", "maxLength": 100 },
           "scope": { "type": "array", "items": { "type": "string" } } } } },
       "staff": { "type": "array", "items": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 } },
       "brief": { "type": "string", "maxLength": 1000 } } },
-  "output_schema": "roles::proposal_schema(): closed object of title, mandate, serves, sandbox, judged, done_when, principles[], method[], anti_patterns[], output_format, escalation[], rationale, each with the §3 caps" }
+  "output_schema": "roles::proposal_schema(): closed object of title, mandate, serves, sandbox, judged, done_when, principles[], method[], anti_patterns[], output_format, escalation[], rationale, each within the §1 caps" }
 
 { "instruction": "STORE(agents.json)",
   "input_schema": { "type": "object", "additionalProperties": false,
     "required": ["change", "read_digest"],
     "properties": {
       "change": { "oneOf": [
-        { "type": "object", "required": ["add"], "properties": { "add": { "$ref": "Role" } }, "additionalProperties": false },
-        { "type": "object", "required": ["replace"], "properties": { "replace": { "type": "object", "required": ["id", "role"] } }, "additionalProperties": false },
-        { "type": "object", "required": ["retire"], "properties": { "retire": { "type": "string" } }, "additionalProperties": false },
-        { "type": "object", "required": ["restore"], "properties": { "restore": { "type": "string" } }, "additionalProperties": false } ] },
+        { "type": "object", "additionalProperties": false, "required": ["add"], "properties": { "add": { "$comment": "Role" } } },
+        { "type": "object", "additionalProperties": false, "required": ["replace"], "properties": { "replace": { "type": "object", "additionalProperties": false, "required": ["id", "role"], "properties": { "id": { "type": "string" }, "role": { "$comment": "Role" } } } } },
+        { "type": "object", "additionalProperties": false, "required": ["retire"], "properties": { "retire": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["restore"], "properties": { "restore": { "type": "string" } } } ] },
       "read_digest": { "type": "string", "pattern": "^([0-9a-f]{64}|absent)$" } } },
-  "output_schema": { "type": "object", "required": ["digest", "role"], "additionalProperties": false,
-    "properties": { "digest": { "type": "string" }, "role": { "type": "string" } } } }
+  "output_schema": { "type": "object", "additionalProperties": false, "required": ["digest", "role", "notes"],
+    "properties": { "digest": { "type": "string" }, "role": { "type": "string" }, "notes": { "type": "array", "items": { "type": "string" } } } } }
 
 { "instruction": "RENDER(preamble)",
-  "input_schema": "a Role from a Policy that passed roles::validate at load (load-time validation added: an invalid role is dropped from the hireable set with a note)",
-  "output_schema": { "type": "string" } }
+  "input_schema": "a Role as loaded (never dropped, possibly with problems)",
+  "output_schema": { "type": "string", "maxLength": 12000 } }
+
+{ "instruction": "TOOL_CALL(kill_group)",
+  "input_schema": { "type": "object", "additionalProperties": false, "required": ["pgid"],
+    "properties": { "pgid": { "type": "integer", "minimum": 2, "$comment": "only the value held in Proposing" } } },
+  "output_schema": { "type": "null" } }
 ```
 
 ### Taint
 
-- **Sources:** `GENERATE(proposal)` (model output), the user's `brief` text,
-  a hand-edited `agents.json`, and the `--file` role JSON.
-- **Propagation:** a merged role is tainted in its descriptive fields when
-  the proposal is. Contract fields come from the compiled-in library entry
-  and are clean. A stored role keeps its taint through the STORE → LOAD
-  round-trip. We treat every role text as tainted at RENDER, and its clean
-  contract fields (checks, scope) as the boundary.
-- **Sinks:** `TOOL_CALL(claude.specialise)`, `STORE(agents.json)`,
-  `RENDER(preamble)`.
+- **Sources:** goal titles from state.json (often copied from mail subjects
+  or tickets), repo names and scopes, the user's `brief`, `GENERATE(proposal)`,
+  a hand-edited agents.json, and the `--file` role JSON.
+- **Propagation:** the proposal is tainted because its inputs and its
+  generator are. In a merged role, the descriptive fields carry the
+  proposal's taint. Contract fields come from the compiled-in library entry
+  and are clean, unless the user edits them, which is the user's own input
+  and approved at Save. A stored role keeps its taint through the STORE →
+  LOAD round trip. Every role text is treated as tainted at RENDER.
+- **Sinks:** `TOOL_CALL(claude.propose)`, `STORE(proposal_file)`,
+  `STORE(agents.json)`, `RENDER(preamble)`, `TOOL_CALL(kill_group)`.
 
 | Sink | Accepted input must be cleared by | Check |
 |---|---|---|
-| `TOOL_CALL(claude.specialise)` | `VERIFY(specialise_context)` in `roles::specialise_context(home, workspace)` | Built only from goal titles, repo names with policy checks and scope, staff ids and titles, and a brief of at most 1,000 chars. The type has no field for anything else. Run with `Toolset::None` and `--strict-mcp-config` |
-| `STORE(agents.json)` | `VERIFY(user_approval)` and then `VERIFY(policy_valid)` in `roles::apply` | Approval: CLI `--yes` or a typed `yes`, desktop Save from the main window. Then lock held, digest equal, parse OK, head unchanged, `roles::validate` empty, round-trip equal |
-| `RENDER(preamble)` | `VERIFY(policy_valid)` at load and `VERIFY(contract_from_library)` at merge | Load drops invalid roles. `merge` takes checks, scope, harness, model, repo, expects, output and work from the entry (or from the user's own edit), never from a proposal. The preamble's last sentence keeps the drafts-only boundary, and the worktree sandbox is unchanged |
+| `TOOL_CALL(claude.propose)` | `VERIFY(specialise_context)` (`roles::specialise_context`) | Built only from goal titles (≤ 20, ≤ 200 chars), repo names and scopes (no checks), staff ids and titles, and a brief (≤ 1,000 chars, refused above). The type has no field for anything else. The run uses `Toolset::None` (`--tools "" --strict-mcp-config`) or the empty-allowlist fallback. The exact text is shown in "What is sent" and by `--dry-run` |
+| `STORE(proposal_file)` | `VERIFY(proposal_schema)` and `VERIFY(contract_from_library)` | `Proposal` deserialises with `deny_unknown_fields` and caps. `merge` takes every contract field from the entry. Written only to the `--out` path the user named |
+| `STORE(agents.json)` | `VERIFY(user_approval)`, then `VERIFY(policy_valid)` in `roles::apply` | Approval is CLI `--yes` or a typed `yes` in an invocation that generated nothing, or desktop Save after the form was shown. `apply` then requires: lock held, digest equal, parse OK, head unchanged, no `Refuse` problem, byte-equal round trip |
+| `RENDER(preamble)` | `VERIFY(render_clean)` (`roles::clean`) | Whitespace collapsed (no newline survives), each value cut to its cap, lists cut to max items. Drafts-only sentence last. Worktree sandbox unchanged |
+| `TOOL_CALL(kill_group)` | `Proposing` slot ownership | Only the pgid this process stored when it spawned the child. The slot is cleared when the owning thread reaps it |
 
 ### Violations
 
 | Violation | Evidence recorded | Recovery |
 |---|---|---|
-| Proposal fails schema | Field and value in the run's audit line (`claude::audit_note`) | No proposal; the user may use the entry as is or retry |
-| Proposal carries a contract field | Impossible by schema (`additionalProperties: false`), and `merge` ignores it if one gets through | Schema failure path |
+| Proposal fails schema or carries an unknown key | Error and field path in the audit log (`claude::audit_note`) | No proposal. Use the entry as is, or retry |
 | Write without approval | CLI refuses without `--yes` and without a terminal | User re-runs with approval |
-| Policy invalid at write | Problems per field, returned | User fixes the field; nothing written |
+| Refuse problems at write | Problems per field, returned | User fixes the field; nothing written |
 | Stale digest | Both digests in the error | Reload and re-apply |
-| Invalid role at load | `Policy::note` names role and problem | Role not hireable until fixed |
+| Held lock | Lock path, pid and liveness in the error | Finish the other edit, or delete the named lock |
+| Role with problems at load | `Policy.problems`, shown per role | The role still hires through `clean`. The user fixes it when ready |
 
 ### ISA test matrix
 
 | Sink | Tainted input refused | VERIFY-cleared input admitted |
 |---|---|---|
-| `claude.specialise` | A `SpecialiseContext` cannot hold mail/calendar fields (type). A test asserts the prompt from a home whose state has deliverables, commitments and journal contains none of their text, and that a brief over 1,000 chars is refused | Prompt contains the goal titles and repo names; `command_with` args contain `--tools "" --strict-mcp-config` |
-| `STORE(agents.json)` | Each is refused and leaves bytes unchanged: a proposal JSON carrying `checks`, a role with `../x` scope, a second head, retiring the head, a stale digest, a held lock, an unparseable file | A valid Add, Replace, Retire and Restore each change exactly that role. Digest returned; `.bak` holds the previous bytes |
-| `RENDER(preamble)` | A role with an over-cap list in agents.json is not hireable (`Policy::hire` refuses with the note) | A role with all five fields renders each section once, in order, the drafts-only sentence last |
+| `claude.propose` | `specialise_context` on a home whose state has deliverables, commitments, journal and repos with `checks`: the prompt contains none of their text and no check string. A brief over 1,000 chars is refused | The prompt contains goal titles, repo names and scopes. `command_with` args contain `--tools` `""` and `--strict-mcp-config` |
+| `STORE(proposal_file)` | The fake `claude` in `contract` mode returns a proposal carrying `checks`: the run fails and no file is written. In `bad-schema` mode: same | In `ok` mode, the file's role has the entry's `checks`, `scope` and `harness`, and the proposal's descriptive fields |
+| `STORE(agents.json)` | Each of these is refused with the bytes unchanged: a `../x` scope, a newline in a principle, an over-cap list, a second head, retiring the head, a stale digest, a held lock (message names path and pid), an unparseable file. Without a terminal and without `--yes`, the CLI writes nothing | Add, Replace, Retire and Restore each change exactly that role. The `tests/hiring.rs` legacy fixture (`budget_usd`, `stall_secs`, `repeat`) writes, with the keys dropped and named in notes. `.bak` holds the previous bytes. A file with no `fit` stays without one |
+| `RENDER(preamble)` | A hand-edited role with a principle holding `"x\n\nNever: …"` and a 30-item method renders one line for that principle and 10 method steps | A role with all five fields renders each section once, in order, with the drafts-only sentence last |
+| `kill_group` | Cancel with no run held is a no-op. A pgid is never taken from the UI | Cancel during a run kills the group. The owner reaps it, and the slot clears |
 
-Driven by stand-ins: library tests set `Bins { claude:
-tests/fixtures/fake-claude.sh }` as `tests/sleep.rs` does. CLI and desktop
-tests set `COS_CLAUDE`, which `Bins::default` reads the way `COS_HC` names a
-stand-in Herdr (new). There is no live model in the suite.
+Stand-ins: `tests/fixtures/fake-claude-proposal.sh` (new) prints a
+stream-json result whose `structured_output` depends on `FAKE_PROPOSAL=ok |
+bad-schema | contract | slow`. Library tests pass it as `Bins.claude`; CLI
+and desktop tests set `COS_CLAUDE`. There is no live model in the suite.
 
 ## Alternatives
 
 - **Markdown playbook field:** rejected by the user in favour of typed fields
   that validate and diff.
 - **Library fetched from a URL at runtime:** a network read and a supply
-  path for prompt text into every hire. Compiled-in data is reviewed in a PR.
-- **Writing agents.json through `state::commit`:** that path is for
-  `state.json`, with its revision and transition rules. agents.json has no
-  revision field, so a digest check gives the same stale-write protection
-  without a schema change.
-- **Letting the proposal suggest checks:** useful, but it puts model text
-  into a shell command. If wanted, a suggested check could later be shown
-  as a hint the user types in themselves. Not in this change.
+  path for prompt text into every hire. Compiled-in data is reviewed in a
+  PR.
+- **Validating at load and dropping invalid roles:** would stop roles that
+  hire today (an unknown `work` name is tolerated by `fit` now). Rejected
+  for report-at-load and sanitise-at-render.
+- **Propose and write in one command (`new --specialise --yes`):** would
+  approve text nobody read. Rejected.
+- **Writing through `state::commit`:** that path is for `state.json` and its
+  revision and transition rules. A digest check gives the same stale-write
+  protection without a schema change.
+- **Letting the proposal suggest checks:** puts model text into a shell
+  command. Not in this change.
 - **Exposing roles over MCP:** not asked for. The HTTP server stays
   read-only and stdio gains nothing here.
 
@@ -406,66 +575,85 @@ stand-in Herdr (new). There is no live model in the suite.
 
 - **Read:** agents.json, the compiled-in library, and goal titles from
   state.json.
-- **Stored:** agents.json and agents.json.bak under `context/` (gitignored).
-- **Leaves the machine:** on Specialise only, the library entry, the
-  business name, goal titles, repo names with their checks and scope, staff
-  titles and the user's brief, sent to Anthropic through `claude`. No tool
-  calls are possible.
-- No secrets are involved. Library fixtures name no customer.
+- **Stored locally:** agents.json, `.bak` and `.lock` under `context/`
+  (gitignored), the propose run's stream in `out/audit/` (gitignored), and a
+  proposal file only where the user names one.
+- **Leaves the machine on Propose:** the library entry, the business name,
+  goal titles, repo names and scopes, staff ids and titles, and the user's
+  brief, sent to Anthropic through `claude`. No repo checks are sent. No
+  tool calls are possible. The user sees the exact text first.
+- **Leaves the machine on each hire:** the role's rendered preamble, as part
+  of the hire's prompt to its harness, as today, now longer.
+- Library fixtures name no customer.
 
 ## Testing
 
-- **Static:** `tests/roles.rs` loads every library file, which must parse,
-  validate, meet the minimum counts, cite a source and be listed in the
-  `include_str!` list. `tests/design.rs` gains nothing new: the existing
-  gates cover the dialog's states.
-- **Unit-level, in `tests/roles.rs`:** `validate` per rule; `merge` never
-  takes a contract field; `preamble` order; `apply` refusals and admits from
-  the ISA matrix on temp homes.
+- **Static:** `tests/roles.rs` holds the library rules (§2).
+  `tests/design.rs` gets the dialog's loaders added to its loader list
+  (L1531).
+- **Unit-level, in `tests/roles.rs`:** `validate` per rule and level;
+  `clean`; `merge` never takes a contract field and honours `--id`;
+  `preamble` order and bound; `specialise_context` exclusions; `apply`
+  refusals and admits from the ISA matrix on temp homes, including the
+  legacy fixture; `fit::check` never suggests a retired role.
 - **Integration:** `tests/roles_cli.rs` drives `cos roles` end to end on a
-  temp `COS_HOME` with a fake `claude`: new from library, specialised, edit,
-  retire, restore, hire refused for retired. Then `cos --dry-run agents
-  spawn --role <new>` shows the structured preamble in the plan.
-- **Desktop:** `apps/desktop/tests/ipc.rs` covers `roles_save` (add, conflict,
-  invalid) and `roles_specialise` with a stand-in `claude`.
-  `task test-e2e` runs a browser pass over `examples/preview.rs`: New role →
-  library → skip → save → role appears → Retire → in Retired group.
+  temp `COS_HOME` with `COS_CLAUDE` set to the fake: list and show the
+  library, propose to `--out`, `new --file`, `new <id>`, edit, retire,
+  restore, the no-terminal refusal, and a hire refused for a retired role.
+  Then `cos --dry-run agents spawn --role <new>` shows the structured
+  preamble in the plan.
+- **Desktop:** `apps/desktop/tests/ipc.rs` covers `roles_save` (add,
+  conflict, refused problems, a foreign business name writes nothing),
+  `roles_propose` with the fake (ok, cancel, timeout) and
+  `roles_propose_prompt`. `apps/desktop/tests/roles_page.rs` (new, added to
+  `task test-e2e` in `Taskfile.yml`) drives the preview
+  (`apps/desktop/examples/preview.rs`) in a browser: New role → library →
+  Skip → Save → card appears → Retire → in Retired group.
 - **WCAG:** `examples/wcag.rs` adds the role dialog's three steps.
 
 ## Confidence
 
 | Piece | Tier | Moves it up |
 |---|---|---|
-| Schema + validation + write path | rock | — |
-| Preamble rendering | rock | — |
+| Schema, validation, write path | rock | — |
+| Preamble rendering and bound | rock | Caps are one table; the bound is tested |
 | CLI | rock | — |
-| Specialise run | rock | Same machinery as `ask`, no tools |
-| Library content (12 entries) | sand | Each entry cites its source; a reviewer reads each against it; minimum counts gate the shape |
-| Desktop dialog | sand | Three-step dialog is new UI; the e2e pass and WCAG run make it rock |
-| Load-time validation dropping invalid roles | sand | Could hide a role a user hand-edited. The `note` must name it, and a test asserts the note |
+| Propose run on `Toolset::None` | sand | Never run before. Acceptance 9 (live) makes it rock, or proves the fallback is needed |
+| Library content (12 entries) | sand | Each entry cites its source. Review reads each against it. Minimum counts gate the shape |
+| Desktop dialog and owned child | sand | The e2e pass, the cancel test and the WCAG run make it rock |
 
 ## Acceptance
 
 1. `cos roles list --library` prints 12 entries, each with a cited source.
 2. `cos roles new appsec-reviewer --yes` on a home with no agents.json
-   writes one containing the 10 template roles and `appsec-reviewer` with
-   `from: "appsec-reviewer@1"`. `cos roles list` shows it.
-3. `cos roles new sre --specialise --brief "…"` with the fake `claude`
-   prints a diff of changed descriptive fields and writes nothing without
-   `--yes`. With `--yes` it writes, and the role's `checks` equal the
-   library entry's.
-4. A hand-edited agents.json that does not parse: `cos roles retire
+   writes one holding the 10 template roles and `appsec-reviewer` with
+   `from: "appsec-reviewer@1"`, and prints the materialisation note. `cos
+   roles list` shows it.
+3. With `COS_CLAUDE` set to the fake in `ok` mode, `cos roles propose sre
+   --brief "…" --out /tmp/x/sre.json` prints the rationale and a diff and
+   writes only that file. agents.json is unchanged. The file's role has
+   `checks` equal to the library entry's. `cos roles new --file
+   /tmp/x/sre.json --yes` then adds it.
+4. With a hand-edited agents.json that does not parse, `cos roles retire
    reviewer --yes` refuses, and the file bytes are unchanged.
-5. `cos roles retire reviewer --yes`, then `cos agents spawn --role reviewer
-   …` is refused with the restore hint. `cos roles restore reviewer` makes
-   it hireable again, and the ledger's earlier reviewer rows still show
-   "Reviewer".
-6. `cos --dry-run agents spawn --role appsec-reviewer …` prints the plan,
-   which gains a `preamble` field (`hire::Plan`, new; today dry-run prints
-   the plan without the prompt). That preamble has Principles, Method, Never, Hand back and Stop-and-leave
-   sections, in that order, with the drafts-only sentence last.
-7. In the desktop app: Staff → New role → pick "Application security
-   reviewer" → Skip → Save. The card appears. Its pane shows the five
-   sections. Retire moves it to Retired, and it is gone from the hire
-   dialog's select.
-8. `task test` passes.
+5. `cos roles retire reviewer --yes`. Then `cos agents spawn --role reviewer
+   …` is refused with the restore hint, and a fit check on a review task
+   does not suggest the reviewer. `cos roles restore reviewer --yes` makes it
+   hireable again. `cos agents scorecard` still lists the earlier rows under
+   the role id `reviewer`.
+6. `cos --dry-run agents spawn --role appsec-reviewer …` prints a plan whose
+   new `preamble` field (computed with `policy::preamble`) has Principles,
+   Method, Never, Hand back and Stop-and-leave sections, in that order, with
+   the drafts-only sentence last.
+7. In the desktop app, on the demo home: Staff → New role → "Application
+   security reviewer" → Skip → Save. The card appears. Its pane shows the
+   five sections. Retire moves it to Retired, and it is gone from the hire
+   dialog's select. Propose with the fake, then Cancel while it runs, leaves
+   no `fake-claude-proposal` process (`pgrep -f` count 0).
+8. A home whose agents.json carries legacy `budget_usd` keys accepts `cos
+   roles new principal-reviewer --yes`, and the notes name the dropped keys.
+9. Live, once, run by the author in the PR with the cost reported: `cos
+   roles propose performance-engineer --brief "Rust services" --out …`
+   against real `claude` returns a valid proposal under $1.00. If it fails on
+   `Toolset::None`, the fallback is switched on and the run is repeated.
+10. `task test` and `task test-e2e` pass.
